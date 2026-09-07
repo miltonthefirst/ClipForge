@@ -1,0 +1,61 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*serviceAccount*.json
+*service-account*.json
+firebase/**/serviceAccount*.json
+apps/worker/.clipforge/
+**/credentials/
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# --- Node / Angular ---
+node_modules/
+/apps/web/dist/
+/apps/web/.angular/
+/apps/web/coverage/
+/firebase/functions/lib/
+npm-debug.log*
+yarn-error.log*
+
+# --- Firebase ---
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+*-debug.log
+
+# --- ClipForge workspace: large media, never committed ---
+workspace/
+apps/worker/workspace/
+*.mp4
+*.mkv
+*.webm
+*.m4a
+*.wav
+!apps/worker/assets/fixtures/**/*.wav
+!apps/worker/assets/fixtures/**/*.mp4
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store

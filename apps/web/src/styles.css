@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+
+/* ClipForge design tokens.
+   Defined once here so the PWA (Phase 7) and any future surface share them. */
+@theme {
+  --color-forge-50: #eef6ff;
+  --color-forge-100: #d9ecff;
+  --color-forge-400: #4da3ff;
+  --color-forge-500: #1a85ff;
+  --color-forge-600: #0b6bd8;
+  --color-forge-900: #0a2647;
+}
+
+html,
+body {
+  height: 100%;
+}

@@ -1,0 +1,23 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.{ps1,psm1}]
+indent_size = 4
+end_of_line = crlf
+# Windows PowerShell 5.1 reads .ps1 as ANSI without a BOM, which corrupts
+# any non-ASCII byte and produces a parser error. Keep the BOM.
+charset = utf-8-bom
+
+[*.md]
+trim_trailing_whitespace = false
