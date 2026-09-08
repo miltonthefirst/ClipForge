@@ -1,0 +1,16 @@
+{
+  "name": "@clipforge/contracts",
+  "version": "0.0.1",
+  "private": true,
+  "description": "ClipForge wire protocol: one JSON Schema, generated into TypeScript and Pydantic",
+  "license": "MIT",
+  "type": "module",
+  "types": "generated/typescript/index.d.ts",
+  "scripts": {
+    "generate": "node scripts/generate-typescript.mjs",
+    "check": "node scripts/generate-typescript.mjs --check"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4"
+  }
+}

@@ -79,8 +79,18 @@ uv run --project apps/worker pytest -m gpu
 ## Conventions worth knowing
 
 **Never hardcode a Firebase project id, bucket or emulator host.** They come from `.env` only.
-This is what makes swapping projects a one-file change; see the Phase 1 addendum in
-`docs/PLAN.md`.
+This is what makes swapping projects a one-file change — and it is not hypothetical: ClipForge moved
+project once already. See [ADR-0004](docs/adr/0004-dedicated-firebase-project.md).
+
+**Never run a bare `firebase deploy`.** Always pass an explicit `--project` and an explicit `--only`.
+Firebase deploys **replace rather than merge**: `--only firestore:rules` overwrites a project's entire
+rules file, `--only functions` deletes deployed functions that are absent from local source, and
+`--only hosting` overwrites the live site. A mistyped project id is enough to damage an unrelated
+project, and there are several similarly-named ones on the account this was developed against.
+
+**Never edit anything under `packages/contracts/generated/`.** It is generated from
+`schemas/clipforge.json` and CI regenerates it and fails on any difference. Change the schema and
+regenerate — both languages, every time. See [ADR-0005](docs/adr/0005-single-source-contracts.md).
 
 **Never commit secrets.** Service-account JSON, OAuth tokens and `.env` are gitignored. Publishing
 credentials live on the worker and must never be written to Firestore — see ADR on worker-held

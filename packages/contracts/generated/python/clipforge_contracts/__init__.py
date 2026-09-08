@@ -1,0 +1,72 @@
+# ClipForge contracts - GENERATED FILE, DO NOT EDIT.
+#
+# Source of truth: packages/contracts/schemas/clipforge.json
+# Regenerate with:
+#   uv run --project apps/worker python packages/contracts/scripts/generate_python.py
+#
+# Editing this file by hand is pointless: CI regenerates it and fails on any
+# difference. Change the schema instead.
+
+"""ClipForge wire protocol, generated from JSON Schema."""
+
+from clipforge_contracts.models import (
+    Candidate as Candidate,
+    Clip as Clip,
+    ClipForgeContracts as ClipForgeContracts,
+    GpuInfo as GpuInfo,
+    Job as Job,
+    JobEvent as JobEvent,
+    JobEventKind as JobEventKind,
+    JobStatus as JobStatus,
+    JobType as JobType,
+    Lane as Lane,
+    LlmClipProposal as LlmClipProposal,
+    LlmClipResponse as LlmClipResponse,
+    ReviewState as ReviewState,
+    RightsAttestation as RightsAttestation,
+    RightsBasis as RightsBasis,
+    Source as Source,
+    SourceProvider as SourceProvider,
+    Stage as Stage,
+    StageError as StageError,
+    StageName as StageName,
+    StageStatus as StageStatus,
+    SubScores as SubScores,
+    Transcript as Transcript,
+    TranscriptSegment as TranscriptSegment,
+    TranscriptWord as TranscriptWord,
+    WorkerCapabilities as WorkerCapabilities,
+    WorkerHeartbeat as WorkerHeartbeat,
+    WorkerStatus as WorkerStatus,
+)
+
+__all__ = [
+    "Candidate",
+    "Clip",
+    "ClipForgeContracts",
+    "GpuInfo",
+    "Job",
+    "JobEvent",
+    "JobEventKind",
+    "JobStatus",
+    "JobType",
+    "Lane",
+    "LlmClipProposal",
+    "LlmClipResponse",
+    "ReviewState",
+    "RightsAttestation",
+    "RightsBasis",
+    "Source",
+    "SourceProvider",
+    "Stage",
+    "StageError",
+    "StageName",
+    "StageStatus",
+    "SubScores",
+    "Transcript",
+    "TranscriptSegment",
+    "TranscriptWord",
+    "WorkerCapabilities",
+    "WorkerHeartbeat",
+    "WorkerStatus",
+]

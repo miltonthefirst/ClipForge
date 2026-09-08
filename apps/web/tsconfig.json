@@ -3,6 +3,16 @@
 {
   "compileOnSave": false,
   "compilerOptions": {
+    /* The worker is on strict mypy; the PWA is held to the same standard. */
+    "strict": true,
+    /* The wire protocol, generated from packages/contracts/schemas/clipforge.json.
+       A path mapping rather than an npm dependency: the generated output is
+       types-only, so there is nothing to build, install or keep in a lockfile.
+       Paths resolve relative to this file; `baseUrl` is deprecated in TS 6.
+       See docs/adr/0005-single-source-contracts.md. */
+    "paths": {
+      "@clipforge/contracts": ["../../packages/contracts/generated/typescript/index.d.ts"]
+    },
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,
     "noImplicitReturns": true,

@@ -15,6 +15,49 @@ permissions:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
+  # Contracts.
+  #
+  # The PWA and the worker are two implementations of one protocol, generated
+  # from packages/contracts/schemas/clipforge.json. This job regenerates both
+  # halves and fails if the committed output differs — so a schema edit cannot
+  # land without its regenerated types (docs/PLAN.md Phase 1, exit criterion 4).
+  #
+  # It runs first because a stale contract makes the worker and web results
+  # meaningless: they would be testing against types nobody will ship.
+  # ───────────────────────────────────────────────────────────────────────────
+  contracts:
+    name: contracts (codegen is current)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: packages/contracts/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install generators
+        run: |
+          npm ci --no-fund --no-audit --prefix packages/contracts
+          uv sync --locked --project apps/worker
+
+      - name: TypeScript contracts are current
+        run: npm --prefix packages/contracts run check
+
+      - name: Pydantic contracts are current
+        run: uv run --project apps/worker python packages/contracts/scripts/generate_python.py --check
+
+  # ───────────────────────────────────────────────────────────────────────────
   # Python worker.
   #
   # Installs CORE dependencies only — no `--extra gpu`. Runners have no NVIDIA

@@ -1,0 +1,494 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clipforge.dev/schemas/clipforge.json",
+  "title": "ClipForgeContracts",
+  "description": "The complete ClipForge wire protocol. The PWA and the worker are two independent implementations of the types defined here; both are generated from this file, so neither can drift from it. See docs/adr/0005-single-source-contracts.md. Every timestamp is an ISO 8601 date-time string, NOT a Firestore Timestamp: the store adapters convert at the boundary, which keeps this document language-neutral and lets the unit tier compare documents as plain JSON with no emulator running.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "job": { "$ref": "#/definitions/Job" },
+    "jobEvent": { "$ref": "#/definitions/JobEvent" },
+    "stage": { "$ref": "#/definitions/Stage" },
+    "source": { "$ref": "#/definitions/Source" },
+    "transcript": { "$ref": "#/definitions/Transcript" },
+    "candidate": { "$ref": "#/definitions/Candidate" },
+    "clip": { "$ref": "#/definitions/Clip" },
+    "workerHeartbeat": { "$ref": "#/definitions/WorkerHeartbeat" },
+    "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" }
+  },
+
+  "definitions": {
+    "JobStatus": {
+      "title": "JobStatus",
+      "description": "Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.",
+      "type": "string",
+      "enum": ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
+    },
+
+    "JobType": {
+      "title": "JobType",
+      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline.",
+      "type": "string",
+      "enum": ["ECHO", "CLIP"]
+    },
+
+    "StageStatus": {
+      "title": "StageStatus",
+      "description": "A stage that is DONE is never re-executed on retry. That is what makes a crash during ANALYZE cost seconds rather than the twenty minutes of DOWNLOAD and TRANSCRIBE that preceded it.",
+      "type": "string",
+      "enum": ["PENDING", "RUNNING", "DONE", "SKIPPED", "FAILED"]
+    },
+
+    "StageName": {
+      "title": "StageName",
+      "description": "Ordered pipeline steps. ECHO_* belong to the ECHO job type only.",
+      "type": "string",
+      "enum": [
+        "ECHO_ONE",
+        "ECHO_TWO",
+        "ECHO_THREE",
+        "DOWNLOAD",
+        "TRANSCRIBE",
+        "ANALYZE",
+        "RENDER",
+        "PUBLISH"
+      ]
+    },
+
+    "Lane": {
+      "title": "Lane",
+      "description": "Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).",
+      "type": "string",
+      "enum": ["GPU", "CPU"]
+    },
+
+    "StageError": {
+      "title": "StageError",
+      "description": "Structured failure detail. Captured rather than raised so a failed stage can be inspected from the PWA without reading worker logs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "type": "string", "description": "Exception class name." },
+        "message": { "type": "string" },
+        "traceback": { "type": ["string", "null"], "default": null },
+        "retryable": {
+          "type": "boolean",
+          "default": true,
+          "description": "False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts."
+        }
+      }
+    },
+
+    "Stage": {
+      "title": "Stage",
+      "description": "One idempotent, checkpointed step of a job.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "lane", "status"],
+      "properties": {
+        "name": { "$ref": "#/definitions/StageName" },
+        "lane": { "$ref": "#/definitions/Lane" },
+        "status": { "$ref": "#/definitions/StageStatus" },
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "endedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "durationMs": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "peakVramMb": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "Peak VRAM observed through NVML while this stage held the ModelBroker lease. Null for CPU stages."
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "checkpoint": {
+          "type": ["object", "null"],
+          "default": null,
+          "additionalProperties": true,
+          "description": "Opaque, stage-owned resume state. The scheduler persists and returns it verbatim and never interprets it."
+        },
+        "error": {
+          "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
+          "default": null
+        }
+      }
+    },
+
+    "Job": {
+      "title": "Job",
+      "description": "One pipeline run over one source. Stored at jobs/{jobId}.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uid",
+        "type",
+        "status",
+        "stages",
+        "attempts",
+        "maxAttempts",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Owning user. Every security rule keys off this field."
+        },
+        "type": { "$ref": "#/definitions/JobType" },
+        "status": { "$ref": "#/definitions/JobStatus" },
+        "sourceId": { "type": ["string", "null"], "default": null },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Stage" },
+          "minItems": 1,
+          "description": "Ordered. Executed front to back; DONE stages are skipped on retry."
+        },
+        "workerId": { "type": ["string", "null"], "default": null },
+        "leaseExpiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "Set on claim, extended by heartbeat. A RUNNING job whose lease is in the past is reclaimable by the reaper."
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "maxAttempts": { "type": "integer", "minimum": 1, "default": 3 },
+        "error": {
+          "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
+          "default": null,
+          "description": "The failure that terminated the job, copied from the failing stage."
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "endedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "JobEventKind": {
+      "title": "JobEventKind",
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "CLAIMED",
+        "STAGE_STARTED",
+        "STAGE_COMPLETED",
+        "STAGE_FAILED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "LEASE_EXPIRED",
+        "REQUEUED"
+      ]
+    },
+
+    "JobEvent": {
+      "title": "JobEvent",
+      "description": "Append-only transition log at jobs/{jobId}/events/{eventId}. Never mutated, which is what makes it trustworthy when debugging a job that failed hours ago.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "jobId", "kind", "at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "jobId": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/definitions/JobEventKind" },
+        "at": { "type": "string", "format": "date-time" },
+        "stage": {
+          "anyOf": [{ "$ref": "#/definitions/StageName" }, { "type": "null" }],
+          "default": null
+        },
+        "workerId": { "type": ["string", "null"], "default": null },
+        "detail": { "type": ["string", "null"], "default": null },
+        "attempts": { "type": ["integer", "null"], "minimum": 0, "default": null }
+      }
+    },
+
+    "SourceProvider": {
+      "title": "SourceProvider",
+      "description": "local exists so the whole pipeline can be exercised from a committed fixture with no network, which is what keeps the integration tier runnable in CI.",
+      "type": "string",
+      "enum": ["youtube", "local"]
+    },
+
+    "Source": {
+      "title": "Source",
+      "description": "One ingested long-form video at sources/{sourceId}. The media itself never leaves the worker (docs/PLAN.md decision D3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "provider", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "provider": { "$ref": "#/definitions/SourceProvider" },
+        "externalId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "YouTube video id, or null for a local file."
+        },
+        "url": { "type": ["string", "null"], "default": null },
+        "title": { "type": ["string", "null"], "default": null },
+        "channel": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "contentHash": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Hash of the downloaded media. Transcripts are cached against this, so re-ingesting the same video costs no GPU time."
+        },
+        "localPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Worker-local absolute path. Advisory only for the PWA, which can never read it."
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "TranscriptWord": {
+      "title": "TranscriptWord",
+      "description": "Word-level timing. Load-bearing for boundary snapping (D4) and caption generation, which is why faster-whisper is configured with word timestamps enabled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "startSec", "endSec"],
+      "properties": {
+        "text": { "type": "string" },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "probability": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "default": null }
+      }
+    },
+
+    "TranscriptSegment": {
+      "title": "TranscriptSegment",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "text", "startSec", "endSec"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "text": { "type": "string" },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "words": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/TranscriptWord" },
+          "default": []
+        }
+      }
+    },
+
+    "Transcript": {
+      "title": "Transcript",
+      "description": "Stored at sources/{sourceId}/transcripts/{modelVersion}, keyed by model so re-transcribing with a better model does not destroy the old one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "modelVersion", "segments", "createdAt"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "For example faster-whisper:large-v3-turbo:int8_float16"
+        },
+        "language": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "segments": { "type": "array", "items": { "$ref": "#/definitions/TranscriptSegment" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "SubScores": {
+      "title": "SubScores",
+      "description": "The rubric from docs/PLAN.md. The LLM returns these; Python computes the weighted total (decision D5), so the weighting can be changed and every historical candidate rescored without re-running inference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hook", "curiosity", "standalone", "emotion", "pacing", "shareability"],
+      "properties": {
+        "hook": { "type": "integer", "minimum": 0, "maximum": 25 },
+        "curiosity": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "standalone": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "emotion": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "pacing": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "shareability": { "type": "integer", "minimum": 0, "maximum": 10 }
+      }
+    },
+
+    "Candidate": {
+      "title": "Candidate",
+      "description": "An LLM-proposed clip window at candidates/{candidateId}, after deterministic boundary snapping.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "sourceId", "startSec", "endSec", "subScores", "total", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "sourceId": { "type": "string", "minLength": 1 },
+        "jobId": { "type": ["string", "null"], "default": null },
+        "startSec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Snapped to a silence boundary and a sentence end, not the raw LLM value."
+        },
+        "endSec": { "type": "number", "minimum": 0 },
+        "proposedStartSec": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "The model's raw suggestion, retained so snapping can be evaluated against it."
+        },
+        "proposedEndSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "subScores": { "$ref": "#/definitions/SubScores" },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Computed in Python from subScores. Never supplied by the model."
+        },
+        "hook": { "type": ["string", "null"], "default": null },
+        "reason": { "type": ["string", "null"], "default": null },
+        "transcriptExcerpt": { "type": ["string", "null"], "default": null },
+        "modelVersion": { "type": ["string", "null"], "default": null },
+        "promptVersion": { "type": ["string", "null"], "default": null },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "ReviewState": {
+      "title": "ReviewState",
+      "type": "string",
+      "enum": ["PENDING", "APPROVED", "REJECTED"]
+    },
+
+    "RightsBasis": {
+      "title": "RightsBasis",
+      "description": "Why the user believes they may publish this. Publishing is gated on an explicit attestation; see docs/PLAN.md 7.",
+      "type": "string",
+      "enum": ["OWN_CONTENT", "LICENSED", "PERMISSION_GRANTED", "FAIR_USE_CLAIMED", "UNVERIFIED"]
+    },
+
+    "RightsAttestation": {
+      "title": "RightsAttestation",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis"],
+      "properties": {
+        "basis": { "$ref": "#/definitions/RightsBasis" },
+        "attestedBy": { "type": ["string", "null"], "default": null },
+        "attestedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "note": { "type": ["string", "null"], "default": null }
+      }
+    },
+
+    "Clip": {
+      "title": "Clip",
+      "description": "A rendered artefact at clips/{clipId}. Only clips and thumbnails are ever uploaded (decision D3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "candidateId", "review", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "candidateId": { "type": "string", "minLength": 1 },
+        "sourceId": { "type": ["string", "null"], "default": null },
+        "jobId": { "type": ["string", "null"], "default": null },
+        "storagePath": { "type": ["string", "null"], "default": null },
+        "thumbnailPath": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "widthPx": { "type": ["integer", "null"], "minimum": 1, "default": null },
+        "heightPx": { "type": ["integer", "null"], "minimum": 1, "default": null },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "renderProfile": { "type": ["string", "null"], "default": null },
+        "title": { "type": ["string", "null"], "default": null },
+        "description": { "type": ["string", "null"], "default": null },
+        "review": { "$ref": "#/definitions/ReviewState" },
+        "reviewedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "rights": {
+          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
+          "default": null
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "WorkerStatus": {
+      "title": "WorkerStatus",
+      "type": "string",
+      "enum": ["ONLINE", "BUSY", "OFFLINE"]
+    },
+
+    "WorkerCapabilities": {
+      "title": "WorkerCapabilities",
+      "description": "Advertised so the PWA can explain why a job is not progressing, rather than leaving it silently queued.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["whisper", "llm", "render", "publish"],
+      "properties": {
+        "whisper": { "type": "boolean" },
+        "llm": { "type": "boolean" },
+        "render": { "type": "boolean" },
+        "publish": { "type": "boolean" }
+      }
+    },
+
+    "GpuInfo": {
+      "title": "GpuInfo",
+      "description": "vramFreeMb is measured through NVML rather than tracked internally, because a foreign process (an interactive Ollama session, say) can hold VRAM the pipeline needs. Observed in Phase 0.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "vramTotalMb", "vramFreeMb"],
+      "properties": {
+        "name": { "type": "string" },
+        "vramTotalMb": { "type": "integer", "minimum": 0 },
+        "vramFreeMb": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "WorkerHeartbeat": {
+      "title": "WorkerHeartbeat",
+      "description": "Liveness and capability advertisement at workers/{workerId}.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workerId", "uid", "status", "capabilities", "version", "lastSeenAt"],
+      "properties": {
+        "workerId": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/definitions/WorkerStatus" },
+        "capabilities": { "$ref": "#/definitions/WorkerCapabilities" },
+        "gpu": {
+          "anyOf": [{ "$ref": "#/definitions/GpuInfo" }, { "type": "null" }],
+          "default": null
+        },
+        "version": { "type": "string" },
+        "hostname": { "type": ["string", "null"], "default": null },
+        "activeJobIds": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "LlmClipProposal": {
+      "title": "LlmClipProposal",
+      "description": "One window as the model returns it. Deliberately carries no total and no precise boundaries: the model supplies judgement, Python supplies arithmetic (D5) and boundary precision (D4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startSec", "endSec", "subScores", "hook", "reason"],
+      "properties": {
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "subScores": { "$ref": "#/definitions/SubScores" },
+        "hook": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+
+    "LlmClipResponse": {
+      "title": "LlmClipResponse",
+      "description": "The schema-constrained response from the local model for one transcript window. Passed to Ollama as a format constraint so malformed output is rejected by the runtime rather than parsed defensively here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clips"],
+      "properties": {
+        "clips": { "type": "array", "items": { "$ref": "#/definitions/LlmClipProposal" } }
+      }
+    }
+  }
+}

@@ -107,7 +107,8 @@ transcribes.
 | **No Docker** | Only needed for the public release phase | Defer to Phase 11 |
 
 Present and usable already: Node 24.16, npm 11.13, Angular CLI, Firebase CLI 15.25.1, Ollama 0.33.3,
-git 2.54, Blaze billing enabled.
+git 2.54. (Billing tier on `bytepic-clipforge` is still unverified — see
+[ADR-0004](adr/0004-dedicated-firebase-project.md).)
 
 ---
 
@@ -301,46 +302,31 @@ stays coherent and one that drifts.
 
 **Explicitly out of scope.** Any worker logic, any UI beyond a login stub, any media.
 
-> #### ⚠️ Open item — Firebase project and billing tier
+> #### ✅ Resolved — Firebase project and billing tier
 >
-> **Constraint (recorded 2026-09-07).** The intended `ClipForge` Firebase project is blocked on upgrade
-> issues. Until it is resolved, use the existing **`miltongore`** project as a temporary gateway. Every
-> project id must therefore be config, never hardcoded — see the mitigation below.
+> **Decided 2026-09-08. See [ADR-0004](adr/0004-dedicated-firebase-project.md).**
 >
-> **Can we just stay on the free Spark plan?** Partly, and further than you would expect. Assessment
-> to be confirmed when Phase 1 actually starts:
+> ClipForge runs in its own Firebase project, **`bytepic-clipforge`**. The earlier plan to borrow
+> `miltongore` was dropped once that project turned out to host a live site — and once three facts
+> made in-project namespacing both weaker and more expensive than a separate project: Firestore IAM
+> is database-level rather than per-collection and the Admin SDK bypasses rules entirely; the
+> no-cost tier applies to only one database per project; and a shared database shares the daily
+> read quota, not merely the namespace.
 >
-> | Phase 1 need | Spark (free)? | Notes |
-> | --- | --- | --- |
-> | **Emulator Suite** | ✅ Fully free | Runs locally against a fake project id. **No billing, no real project, not even an internet connection.** Exit criteria 1–4 of Phase 1 are all emulator-backed |
-> | Firebase Auth | ✅ Free tier | Google provider is within the no-cost tier |
-> | Firestore | ✅ Free tier | 1 GiB stored, 50K reads / 20K writes per day. Ample for this workload if progress writes are throttled (§7) |
-> | FCM | ✅ Free | No billing requirement |
-> | **Cloud Functions** | ❌ **Blaze required** | Hard blocker, no workaround |
-> | **Cloud Storage** | ⚠️ **Verify** | Since roughly Oct 2024 a *new* default bucket requires Blaze. Projects with a pre-existing bucket may still use the no-cost tier. Must be checked against the actual `miltongore` project rather than assumed |
+> Two consequences for the work below. The data model in §3.2 stands unchanged, because generic
+> top-level collection names are safe in a project we own outright. And no uid allowlist is needed,
+> because a separate project means a separate Auth user pool.
 >
-> **The useful consequence:** the only Spark-blocked items are Cloud Functions and possibly the Storage
-> bucket, and *neither is needed to complete Phase 1's exit criteria*, which are all emulator-backed.
-> The project/billing decision can be deferred until the end of Phase 1 without blocking any work.
->
-> **Design mitigations to adopt now, so the decision stays cheap either way:**
->
-> 1. **The lease reaper does not have to be a Cloud Function.** For a single-worker deployment the
->    worker can reclaim its own expired leases on a periodic task. Build the reaper as a *pure function*
->    over job documents (Phase 2), then bind it to either a worker task or a Cloud Function. This
->    removes the only hard Spark blocker in the v0.1 path, and is better design regardless.
-> 2. **Clip hosting is a genuine fork if Storage needs Blaze.** Options, in preference order: Firebase
->    Storage → a plain GCS bucket → an S3-compatible bucket (R2) behind the same `BlobStore` interface.
->    Keep uploads behind a `BlobStore` port from day one so this is a one-adapter change.
-> 3. **Never hardcode a project id.** Project id, bucket and emulator hosts come from `.env` only, so
->    moving from `miltongore` to `ClipForge` is a config edit and nothing else. **This applies from
->    Phase 0 onward** and is why `.env.example` carries these keys before any Firebase work begins.
->
-> **To discuss when Phase 1 starts:** whether to run on `miltongore` + Blaze, or hold on Spark and defer
-> Storage. Do not resolve it earlier — the emulator makes it a non-blocking decision.
+> **Still unverified:** whether `bytepic-clipforge` is on Blaze. This blocks nothing in Phase 1 or
+> Phase 2 — every exit criterion in both is emulator-backed — but it decides whether the reaper's
+> Cloud Function binding is deployable and whether clips land in Firebase Storage or behind the
+> `BlobStore` port's alternative. The Firestore location must also be chosen deliberately when the
+> database is first created: it is permanent.
 
 **Deliverables.** `packages/contracts` with generated artefacts; deployed rules; emulator config; the
-reaper Function; ADR-0002 (lease-based job claiming) and ADR-0003 (single-source contracts).
+reaper; [ADR-0004](adr/0004-dedicated-firebase-project.md) (dedicated Firebase project),
+[ADR-0005](adr/0005-single-source-contracts.md) (single-source contracts) and
+[ADR-0006](adr/0006-lease-based-job-claiming.md) (lease-based job claiming).
 
 **Exit criteria**
 
