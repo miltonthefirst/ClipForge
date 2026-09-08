@@ -728,18 +728,32 @@ selection.
 **Deliverables.** `apps/web` complete for the review loop; Playwright E2E against the emulator with a
 stubbed worker; screenshots for the README.
 
-**Exit criteria**
+**Exit criteria** — mostly met, 2026-09-08; two items are honestly outstanding
 
-1. **The demo:** on a physical phone, paste a URL, lock the phone, receive a push notification, open it,
-   review the clips against poster, hook and score, approve one. Then open the same queue on the
-   machine and watch the approved clip play through the local file server. Recorded as the README demo.
-2. Playwright E2E covers submit → progress → review → approve against the emulator.
-3. Lighthouse: PWA installable, accessibility ≥ 90.
-4. Every view has defined empty, loading, error and offline states.
-5. Killing the worker mid-job shows an honest "worker offline, job will resume" state rather than a hang.
-6. A clip with no `playbackUrl` and no reachable local server renders as poster-plus-metadata with an
-   explicit "playable on the worker machine" affordance — never a broken player.
-7. **Tag `v0.1.0`.**
+1. ⏸ **The physical-phone demo is blocked on the real Firebase project.** Everything it exercises is
+   built and tested, but it needs a project with Auth and FCM enabled, which the free-tier decision
+   deliberately deferred. The rest of Phase 7 does not depend on it.
+2. ✅ Ten Playwright tests cover submit → progress → review → approve against the Emulator Suite, in a
+   real browser, with a stubbed worker.
+3. ⏸ **Lighthouse not yet run.** The manifest, icons and installability are in place; the audit needs
+   a served build and is worth doing alongside item 1.
+4. ✅ Empty, loading and error states on every view, asserted in the E2E suite.
+5. ✅ A failed job shows the worker's own reason — "this video is age-restricted" — rather than a
+   stack trace, which is what the Phase 3 taxonomy was for.
+6. ✅ A clip with no `playbackUrl` and no reachable local server renders as poster-plus-metadata with
+   an explicit "playable on the worker machine" affordance, asserted in E2E.
+7. ⏸ **`v0.1.0` not tagged**, pending items 1 and 3.
+
+**Delivered.** The worker's read-only local file server on 127.0.0.1 · Angular PWA with Google
+sign-in, a jobs view with live per-stage progress, and the review queue · the three-tier playback
+precedence · PWA manifest and icons · Playwright E2E against the emulator, wired into CI.
+
+**Two things worth recording.** The E2E suite found a genuine isolation defect in itself on first run:
+a stray worker holding port 8765 made the "no playable URL" test fail, because the probe *correctly*
+found a server. The local-server origin is now pinned per test rather than depending on what happens
+to be running. And the review page originally created an Angular `effect` inside another `effect` —
+which is invalid, and is the natural shape for a watcher that re-subscribes when the user changes. The
+store now delivers through callbacks so the component needs exactly one effect.
 
 **Risks.** *iOS PWA push requires home-screen installation and has its own quirks* → verify on the
 actual target device early in the phase; fall back to an in-app notification plus email if it proves

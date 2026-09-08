@@ -1,4 +1,4 @@
-import { Injectable, inject, signal, type Signal } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import type { Candidate, Clip, ClipPreview, Job, ReviewState } from '@clipforge/contracts';
 import {
   collection,
@@ -29,36 +29,39 @@ import { FirebaseService } from './firebase';
 export class ClipForgeStore {
   private readonly firebase = inject(FirebaseService);
 
-  /** Live jobs for one user, newest first. */
+  /**
+   * Live jobs for one user, newest first.
+   *
+   * Delivers through a callback rather than returning a signal. Returning one
+   * would push the caller into creating an `effect` to read it — and an effect
+   * created inside another effect is not valid in Angular, which is exactly the
+   * shape a re-subscribing watcher wants to take.
+   */
   watchJobs(
     uid: string,
+    onData: (jobs: Job[]) => void,
     onError?: (error: Error) => void,
-  ): {
-    jobs: Signal<Job[] | null>;
-    stop: Unsubscribe;
-  } {
-    const jobs = signal<Job[] | null>(null);
-    const stop = onSnapshot(
+  ): Unsubscribe {
+    return onSnapshot(
       query(
         collection(this.firebase.db, 'jobs'),
         where('uid', '==', uid),
         orderBy('createdAt', 'desc'),
         limit(25),
       ),
-      (snapshot) => jobs.set(snapshot.docs.map((d) => d.data() as Job)),
+      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Job)),
       (error) => onError?.(error),
     );
-    return { jobs, stop };
   }
 
   /** The review queue: this user's clips awaiting a decision. */
   watchReviewQueue(
     uid: string,
+    onData: (clips: Clip[]) => void,
     review: ReviewState = 'PENDING',
     onError?: (error: Error) => void,
-  ): { clips: Signal<Clip[] | null>; stop: Unsubscribe } {
-    const clips = signal<Clip[] | null>(null);
-    const stop = onSnapshot(
+  ): Unsubscribe {
+    return onSnapshot(
       query(
         collection(this.firebase.db, 'clips'),
         where('uid', '==', uid),
@@ -66,10 +69,9 @@ export class ClipForgeStore {
         orderBy('createdAt', 'desc'),
         limit(50),
       ),
-      (snapshot) => clips.set(snapshot.docs.map((d) => d.data() as Clip)),
+      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Clip)),
       (error) => onError?.(error),
     );
-    return { clips, stop };
   }
 
   /**

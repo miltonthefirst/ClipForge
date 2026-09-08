@@ -35,10 +35,13 @@ export class JobsPage implements OnDestroy {
         this.jobs.set(null);
         return;
       }
-      const watch = this.store.watchJobs(uid, (err) => this.error.set(err.message));
-      this.stop = watch.stop;
-      onCleanup(() => watch.stop());
-      effect(() => this.jobs.set(watch.jobs()));
+      const stop = this.store.watchJobs(
+        uid,
+        (jobs) => this.jobs.set(jobs),
+        (err) => this.error.set(err.message),
+      );
+      this.stop = stop;
+      onCleanup(stop);
     });
   }
 

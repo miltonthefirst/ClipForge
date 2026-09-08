@@ -65,16 +65,14 @@ export class ReviewPage implements OnDestroy {
         this.cards.set(null);
         return;
       }
-      const watch = this.store.watchReviewQueue(uid, 'PENDING', (err) =>
-        this.error.set(err.message),
+      const stop = this.store.watchReviewQueue(
+        uid,
+        (clips) => void this.buildCards(clips),
+        'PENDING',
+        (err) => this.error.set(err.message),
       );
-      this.stop = watch.stop;
-      onCleanup(() => watch.stop());
-
-      effect(() => {
-        const clips = watch.clips();
-        if (clips) void this.buildCards(clips);
-      });
+      this.stop = stop;
+      onCleanup(stop);
     });
   }
 

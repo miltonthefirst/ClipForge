@@ -5,6 +5,7 @@ import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
   type Auth,
@@ -45,7 +46,29 @@ export class FirebaseService {
         this.config.firestoreEmulator.host,
         this.config.firestoreEmulator.port,
       );
+      this.exposeEmulatorSignIn();
     }
+  }
+
+  /**
+   * An emulator-only sign-in hook, for end-to-end tests.
+   *
+   * Driving the real popup would test Google's OAuth flow, which is not ours and
+   * does not run against the emulator anyway; injecting a session into storage
+   * does not work either, because Firebase persists to IndexedDB. So the tests
+   * sign in with a password against the emulator, which needs an entry point.
+   *
+   * Guarded by `useEmulators`, so it is absent whenever the app points at a real
+   * project — the property that makes this acceptable rather than a back door.
+   */
+  private exposeEmulatorSignIn(): void {
+    if (typeof window === 'undefined') return;
+    (
+      window as unknown as {
+        __clipforgeSignIn?: (email: string, password: string) => Promise<unknown>;
+      }
+    ).__clipforgeSignIn = (email, password) =>
+      signInWithEmailAndPassword(this.auth, email, password);
   }
 
   signIn(): Promise<unknown> {

@@ -208,6 +208,67 @@ jobs:
         run: npm run build
 
   # ───────────────────────────────────────────────────────────────────────────
+  # End-to-end: the review loop, in a real browser, against the Emulator Suite.
+  #
+  # Phase 7, exit criterion 2. The worker is stubbed by writing documents
+  # directly rather than run — what this asserts is the PWA's half of the
+  # contract, and a real pipeline would be slow, GPU-dependent and
+  # non-deterministic without proving anything more about the UI.
+  #
+  # Separate from the `web` job because it needs a browser and Java, both of
+  # which are wasted on lint and unit tests.
+  # ───────────────────────────────────────────────────────────────────────────
+  e2e:
+    name: e2e (review loop)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NG_CLI_ANALYTICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # The Firestore and Auth emulators are Java processes.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install
+        run: npm ci --no-fund --no-audit
+
+      # Headless shell only: a full Chrome download is several times the size
+      # and nothing here needs a head.
+      - name: Install browser
+        run: npx playwright install --with-deps chromium --only-shell
+
+      - name: Cache emulator binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}
+
+      - name: Review loop
+        run: >
+          npx firebase-tools emulators:exec
+          --config ../../firebase.json --project demo-clipforge --only auth,firestore
+          "npx playwright test"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: apps/web/test-results/
+          retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────────────────
   # Parse `tools/doctor.ps1` on a real Windows PowerShell host.
   #
   # This is not busywork: Windows PowerShell 5.1 reads .ps1 files as ANSI unless
