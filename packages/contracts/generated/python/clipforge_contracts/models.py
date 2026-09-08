@@ -29,11 +29,12 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     """
-    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline.
+    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days.
     """
 
     ECHO = "ECHO"
     CLIP = "CLIP"
+    PUBLISH = "PUBLISH"
 
 
 class StageStatus(StrEnum):
@@ -147,6 +148,14 @@ class Job(BaseModel):
     submission: str | None = None
     """
     What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected.
+    """
+    clip_id: str | None = Field(None, alias="clipId")
+    """
+    The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+    """
+    not_before: AwareDatetime | None = Field(None, alias="notBefore")
+    """
+    The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first.
     """
     stages: list[Stage] = Field(..., min_length=1)
     """
@@ -381,14 +390,14 @@ class ReviewState(StrEnum):
 
 class RightsBasis(StrEnum):
     """
-    Why the user believes they may publish this. Publishing is gated on an explicit attestation; see docs/PLAN.md 7.
+    Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
     """
 
     OWN_CONTENT = "OWN_CONTENT"
     LICENSED = "LICENSED"
     PERMISSION_GRANTED = "PERMISSION_GRANTED"
-    FAIR_USE_CLAIMED = "FAIR_USE_CLAIMED"
-    UNVERIFIED = "UNVERIFIED"
+    FAIR_USE_ASSERTED = "FAIR_USE_ASSERTED"
+    PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
 
 
 class RightsAttestation(BaseModel):
@@ -502,6 +511,77 @@ class TranscriptRef(BaseModel):
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
+class PublicationState(StrEnum):
+    """
+    Lifecycle of one attempt to publish one clip to one platform. PENDING is written BEFORE the upload begins, which is what makes a retry reconcile against the platform instead of double-posting.
+    """
+
+    PENDING = "PENDING"
+    UPLOADING = "UPLOADING"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class PublishPlatform(StrEnum):
+    """
+    Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.
+    """
+
+    YOUTUBE = "YOUTUBE"
+
+
+class PublishPrivacy(StrEnum):
+    """
+    Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
+    """
+
+    PRIVATE = "private"
+    UNLISTED = "unlisted"
+    PUBLIC = "public"
+
+
+class Publication(BaseModel):
+    """
+    One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    clip_id: str = Field(..., alias="clipId", min_length=1)
+    uid: str = Field(..., min_length=1)
+    platform: PublishPlatform
+    state: PublicationState
+    external_id: str | None = Field(None, alias="externalId")
+    """
+    The platform's id for the uploaded video. Null until the upload completes.
+    """
+    external_url: str | None = Field(None, alias="externalUrl")
+    privacy: PublishPrivacy | None = None
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] | None = []
+    rights: RightsAttestation | None = None
+    """
+    Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
+    """
+    attempts: int | None = Field(0, ge=0)
+    quota_units: int | None = Field(None, alias="quotaUnits", ge=0)
+    """
+    What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure.
+    """
+    error: StageError | None = None
+    publish_at: AwareDatetime | None = Field(None, alias="publishAt")
+    """
+    Scheduled publish time. The worker holds the clip until then.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    published_at: AwareDatetime | None = Field(None, alias="publishedAt")
+
+
 class WorkerStatus(StrEnum):
     ONLINE = "ONLINE"
     BUSY = "BUSY"
@@ -605,5 +685,6 @@ class ClipForgeContracts(BaseModel):
     candidate: Candidate | None = None
     clip: Clip | None = None
     clip_preview: ClipPreview | None = Field(None, alias="clipPreview")
+    publication: Publication | None = None
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")

@@ -9,9 +9,9 @@
  */
 
 /**
- * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline.
+ * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days.
  */
-export type JobType = 'ECHO' | 'CLIP';
+export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH';
 /**
  * Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.
  */
@@ -73,10 +73,22 @@ export type IngestErrorCode =
 export type ClipLocation = 'LOCAL' | 'REMOTE';
 export type ReviewState = 'PENDING' | 'APPROVED' | 'REJECTED';
 /**
- * Why the user believes they may publish this. Publishing is gated on an explicit attestation; see docs/PLAN.md 7.
+ * Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
  */
 export type RightsBasis =
-  'OWN_CONTENT' | 'LICENSED' | 'PERMISSION_GRANTED' | 'FAIR_USE_CLAIMED' | 'UNVERIFIED';
+  'OWN_CONTENT' | 'LICENSED' | 'PERMISSION_GRANTED' | 'FAIR_USE_ASSERTED' | 'PUBLIC_DOMAIN';
+/**
+ * Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.
+ */
+export type PublishPlatform = 'YOUTUBE';
+/**
+ * Lifecycle of one attempt to publish one clip to one platform. PENDING is written BEFORE the upload begins, which is what makes a retry reconcile against the platform instead of double-posting.
+ */
+export type PublicationState = 'PENDING' | 'UPLOADING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED';
+/**
+ * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
+ */
+export type PublishPrivacy = 'private' | 'unlisted' | 'public';
 export type WorkerStatus = 'ONLINE' | 'BUSY' | 'OFFLINE';
 
 /**
@@ -93,6 +105,7 @@ export interface ClipForgeContracts {
   candidate?: Candidate;
   clip?: Clip;
   clipPreview?: ClipPreview;
+  publication?: Publication;
   workerHeartbeat?: WorkerHeartbeat;
   llmClipResponse?: LlmClipResponse;
 }
@@ -115,6 +128,14 @@ export interface Job {
    * What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected.
    */
   submission?: string | null;
+  /**
+   * The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+   */
+  clipId?: string | null;
+  /**
+   * The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first.
+   */
+  notBefore?: string | null;
   /**
    * Ordered. Executed front to back; DONE stages are skipped on retry.
    *
@@ -379,6 +400,41 @@ export interface ClipPreview {
   heightPx: number;
   byteSize?: number | null;
   createdAt: string;
+}
+/**
+ * One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.
+ */
+export interface Publication {
+  id: string;
+  clipId: string;
+  uid: string;
+  platform: PublishPlatform;
+  state: PublicationState;
+  /**
+   * The platform's id for the uploaded video. Null until the upload completes.
+   */
+  externalId?: string | null;
+  externalUrl?: string | null;
+  privacy?: PublishPrivacy | null;
+  title?: string | null;
+  description?: string | null;
+  tags?: string[];
+  /**
+   * Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
+   */
+  rights?: RightsAttestation | null;
+  attempts?: number;
+  /**
+   * What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure.
+   */
+  quotaUnits?: number | null;
+  error?: StageError | null;
+  /**
+   * Scheduled publish time. The worker holds the clip until then.
+   */
+  publishAt?: string | null;
+  createdAt: string;
+  publishedAt?: string | null;
 }
 /**
  * Liveness and capability advertisement at workers/{workerId}.

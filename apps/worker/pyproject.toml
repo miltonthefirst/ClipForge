@@ -116,7 +116,10 @@ ignore = [
 # S607: tests invoke ffmpeg by name. Resolving it via PATH is the project's
 #       documented dependency model — `doctor` verifies it is there — and
 #       hardcoding an absolute path would make the suite machine-specific.
-"tests/**" = ["S101", "SLF001", "S607"]
+# S105/S106: the credentials tests must construct fake tokens by hand. A test
+#       that could not name a refresh token could not assert that it never
+#       reaches Firestore, which is Phase 8 exit criterion 4.
+"tests/**" = ["S101", "SLF001", "S607", "S105", "S106"]
 
 [tool.ruff.format]
 quote-style = "double"

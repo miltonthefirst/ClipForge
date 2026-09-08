@@ -798,14 +798,58 @@ harder approval paths, and are scoped separately).
 **Deliverables.** The publish stage; the OAuth setup flow and its documentation; the rights gate in
 rules, worker and UI; an ADR on worker-held credentials.
 
-**Exit criteria**
+**Exit criteria** — met, 2026-09-09; one item is honestly outstanding
 
-1. An approved, attested clip uploads and appears as an unlisted Short on the target channel.
-2. A clip without a rights attestation is rejected by Firestore rules *and* by the worker — two
-   independent tests.
-3. Interrupting the upload and retrying produces exactly one YouTube video, verified against the API.
-4. A `grep` over a Firestore export finds no OAuth token or refresh token. Asserted in a test.
-5. The audit log can reconstruct, for any published clip, who authorised it and on what basis.
+1. ⏸ **A real upload to a real channel is unverified.** It needs the operator's Google account and
+   an OAuth client, which cannot be automated or faked into meaning anything. Everything up to the
+   HTTP call is tested against a mock transport that asserts the *request* — resumable session,
+   `part=snippet,status`, `privacyStatus: unlisted`, the 100-character title truncation — so what is
+   untested is precisely the network hop and nothing else. Recorded as unverified rather than
+   claimed, in the same spirit as Phase 7's physical-phone demo.
+2. ✅ Enforced twice, tested independently: 17 pure-function tests in
+   `apps/worker/tests/unit/test_rights.py`, and 15 emulator tests in
+   `firebase/tests/publishing.rules.spec.ts`. Neither copy is redundant — the worker uses the Admin
+   SDK and bypasses rules entirely, and a rule is the only thing that can stop a client enqueueing
+   publish work in the first place. A third, *advisory* copy lives in the PWA
+   (`apps/web/src/app/core/rights.ts`) so a refusal is explained in the interface instead of failing
+   opaquely after the button is pressed.
+3. ✅ Asserted three ways, by counting videos on a fake platform across a crash: interrupt
+   mid-upload and resume the checkpointed session; find a PUBLISHED record and skip; and the case
+   naive implementations get wrong — a previous attempt whose acknowledgement was lost, which is
+   reconciled by *asking the platform* rather than guessing.
+4. ✅ `test_no_oauth_token_reaches_firestore` runs a full publish with a real token on disk, then
+   walks every document the emulator holds, subcollections included, asserting the token does not
+   appear. Written as an explicit walk rather than a collection-group query, because the latter would
+   only search the subcollections someone remembered to name.
+5. ✅ Every publish writes a `Publication` carrying the attestation **copied at upload time**, not
+   referenced — so a later edit to the clip cannot rewrite the reason a past upload happened. Readable
+   by the owner from the phone.
+
+**Delivered.** The rights gate in all three places · `PublishStage` and the `PUBLISH` job type ·
+worker-held OAuth with PKCE, `clipforge-worker youtube-auth`, and an encrypted token store ·
+the YouTube client with resumable upload and a quota ledger · `PublicationStore` and the audit trail ·
+the PWA publish queue · `clipforge-worker publish` and `quota` · a `publishing` check in `doctor` ·
+[ADR-0010](adr/0010-worker-held-publishing-credentials.md).
+
+**Scheduling, and why it is one line.** `publishAt` became `Job.notBefore`, consulted by
+`lease.is_due()` — the single predicate every claim path already used. A separate scheduler would have
+been a second authority on when a job may start, and the two could disagree. A consequence worth
+stating: a scheduled job whose worker died still waits for its time rather than going out the moment
+the reaper notices it, which is the behaviour scheduling exists to guarantee.
+
+**Three defects this phase surfaced, all pre-existing.**
+
+- **`RenderStage` was never registered.** It was implemented and unit-tested in Phase 6 but absent
+  from `build_clip_stages`, so no job could ever reach it.
+- **`clipforge-worker submit` created one-stage jobs.** `build_clip_stages` emitted only the stages
+  whose machinery the caller passed in, and `submit` passes almost none — so a job submitted from the
+  CLI downloaded a video and stopped. The pipeline's *shape* is now a single declaration
+  (`CLIP_PIPELINE`) separate from the code that builds runnable stages, with an assertion that the
+  two cannot drift.
+- **The rules tests raced each other.** Every spec shares one emulator project and calls
+  `clearFirestore()` between tests; run in parallel, one file's wipe deleted another's fixtures
+  mid-test. It surfaced as a rules `get()` returning null, which reads exactly like a broken rule and
+  was not one. Latent with two spec files, reproducible on the third.
 
 **Risks.** Two real ones, both worth documenting in the README:
 

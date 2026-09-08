@@ -57,6 +57,7 @@ __all__ = [
     "complete",
     "fail_stage",
     "is_claimable",
+    "is_due",
     "is_lease_expired",
     "reap",
     "release",
@@ -137,13 +138,31 @@ def is_lease_expired(job: Job, now: datetime) -> bool:
     return job.lease_expires_at <= now
 
 
+def is_due(job: Job, now: datetime) -> bool:
+    """True when a job's scheduled start time has arrived.
+
+    ``notBefore`` is how a publish-at time is honoured (docs/PLAN.md Phase 8).
+    Putting it here rather than in a separate scheduler means every path that
+    can start a job — a fresh claim, a reclaim after a crash — consults the same
+    predicate, so there is no second scheduler to disagree with the first.
+    """
+    return job.not_before is None or job.not_before <= now
+
+
 def is_claimable(job: Job, now: datetime) -> bool:
     """True when a worker may take this job.
 
     Either it is waiting, or its previous owner stopped renewing the lease. The
     second case is what makes a worker crash recoverable without operator
     intervention.
+
+    A job scheduled for later is not claimable yet, however it got here. Note
+    that this also holds for a reclaim: a scheduled job whose worker died stays
+    unclaimable until its time, which is correct — the schedule is a property of
+    the job, not of the attempt.
     """
+    if not is_due(job, now):
+        return False
     if job.status is JobStatus.QUEUED:
         return True
     return is_lease_expired(job, now)

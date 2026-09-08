@@ -33,6 +33,8 @@ from clipforge_contracts import (
     ClipPreview,
     Job,
     JobStatus,
+    Publication,
+    PublicationState,
     Source,
     SourceProvider,
     TranscriptRef,
@@ -52,6 +54,7 @@ SOURCES = "sources"
 CANDIDATES = "candidates"
 CLIPS = "clips"
 PREVIEW = "preview"
+PUBLICATIONS = "publications"
 EVENTS = "events"
 
 
@@ -74,7 +77,14 @@ def firestore_client(settings: Settings) -> firestore.Client:
 
 
 def _to_document(
-    model: Job | WorkerHeartbeat | Source | TranscriptRef | Candidate | Clip | ClipPreview,
+    model: Job
+    | WorkerHeartbeat
+    | Source
+    | TranscriptRef
+    | Candidate
+    | Clip
+    | ClipPreview
+    | Publication,
 ) -> dict[str, Any]:
     """Model to Firestore document.
 
@@ -98,6 +108,24 @@ def _unwrap_enums(value: Any) -> Any:
     if isinstance(value, list):
         return [_unwrap_enums(v) for v in value]
     return value
+
+
+def _is_contention(exc: BaseException) -> bool:
+    """Whether a failed transaction lost a race rather than hit a real fault.
+
+    Two shapes mean the same thing. ``Aborted`` is the direct one. The other is
+    subtler and is what actually shows up under load: when the client library
+    exhausts its own retries it wraps the last ``Aborted`` in a plain
+    ``ValueError`` — "Failed to commit transaction in 5 attempts." — so a handler
+    that catches only ``Aborted`` lets a lost race escape as a crash. Eight
+    workers racing one document reproduces it.
+
+    Matched on ``__cause__`` rather than on the message, so it neither depends on
+    the library's wording nor swallows an unrelated ``ValueError``.
+    """
+    if isinstance(exc, gcloud_exceptions.Aborted):
+        return True
+    return isinstance(exc, ValueError) and isinstance(exc.__cause__, gcloud_exceptions.Aborted)
 
 
 def _to_job(data: dict[str, Any]) -> Job:
@@ -130,13 +158,23 @@ class JobStore:
             return None
         return _to_job(snapshot.to_dict() or {})
 
-    def queued(self, limit: int = 10) -> list[Job]:
+    def queued(self, limit: int = 25) -> list[Job]:
         """The oldest waiting jobs, FIFO.
 
         Deliberately narrow: it selects on status and orders by creation, so the
         result set is bounded. An unfiltered listen over `jobs` would bill a read
         per document on every reconnect — the single easiest way to burn the
         free daily quota.
+
+        Scheduled jobs (``notBefore`` in the future) are returned here and
+        skipped by the caller rather than excluded by the query. Excluding them
+        in Firestore would mean a range filter on ``notBefore``, which would have
+        to be the first ordering field — and that would silently replace FIFO
+        with schedule order for every job. The window is widened instead, and the
+        honest limit is that more than ``limit`` future-dated jobs queued ahead
+        of a ready one would delay it until their time comes. At this project's
+        scale — YouTube's quota allows about six publishes a day — that is not a
+        queue depth this can reach.
         """
         query = (
             self._db.collection(JOBS)
@@ -233,7 +271,9 @@ class JobStore:
 
         try:
             return _claim(self._db.transaction())  # type: ignore[no-any-return]
-        except gcloud_exceptions.Aborted:
+        except (gcloud_exceptions.Aborted, ValueError) as exc:
+            if not _is_contention(exc):
+                raise
             # Firestore exhausted its retries under heavy contention. Another
             # worker won; there is nothing to report.
             return None
@@ -251,6 +291,11 @@ class JobStore:
         now = now or datetime.now(UTC)
 
         for job in self.queued():
+            if not lease.is_due(job, now):
+                # A scheduled publish that is not due yet. Skipped before
+                # opening a transaction: `try_claim` would reject it anyway, and
+                # a write attempt per poll per scheduled job is pure cost.
+                continue
             claimed = self.try_claim(job.id, now=now)
             if claimed is not None:
                 return claimed
@@ -287,7 +332,9 @@ class JobStore:
 
         try:
             return _renew(self._db.transaction())  # type: ignore[no-any-return]
-        except gcloud_exceptions.Aborted:
+        except (gcloud_exceptions.Aborted, ValueError) as exc:
+            if not _is_contention(exc):
+                raise
             return None
 
     def reap(self, *, now: datetime | None = None) -> list[Job]:
@@ -326,7 +373,9 @@ class JobStore:
 
             try:
                 result = _reap(self._db.transaction())
-            except gcloud_exceptions.Aborted:
+            except (gcloud_exceptions.Aborted, ValueError) as exc:
+                if not _is_contention(exc):
+                    raise
                 continue
             if result is not None:
                 reaped.append(result)
@@ -483,6 +532,64 @@ class ClipStore:
         if preview is not None:
             batch.set(clip_ref.collection(PREVIEW).document("poster"), _to_document(preview))
         batch.commit()
+
+
+class PublicationStore:
+    """Publish attempts at ``clips/{clipId}/publications/{pubId}``.
+
+    This collection is the audit log, which is why it is a subcollection of the
+    clip rather than a top-level one: "what happened to this clip?" is the
+    question it exists to answer, and a query is not needed to answer it.
+
+    Nothing here ever holds a credential. The document records *what was
+    published, by whose attestation, and when* — the token that performed the
+    upload stays in a file on the worker (D7, and Phase 8 exit criterion 4).
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def _collection(self, clip_id: str) -> Any:
+        return self._db.collection(CLIPS).document(clip_id).collection(PUBLICATIONS)
+
+    def get(self, clip_id: str, publication_id: str) -> Publication | None:
+        snapshot = self._collection(clip_id).document(publication_id).get()
+        if not snapshot.exists:
+            return None
+        return Publication.model_validate(snapshot.to_dict() or {})
+
+    def for_clip(self, clip_id: str) -> list[Publication]:
+        return [
+            Publication.model_validate(doc.to_dict() or {})
+            for doc in self._collection(clip_id).stream()
+        ]
+
+    def save(self, publication: Publication) -> None:
+        self._collection(publication.clip_id).document(publication.id).set(
+            _to_document(publication)
+        )
+
+    def live_for_clip(self, clip_id: str, platform: str) -> Publication | None:
+        """An attempt on this platform that is not finished and not abandoned.
+
+        This is the idempotency lookup. A retry finds the PENDING or UPLOADING
+        record its predecessor wrote and continues *that* attempt, which is the
+        whole reason the record is written before the upload starts. Without it,
+        a crash between "upload succeeded" and "record the video id" would be
+        indistinguishable from "upload never happened" — and the recovery would
+        be a second video on the channel.
+        """
+        for publication in self.for_clip(clip_id):
+            if publication.platform.value != platform:
+                continue
+            if publication.state in (
+                PublicationState.PENDING,
+                PublicationState.UPLOADING,
+                PublicationState.PUBLISHED,
+            ):
+                return publication
+        return None
 
 
 class WorkerStore:

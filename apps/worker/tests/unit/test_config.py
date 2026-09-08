@@ -7,6 +7,8 @@ the PWA it is healthy.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from clipforge.config import Settings
 from pydantic import ValidationError
@@ -99,3 +101,47 @@ def test_the_gpu_lane_cannot_be_widened() -> None:
     reason the architecture looks the way it does (docs/PLAN.md 2.1)."""
     with pytest.raises(ValidationError):
         Settings(gpu_lane_depth=2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Publishing
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_publishing_is_off_by_default() -> None:
+    """The default is the point, not caution. Nothing should reach a public
+    platform because a config file was left at its factory setting."""
+    assert Settings().publishing_enabled is False
+
+
+@pytest.mark.unit
+def test_the_default_privacy_is_unlisted() -> None:
+    """Publishing to the world by accident is not recoverable the way an
+    unlisted upload is — the link may already have been scraped."""
+    assert Settings().youtube_default_privacy == "unlisted"
+
+
+@pytest.mark.unit
+def test_an_invented_privacy_value_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(youtube_default_privacy="everyone")
+
+
+@pytest.mark.unit
+def test_publishing_enabled_without_client_secrets_fails_at_startup() -> None:
+    """Otherwise the failure lands after a human approved a clip and expected
+    it to go out."""
+    with pytest.raises(ValidationError, match="CLIPFORGE_YOUTUBE_CLIENT_SECRETS"):
+        # `Path("")` normalises to `Path(".")`, which is what an unset env var
+        # actually produces — and what the truthiness check used to let through.
+        Settings(publishing_enabled=True, youtube_client_secrets=Path())
+
+
+@pytest.mark.unit
+def test_a_configured_client_secrets_path_satisfies_the_check() -> None:
+    """The path need not exist yet — `doctor` checks that. What the validator
+    catches is the configuration that names nothing at all."""
+    assert Settings(
+        publishing_enabled=True, youtube_client_secrets=Path("./.clipforge/client.json")
+    ).publishing_enabled

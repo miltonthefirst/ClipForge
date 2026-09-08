@@ -46,6 +46,7 @@ def run(
         CandidateStore,
         ClipStore,
         JobStore,
+        PublicationStore,
         SourceStore,
         WorkerStore,
         firestore_client,
@@ -72,6 +73,7 @@ def run(
             archive=TranscriptArchive(workspace.transcripts_dir),
             candidates=CandidateStore(client, settings),
             clips=ClipStore(client, settings),
+            publications=PublicationStore(client, settings),
             blobs=build_blob_store(settings),
         ),
     )
@@ -121,26 +123,19 @@ def submit(
     With a submission, this is a real CLIP job. Without one it is an ECHO job —
     three no-op stages that exercise the scheduler without touching any media.
     """
-    from clipforge.media.workspace import Workspace
     from clipforge.stages.echo import new_echo_job
-    from clipforge.stages.pipeline import build_clip_stages, new_clip_job
-    from clipforge.store.firestore import JobStore, SourceStore, firestore_client
+    from clipforge.stages.pipeline import new_clip_job
+    from clipforge.store.firestore import JobStore, firestore_client
 
     settings = get_settings()
     configure_logging(level=settings.log_level, fmt=settings.log_format)
     client = firestore_client(settings)
 
     if submission:
-        job = new_clip_job(
-            uid=uid,
-            submission=submission,
-            job_id=job_id or None,
-            stages=build_clip_stages(
-                settings=settings,
-                sources=SourceStore(client, settings),
-                workspace=Workspace(settings.workspace_dir, max_gb=settings.workspace_max_gb),
-            ),
-        )
+        # The full pipeline shape, from CLIP_PIPELINE. Building it from whichever
+        # stage implementations happened to be constructible here is what used to
+        # produce jobs that downloaded a video and then stopped.
+        job = new_clip_job(uid=uid, submission=submission, job_id=job_id or None)
     else:
         job = new_echo_job(uid=uid, job_id=job_id or None)
 
@@ -216,6 +211,134 @@ def gpu() -> None:
     )
     for process in snapshot.processes:
         typer.echo(f"  holding: {process.describe()}")
+
+
+@app.command(name="youtube-auth")
+def youtube_auth(
+    force: bool = typer.Option(
+        default=False, help="Re-authorise even if a token is already stored."
+    ),
+) -> None:
+    """Authorise ClipForge to upload to your YouTube channel.
+
+    Run once, then again whenever the refresh token expires. While the OAuth
+    consent screen is in "Testing" mode Google expires refresh tokens after
+    **7 days**, and the YouTube upload scope is *sensitive*, so leaving Testing
+    needs Google verification. Re-running this is the supported path until then.
+    """
+    import secrets
+    import webbrowser
+
+    from clipforge.publish.credentials import TokenStore
+    from clipforge.publish.oauth import authorization_url, exchange_code, listen_for_redirect
+    from clipforge.publish.youtube import load_client_secrets
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
+    store = TokenStore(settings.youtube_token_store)
+    if store.exists() and not force:
+        typer.echo(f"already authorised ({store.path}). Re-run with --force to replace it.")
+        raise typer.Exit(code=0)
+
+    client_id, client_secret = load_client_secrets(settings.youtube_client_secrets)
+    redirect_uri = f"http://127.0.0.1:{settings.youtube_auth_port}/"
+    state = secrets.token_urlsafe(24)
+    url, verifier = authorization_url(client_id=client_id, redirect_uri=redirect_uri, state=state)
+
+    typer.echo("Opening your browser to authorise ClipForge.")
+    typer.echo("If it does not open, visit this URL yourself:")
+    typer.echo(f"\n  {url}\n")
+    webbrowser.open(url)
+
+    result = listen_for_redirect(settings.youtube_auth_port)
+    if not secrets.compare_digest(result.state, state):
+        # A mismatched state means the redirect did not come from the request we
+        # made. Refusing is the entire point of sending one.
+        typer.echo("the redirect did not match this request; nothing was stored", err=True)
+        raise typer.Exit(code=1)
+
+    tokens = exchange_code(
+        code=result.code,
+        verifier=verifier,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+    )
+    store.save(tokens)
+
+    typer.echo(f"authorised; token stored at {store.path}")
+    typer.echo("This file is encrypted to this machine and this user, and is never")
+    typer.echo("written to Firestore. Do not copy it into the repository or a backup.")
+
+
+@app.command()
+def publish(
+    clip_id: str = typer.Argument(..., help="The approved clip to publish."),
+    uid: str = typer.Option("local", help="Owning user id."),
+    at: str = typer.Option("", help="ISO-8601 time to publish at; immediate when omitted."),
+) -> None:
+    """Queue an approved, attested clip for publishing.
+
+    This only enqueues. The rights gate is checked by the worker when the job
+    runs, not here — a check in the CLI would be advisory, since the worker is
+    what actually holds the credentials and performs the upload.
+    """
+    from datetime import datetime as _datetime
+
+    from clipforge.stages.pipeline import new_publish_job
+    from clipforge.store.firestore import ClipStore, JobStore, firestore_client
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+    client = firestore_client(settings)
+
+    clip = ClipStore(client, settings).get(clip_id)
+    if clip is None:
+        typer.echo(f"no such clip: {clip_id}", err=True)
+        raise typer.Exit(code=1)
+
+    # Reported early as a courtesy, so a refusal is visible now rather than in a
+    # failed job later. The worker checks again regardless.
+    from clipforge.publish.rights import check_publishable
+
+    refusal = check_publishable(clip, publishing_enabled=settings.publishing_enabled)
+    if refusal is not None:
+        typer.echo(f"{refusal.code}: {refusal.message}", err=True)
+        raise typer.Exit(code=1)
+
+    publish_at = _datetime.fromisoformat(at) if at else None
+    job = new_publish_job(uid=uid, clip_id=clip_id, publish_at=publish_at)
+    JobStore(client, settings).create(job)
+    typer.echo(job.id)
+
+
+@app.command()
+def quota() -> None:
+    """Report today's YouTube quota and how many uploads it still allows.
+
+    The API offers no endpoint for remaining quota, so this reports what this
+    worker has spent. It is the answer to "can I publish today?" — which
+    otherwise only becomes clear when the seventh upload fails.
+    """
+    from clipforge.publish.credentials import TokenStore
+    from clipforge.publish.youtube import (
+        DAILY_QUOTA_UNITS,
+        UPLOAD_QUOTA_UNITS,
+        QuotaLedger,
+    )
+
+    settings = get_settings()
+    ledger = QuotaLedger.today()
+
+    typer.echo("publishing " + ("enabled" if settings.publishing_enabled else "DISABLED"))
+    if TokenStore(settings.youtube_token_store).exists():
+        typer.echo("  credentials present")
+    else:
+        typer.echo("  credentials missing. Run: clipforge-worker youtube-auth")
+    typer.echo(f"  quota {ledger.used_units} of {DAILY_QUOTA_UNITS} units used today")
+    typer.echo(f"  an upload costs {UPLOAD_QUOTA_UNITS} units")
+    typer.echo(f"  about {ledger.uploads_remaining} uploads remaining today")
 
 
 if __name__ == "__main__":

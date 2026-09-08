@@ -96,6 +96,29 @@ class Settings(BaseSettings):
     video_encoder: str = "h264_nvenc"
     loudness_target_lufs: float = -14.0
 
+    # ── Publishing ───────────────────────────────────────────────────────────
+    # Off by default, and that default is the point rather than caution. Nothing
+    # should reach a public platform because a config file was left at its
+    # factory setting; turning this on is meant to be a decision someone made
+    # after reading the rights guidance. See docs/PLAN.md Phase 8.
+    publishing_enabled: bool = False
+
+    # The OAuth client downloaded from the Google Cloud console, and where the
+    # resulting refresh token is kept. Both are paths on this machine: the token
+    # is never written to Firestore (D7).
+    youtube_client_secrets: Path = Path("./.clipforge/youtube-client.json")
+    youtube_token_store: Path = Path("./.clipforge/youtube-token.enc")
+
+    # Unlisted, because publishing something to the world by accident is not
+    # recoverable the way an unlisted upload is — the link may already have been
+    # scraped by the time anyone notices.
+    youtube_default_privacy: Literal["private", "unlisted", "public"] = "unlisted"
+
+    # The port the local OAuth redirect listens on during `youtube-auth`. It must
+    # match a redirect URI registered on the OAuth client, which is why it is
+    # configurable rather than picked at random.
+    youtube_auth_port: int = Field(default=8766, ge=1024, le=65535)
+
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "console"
@@ -138,6 +161,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CLIPFORGE_BLOB_STORE=firebase requires CLIPFORGE_FIREBASE_STORAGE_BUCKET. "
                 "On the Spark free tier there is no bucket: use CLIPFORGE_BLOB_STORE=local."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_credentials_when_publishing(self) -> Settings:
+        """Publishing enabled with no OAuth client is a configuration that can
+        only fail, and it would fail after a human had already approved a clip
+        and expected it to go out. Caught at startup instead."""
+        # `Path("")` normalises to `Path(".")`, so an unset env var arrives here
+        # as the current directory rather than as something falsy. Checked by
+        # value, not truthiness — the truthy version silently passed.
+        if self.publishing_enabled and str(self.youtube_client_secrets) in ("", "."):
+            raise ValueError(
+                "CLIPFORGE_PUBLISHING_ENABLED=true requires "
+                "CLIPFORGE_YOUTUBE_CLIENT_SECRETS to point at a Google OAuth client file"
             )
         return self
 

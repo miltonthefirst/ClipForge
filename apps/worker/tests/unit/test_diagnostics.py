@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import wave
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from clipforge import diagnostics
+from clipforge.config import Settings
 from clipforge.diagnostics import (
     CheckResult,
     _write_spoken_tone_wav,
@@ -52,7 +55,7 @@ def test_run_all_can_skip_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     subprocess (docs/PLAN.md §6).
     """
     stub = CheckResult(name="stub", ok=True, detail="")
-    probes = ("probe_ffmpeg", "probe_nvenc", "probe_ollama", "probe_gpu")
+    probes = ("probe_ffmpeg", "probe_nvenc", "probe_ollama", "probe_gpu", "probe_publishing")
     for probe in probes:
         monkeypatch.setattr(diagnostics, probe, lambda *_, **__: stub)
 
@@ -101,3 +104,109 @@ def test_capability_match_is_not_fooled_by_substrings() -> None:
 @pytest.mark.parametrize("absent", ["nvenc", "libx26", "silence", "loud", "subtitle"])
 def test_partial_names_do_not_match(absent: str) -> None:
     assert not has_capability(_FILTERS, absent)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8: the publishing readiness check.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def publishing_settings(**overrides: object) -> Settings:
+    return Settings(use_emulators=True, **overrides)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_publishing_disabled_is_a_pass_not_a_failure() -> None:
+    """Off is the default and the intended state for most machines.
+
+    Reporting it red would train the reader to ignore a red line, which is the
+    one thing a diagnostic must never do.
+    """
+    result = diagnostics.probe_publishing(publishing_settings(publishing_enabled=False))
+    assert result.ok is True
+    assert "disabled" in result.detail
+
+
+@pytest.mark.unit
+def test_publishing_enabled_without_client_secrets_fails_loudly(tmp_path: Path) -> None:
+    """The broken middle: switched on, and it cannot possibly work. Left
+    undetected this surfaces as a failed job hours after someone approved a
+    clip and expected it to go out."""
+    result = diagnostics.probe_publishing(
+        publishing_settings(
+            publishing_enabled=True,
+            youtube_client_secrets=tmp_path / "absent.json",
+            youtube_token_store=tmp_path / "token.enc",
+        )
+    )
+    assert result.ok is False
+    assert "CLIPFORGE_YOUTUBE_CLIENT_SECRETS" in result.detail
+
+
+@pytest.mark.unit
+def test_publishing_enabled_but_unauthorised_names_the_command(tmp_path: Path) -> None:
+    secrets = tmp_path / "client.json"
+    secrets.write_text('{"installed": {"client_id": "c", "client_secret": "s"}}')
+
+    result = diagnostics.probe_publishing(
+        publishing_settings(
+            publishing_enabled=True,
+            youtube_client_secrets=secrets,
+            youtube_token_store=tmp_path / "token.enc",
+        )
+    )
+    assert result.ok is False
+    assert "youtube-auth" in result.detail
+
+
+@pytest.mark.unit
+def test_a_token_older_than_seven_days_is_reported_before_it_fails(tmp_path: Path) -> None:
+    """The documented risk, surfaced by `doctor` rather than by a failed upload.
+
+    Refresh tokens expire after 7 days while the consent screen is in Testing
+    mode, so the token's age is the number that predicts the next failure.
+    """
+    from clipforge.publish.credentials import OAuthTokens, TokenStore
+
+    secrets = tmp_path / "client.json"
+    secrets.write_text('{"installed": {"client_id": "c", "client_secret": "s"}}')
+    store = TokenStore(tmp_path / "token.enc")
+    store.save(
+        OAuthTokens(
+            refresh_token="1//old",
+            obtained_at=datetime.now(UTC) - timedelta(days=9),
+        )
+    )
+
+    result = diagnostics.probe_publishing(
+        publishing_settings(
+            publishing_enabled=True,
+            youtube_client_secrets=secrets,
+            youtube_token_store=store.path,
+        )
+    )
+    assert result.ok is False
+    assert "7 days" in result.detail
+    assert "youtube-auth" in result.detail
+
+
+@pytest.mark.unit
+def test_a_fresh_token_passes_and_never_reports_the_token(tmp_path: Path) -> None:
+    from clipforge.publish.credentials import OAuthTokens, TokenStore
+
+    secrets = tmp_path / "client.json"
+    secrets.write_text('{"installed": {"client_id": "c", "client_secret": "s"}}')
+    store = TokenStore(tmp_path / "token.enc")
+    store.save(OAuthTokens(refresh_token="1//a-secret-value", obtained_at=datetime.now(UTC)))
+
+    result = diagnostics.probe_publishing(
+        publishing_settings(
+            publishing_enabled=True,
+            youtube_client_secrets=secrets,
+            youtube_token_store=store.path,
+        )
+    )
+    assert result.ok is True
+    assert "unlisted" in result.detail
+    # `doctor` output gets pasted into issues. It must never carry the token.
+    assert "a-secret-value" not in json.dumps({"detail": result.detail, "data": result.data})

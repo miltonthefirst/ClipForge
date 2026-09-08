@@ -30,6 +30,7 @@ from clipforge_contracts import (
     StageName,
     StageStatus,
 )
+from google.api_core import exceptions as gcloud_exceptions
 
 T0 = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
 LEASE_SECONDS = 90
@@ -425,3 +426,86 @@ def test_a_transitioned_job_serialises_to_the_wire_form() -> None:
     event_wire = result.events[0].model_dump(by_alias=True, mode="json")
     assert event_wire["kind"] == "CLAIMED"
     assert event_wire["jobId"] == "job-1"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8: scheduled publishing, expressed as a claim predicate.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_a_job_with_no_schedule_is_always_due() -> None:
+    assert lease.is_due(make_job(), T0)
+
+
+@pytest.mark.unit
+def test_a_job_scheduled_for_later_is_not_claimable_yet() -> None:
+    """The publish-at time, expressed where every claim path already looks.
+
+    A separate scheduler could disagree with this one; a predicate cannot.
+    """
+    scheduled = make_job(not_before=T0 + timedelta(hours=2))
+    assert not lease.is_due(scheduled, T0)
+    assert not lease.is_claimable(scheduled, T0)
+
+
+@pytest.mark.unit
+def test_a_scheduled_job_becomes_claimable_at_its_instant() -> None:
+    """Inclusive at the boundary: `notBefore` means "not before", so the moment
+    itself is allowed."""
+    when = T0 + timedelta(hours=2)
+    scheduled = make_job(not_before=when)
+    assert lease.is_due(scheduled, when)
+    assert lease.is_claimable(scheduled, when)
+
+
+@pytest.mark.unit
+def test_a_scheduled_job_whose_worker_died_still_waits_for_its_time() -> None:
+    """The schedule is a property of the job, not of the attempt.
+
+    Without this, a crash would promote a publish scheduled for 06:00 into one
+    that goes out the moment the reaper notices — which is precisely the
+    surprise scheduling exists to prevent.
+    """
+    stranded = running_job(
+        not_before=T0 + timedelta(hours=2),
+        lease_expires_at=T0 - timedelta(seconds=1),
+    )
+    assert lease.is_lease_expired(stranded, T0)
+    assert not lease.is_claimable(stranded, T0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Contention, as the Firestore client actually reports it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_a_lost_race_is_recognised_in_both_shapes_the_client_raises() -> None:
+    """Losing a race must never look like a fault.
+
+    ``Aborted`` is the obvious shape. The one that actually bites is the other:
+    when the client library exhausts its own retries it wraps the last
+    ``Aborted`` in a plain ``ValueError``, so a handler catching only ``Aborted``
+    turns a lost race into a crashed worker. Eight threads on one document
+    reproduces it, which is how this was found.
+    """
+    from clipforge.store.firestore import _is_contention
+
+    assert _is_contention(gcloud_exceptions.Aborted("too much contention"))  # type: ignore[no-untyped-call]
+
+    exhausted = ValueError("Failed to commit transaction in 5 attempts.")
+    exhausted.__cause__ = gcloud_exceptions.Aborted("aborted")  # type: ignore[no-untyped-call]
+    assert _is_contention(exhausted)
+
+
+@pytest.mark.unit
+def test_an_unrelated_value_error_is_not_mistaken_for_contention() -> None:
+    """Matching on the cause rather than the message keeps a genuine bug from
+    being silently swallowed as "someone else won"."""
+    from clipforge.store.firestore import _is_contention
+
+    # Same message, no `Aborted` cause: a real bug, not a lost race.
+    assert not _is_contention(ValueError("Failed to commit transaction in 5 attempts."))
+    assert not _is_contention(ValueError("something else went wrong"))
+    assert not _is_contention(RuntimeError("unrelated"))

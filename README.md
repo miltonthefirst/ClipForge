@@ -147,6 +147,56 @@ pwsh -File tools/doctor.ps1
 `doctor` exits with the number of failed checks and prints a suggested fix for each, so it works
 in a script as well as by eye. Use `-SkipGpu` on a machine without an NVIDIA card.
 
+### Publishing to YouTube (optional)
+
+Off by default, and meant to stay off until you have read
+[Rights and responsible use](#rights-and-responsible-use). Nothing is uploaded while
+`CLIPFORGE_PUBLISHING_ENABLED=false`.
+
+**1. Create an OAuth client.** In the [Google Cloud console](https://console.cloud.google.com/),
+enable the *YouTube Data API v3*, then create an OAuth client of type **Desktop app**. Add
+`http://127.0.0.1:8766/` as an authorised redirect URI. Download the JSON.
+
+**2. Point the worker at it.**
+
+```dotenv
+CLIPFORGE_PUBLISHING_ENABLED=true
+CLIPFORGE_YOUTUBE_CLIENT_SECRETS=./.clipforge/youtube-client.json
+```
+
+**3. Authorise, once.**
+
+```bash
+uv run --project apps/worker clipforge-worker youtube-auth
+```
+
+This opens a consent page, catches the redirect on loopback, and stores a refresh token at
+`CLIPFORGE_YOUTUBE_TOKEN_STORE`. The token is encrypted to this machine and this user, is
+**never written to Firestore**, and never reaches the PWA — see
+[ADR-0010](docs/adr/0010-worker-held-publishing-credentials.md) for exactly what that
+encryption does and does not protect against.
+
+**4. Check it.**
+
+```bash
+uv run --project apps/worker clipforge-worker quota    # what today's allowance still permits
+uv run --project apps/worker python -m clipforge.diagnostics --skip-gpu
+```
+
+Then, in the PWA: approve a clip on **Review**, record its rights basis on **Publish**, and press
+publish. The worker uploads it as **unlisted**.
+
+#### Two things that will bite you
+
+**Refresh tokens expire after 7 days.** While the OAuth consent screen is in *Testing* mode, Google
+expires refresh tokens weekly. The upload scope is *sensitive*, so leaving Testing means submitting
+the app for Google verification. Until you do, re-run `youtube-auth` when `doctor` tells you to — it
+reports the token's age precisely because that is the number which predicts the next failure.
+
+**Quota allows about six uploads a day.** The default YouTube Data API allowance is 10,000 units and
+an upload costs **1,600**. The worker budgets this and refuses *before* starting an upload rather
+than failing on the seventh; `clipforge-worker quota` reports what is left.
+
 ### Develop
 
 ```bash
@@ -205,8 +255,18 @@ ClipForge does not decide that for you, and it does not pretend the question doe
 - No clip can be published without a recorded **rights basis** — one of `OWN_CONTENT`,
   `LICENSED`, `PERMISSION_GRANTED`, `FAIR_USE_ASSERTED` or `PUBLIC_DOMAIN` — attributed to a user
   and timestamped.
-- That attestation is enforced in both Firestore rules and the worker, and every publish is
-  written to an audit log.
+- That attestation is enforced in **three** places, and the redundancy is deliberate:
+  `firebase/firestore.rules` (which is the only thing that can stop a client enqueueing publish
+  work), `apps/worker/clipforge/publish/rights.py` (the only thing that constrains the component
+  actually holding the credentials, since the Admin SDK bypasses rules), and
+  `apps/web/src/app/core/rights.ts`, which is advisory and exists only to explain a refusal in
+  the interface rather than fail opaquely after the button is pressed.
+- A fair-use assertion additionally requires written reasoning. It is a judgement, not a status,
+  and an empty note would make the audit log say "because I said so".
+- Every publish writes a `Publication` record carrying the attestation **as it stood at upload
+  time**, copied rather than referenced — so a later edit to the clip cannot rewrite the reason a
+  past upload happened. "Who authorised this, on what basis, and what went out?" is answerable
+  from the phone.
 
 ## Contributing
 

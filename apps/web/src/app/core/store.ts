@@ -1,5 +1,13 @@
 import { Injectable, inject } from '@angular/core';
-import type { Candidate, Clip, ClipPreview, Job, ReviewState } from '@clipforge/contracts';
+import type {
+  Candidate,
+  Clip,
+  ClipPreview,
+  Job,
+  Publication,
+  ReviewState,
+  RightsBasis,
+} from '@clipforge/contracts';
 import {
   collection,
   doc,
@@ -142,6 +150,92 @@ export class ClipForgeStore {
       review,
       reviewedAt: new Date().toISOString(),
     });
+  }
+
+  /** Approved clips, the publish queue's input. */
+  watchApproved(
+    uid: string,
+    onData: (clips: Clip[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return this.watchReviewQueue(uid, onData, 'APPROVED', onError);
+  }
+
+  /**
+   * Record why this clip may be published.
+   *
+   * `attestedBy` is the caller's own uid and `attestedAt` is set here rather
+   * than accepted from the caller: an attestation whose author or date could be
+   * supplied by whoever wrote it would answer neither of the questions the audit
+   * log exists to answer. firestore.rules requires both to be present.
+   */
+  async attest(
+    uid: string,
+    clipId: string,
+    basis: RightsBasis,
+    note: string | null,
+  ): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'clips', clipId), {
+      rights: {
+        basis,
+        attestedBy: uid,
+        attestedAt: new Date().toISOString(),
+        note: note?.trim() ? note.trim() : null,
+      },
+    });
+  }
+
+  /**
+   * Ask the worker to publish an approved, attested clip.
+   *
+   * This creates a job, not an upload. The credentials live on the worker
+   * (docs/adr/0010-worker-held-publishing-credentials.md), so the phone's role
+   * ends at "I want this published, on this basis, at this time".
+   *
+   * `publishAt` becomes the job's `notBefore`, which is the same field the
+   * scheduler already consults before claiming anything — so a scheduled publish
+   * needs no second timer anywhere.
+   */
+  async requestPublish(
+    uid: string,
+    clipId: string,
+    publishAt: Date | null = null,
+  ): Promise<string> {
+    const reference = doc(collection(this.firebase.db, 'jobs'));
+    const now = new Date().toISOString();
+    await setDoc(reference, {
+      id: reference.id,
+      uid,
+      type: 'PUBLISH',
+      status: 'QUEUED',
+      submission: null,
+      sourceId: null,
+      clipId,
+      notBefore: publishAt ? publishAt.toISOString() : null,
+      stages: [{ name: 'PUBLISH', lane: 'CPU', status: 'PENDING' }],
+      workerId: null,
+      leaseExpiresAt: null,
+      attempts: 0,
+      maxAttempts: 3,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      endedAt: null,
+    });
+    return reference.id;
+  }
+
+  /**
+   * A clip's publish history — the audit trail, read-only.
+   *
+   * Answers "who authorised this, on what basis, and what went out?" from the
+   * phone rather than from worker logs (Phase 8, exit criterion 5).
+   */
+  async loadPublications(clipId: string): Promise<Publication[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
+    return snapshot.docs.map((d) => d.data() as Publication);
   }
 
   /** Cancel a job. The only job transition the rules let a client drive. */

@@ -60,6 +60,38 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── The rights gate, client half ─────────────────────────────────────────
+    //
+    // The worker enforces this too, in clipforge/publish/rights.py. The
+    // duplication is deliberate and neither copy is redundant: the worker uses
+    // the Admin SDK, which bypasses these rules entirely, so rules alone would
+    // protect nothing on the path that actually uploads. Conversely a rule is
+    // the only thing that stops a client enqueueing publish work at all.
+    // Phase 8 exit criterion 2 requires both, tested independently.
+
+    function clipOf(clipId) {
+      return get(/databases/$(database)/documents/clips/$(clipId)).data;
+    }
+
+    // An attestation must exist, name a basis, name who made it, and be dated.
+    // A block with a basis and nobody's name against it cannot answer the one
+    // question an audit log exists to answer.
+    function hasAttestation(clip) {
+      return clip.rights != null
+             && clip.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
+                                      'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
+             && clip.rights.attestedBy is string
+             && clip.rights.attestedBy.size() > 0
+             && clip.rights.attestedAt != null;
+    }
+
+    function publishable(clipId) {
+      let clip = clipOf(clipId);
+      return clip.uid == request.auth.uid
+             && clip.review == 'APPROVED'
+             && hasAttestation(clip);
+    }
+
     // ── Jobs ─────────────────────────────────────────────────────────────────
     match /jobs/{jobId} {
       allow read: if ownsExisting();
@@ -67,11 +99,23 @@ service cloud.firestore {
       // The PWA may enqueue work, but only as itself and only in the one state
       // that means "not yet started". It may not create a job that is already
       // RUNNING, already has a worker, or already holds a lease.
+      //
+      // A PUBLISH job additionally has to name a clip that is the caller's own,
+      // approved, and attested. This costs one document read per publish
+      // request; publishing is rare — YouTube's quota allows about six a day —
+      // so that is the right place to spend one.
       allow create: if ownsIncoming()
                     && request.resource.data.status == 'QUEUED'
                     && request.resource.data.workerId == null
                     && request.resource.data.leaseExpiresAt == null
-                    && request.resource.data.attempts == 0;
+                    && request.resource.data.attempts == 0
+                    && (
+                         request.resource.data.type != 'PUBLISH'
+                         || (
+                              request.resource.data.clipId is string
+                              && publishable(request.resource.data.clipId)
+                            )
+                       );
 
       // The only state transition a user may drive is cancellation. Everything
       // else — claiming, progress, stage results — belongs to the worker.

@@ -16,6 +16,7 @@
     "candidate": { "$ref": "#/definitions/Candidate" },
     "clip": { "$ref": "#/definitions/Clip" },
     "clipPreview": { "$ref": "#/definitions/ClipPreview" },
+    "publication": { "$ref": "#/definitions/Publication" },
     "workerHeartbeat": { "$ref": "#/definitions/WorkerHeartbeat" },
     "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" }
   },
@@ -30,9 +31,9 @@
 
     "JobType": {
       "title": "JobType",
-      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline.",
+      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days.",
       "type": "string",
-      "enum": ["ECHO", "CLIP"]
+      "enum": ["ECHO", "CLIP", "PUBLISH"]
     },
 
     "StageStatus": {
@@ -155,6 +156,17 @@
           "type": ["string", "null"],
           "default": null,
           "description": "What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected."
+        },
+        "clipId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all."
+        },
+        "notBefore": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first."
         },
         "stages": {
           "type": "array",
@@ -414,9 +426,15 @@
 
     "RightsBasis": {
       "title": "RightsBasis",
-      "description": "Why the user believes they may publish this. Publishing is gated on an explicit attestation; see docs/PLAN.md 7.",
+      "description": "Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.",
       "type": "string",
-      "enum": ["OWN_CONTENT", "LICENSED", "PERMISSION_GRANTED", "FAIR_USE_CLAIMED", "UNVERIFIED"]
+      "enum": [
+        "OWN_CONTENT",
+        "LICENSED",
+        "PERMISSION_GRANTED",
+        "FAIR_USE_ASSERTED",
+        "PUBLIC_DOMAIN"
+      ]
     },
 
     "RightsAttestation": {
@@ -534,6 +552,79 @@
         "segmentCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
         "wordCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
         "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "PublicationState": {
+      "title": "PublicationState",
+      "description": "Lifecycle of one attempt to publish one clip to one platform. PENDING is written BEFORE the upload begins, which is what makes a retry reconcile against the platform instead of double-posting.",
+      "type": "string",
+      "enum": ["PENDING", "UPLOADING", "PUBLISHED", "FAILED", "CANCELLED"]
+    },
+
+    "PublishPlatform": {
+      "title": "PublishPlatform",
+      "description": "Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.",
+      "type": "string",
+      "enum": ["YOUTUBE"]
+    },
+
+    "PublishPrivacy": {
+      "title": "PublishPrivacy",
+      "description": "Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.",
+      "type": "string",
+      "enum": ["private", "unlisted", "public"]
+    },
+
+    "Publication": {
+      "title": "Publication",
+      "description": "One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "clipId", "uid", "platform", "state", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "clipId": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "platform": { "$ref": "#/definitions/PublishPlatform" },
+        "state": { "$ref": "#/definitions/PublicationState" },
+        "externalId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The platform's id for the uploaded video. Null until the upload completes."
+        },
+        "externalUrl": { "type": ["string", "null"], "default": null },
+        "privacy": {
+          "anyOf": [{ "$ref": "#/definitions/PublishPrivacy" }, { "type": "null" }],
+          "default": null
+        },
+        "title": { "type": ["string", "null"], "default": null },
+        "description": { "type": ["string", "null"], "default": null },
+        "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "rights": {
+          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
+          "default": null,
+          "description": "Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason."
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "quotaUnits": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure."
+        },
+        "error": {
+          "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
+          "default": null
+        },
+        "publishAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "Scheduled publish time. The worker holds the clip until then."
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "publishedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
       }
     },
 
