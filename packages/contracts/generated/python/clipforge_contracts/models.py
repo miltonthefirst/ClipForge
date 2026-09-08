@@ -184,6 +184,10 @@ class JobEvent(BaseModel):
     job_id: str = Field(..., alias="jobId", min_length=1)
     kind: JobEventKind
     at: AwareDatetime
+    seq: int = Field(..., ge=0)
+    """
+    Order within a single transition. One transition can emit several events at the identical instant — a reap emits LEASE_EXPIRED and REQUEUED together — and ordering by timestamp alone would then fall back to document id, which is random. The log is ordered by (at, seq).
+    """
     stage: StageName | None = None
     worker_id: str | None = Field(None, alias="workerId")
     detail: str | None = None

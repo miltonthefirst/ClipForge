@@ -59,6 +59,7 @@ __all__ = [
     "is_claimable",
     "is_lease_expired",
     "reap",
+    "release",
     "renew",
 ]
 
@@ -99,6 +100,7 @@ def _event(
     at: datetime,
     *,
     event_id: str,
+    seq: int = 0,
     detail: str | None = None,
     worker_id: str | None = None,
 ) -> JobEvent:
@@ -107,6 +109,7 @@ def _event(
         job_id=job.id,
         kind=kind,
         at=at,
+        seq=seq,
         stage=None,
         worker_id=worker_id if worker_id is not None else job.worker_id,
         detail=detail,
@@ -260,6 +263,7 @@ def reap(
         JobEventKind.LEASE_EXPIRED,
         now,
         event_id=event_id(),
+        seq=0,
         detail=f"lease expired at {job.lease_expires_at}",
     )
 
@@ -287,7 +291,7 @@ def reap(
             job=failed,
             events=(
                 expiry,
-                _event(failed, JobEventKind.FAILED, now, event_id=event_id()),
+                _event(failed, JobEventKind.FAILED, now, event_id=event_id(), seq=1),
             ),
         )
 
@@ -304,7 +308,7 @@ def reap(
         job=requeued,
         events=(
             expiry,
-            _event(requeued, JobEventKind.REQUEUED, now, event_id=event_id()),
+            _event(requeued, JobEventKind.REQUEUED, now, event_id=event_id(), seq=1),
         ),
     )
 
@@ -362,7 +366,7 @@ def fail_stage(
     give_up = not error.retryable or attempts >= job.max_attempts
 
     stage_failed = _event(
-        job, JobEventKind.STAGE_FAILED, now, event_id=event_id(), detail=error.message
+        job, JobEventKind.STAGE_FAILED, now, event_id=event_id(), seq=0, detail=error.message
     )
 
     if give_up:
@@ -379,7 +383,10 @@ def fail_stage(
         )
         return Transition(
             job=failed,
-            events=(stage_failed, _event(failed, JobEventKind.FAILED, now, event_id=event_id())),
+            events=(
+                stage_failed,
+                _event(failed, JobEventKind.FAILED, now, event_id=event_id(), seq=1),
+            ),
         )
 
     requeued = job.model_copy(
@@ -394,7 +401,53 @@ def fail_stage(
     )
     return Transition(
         job=requeued,
-        events=(stage_failed, _event(requeued, JobEventKind.REQUEUED, now, event_id=event_id())),
+        events=(
+            stage_failed,
+            _event(requeued, JobEventKind.REQUEUED, now, event_id=event_id(), seq=1),
+        ),
+    )
+
+
+def release(
+    job: Job,
+    *,
+    now: datetime,
+    reason: str = "worker shut down",
+    event_id: EventIdFactory = _default_event_id,
+) -> Transition:
+    """Hand a job back to the queue on a clean shutdown.
+
+    Deliberately does **not** cost an attempt. A worker stopping on purpose is a
+    handover, not a failure — charging it an attempt would mean three orderly
+    restarts could exhaust a job that never actually went wrong.
+
+    Returning the job to QUEUED rather than leaving the lease to lapse is what
+    lets another worker pick it up immediately instead of after 90 seconds of
+    nothing happening.
+    """
+    if job.status is not JobStatus.RUNNING:
+        raise LeaseError(f"cannot release a {job.status.value} job")
+
+    released = job.model_copy(
+        update={
+            "status": JobStatus.QUEUED,
+            "worker_id": None,
+            "lease_expires_at": None,
+            "updated_at": now,
+        }
+    )
+    return Transition(
+        job=released,
+        events=(
+            _event(
+                released,
+                JobEventKind.REQUEUED,
+                now,
+                event_id=event_id(),
+                detail=reason,
+                worker_id=job.worker_id,
+            ),
+        ),
     )
 
 

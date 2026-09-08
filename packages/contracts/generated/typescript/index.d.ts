@@ -153,6 +153,10 @@ export interface JobEvent {
   jobId: string;
   kind: JobEventKind;
   at: string;
+  /**
+   * Order within a single transition. One transition can emit several events at the identical instant — a reap emits LEASE_EXPIRED and REQUEUED together — and ordering by timestamp alone would then fall back to document id, which is random. The log is ordered by (at, seq).
+   */
+  seq: number;
   stage?: StageName | null;
   workerId?: string | null;
   detail?: string | null;

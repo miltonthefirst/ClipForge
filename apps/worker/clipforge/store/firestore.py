@@ -95,6 +95,17 @@ class JobStore:
         self._db = client
         self._settings = settings
 
+    @property
+    def worker_id(self) -> str:
+        """The identity this store claims jobs as.
+
+        Exposed so callers cannot end up with an identity that disagrees with the
+        one actually written to `workerId`. That mismatch is silent and nasty: a
+        worker would claim as one id, then fail to recognise its own jobs when
+        releasing them on shutdown, and strand them until the reaper ran.
+        """
+        return self._settings.worker_id
+
     # ── Reads ────────────────────────────────────────────────────────────────
 
     def get(self, job_id: str) -> Job | None:
@@ -130,7 +141,22 @@ class JobStore:
         return [_to_job(doc.to_dict() or {}) for doc in query.stream()]
 
     def events(self, job_id: str) -> list[dict[str, Any]]:
-        docs = self._db.collection(JOBS).document(job_id).collection(EVENTS).order_by("at").stream()
+        """The append-only event log, in the order things actually happened.
+
+        Ordered by ``(at, seq)``, not by ``at`` alone. One transition can emit
+        several events at the identical instant — a reap emits LEASE_EXPIRED and
+        REQUEUED together — and ordering by timestamp alone leaves Firestore to
+        break the tie on document id, which is a random uuid. The log would then
+        read in a different order on different reads.
+        """
+        docs = (
+            self._db.collection(JOBS)
+            .document(job_id)
+            .collection(EVENTS)
+            .order_by("at")
+            .order_by("seq")
+            .stream()
+        )
         return [doc.to_dict() or {} for doc in docs]
 
     # ── Writes ───────────────────────────────────────────────────────────────
@@ -197,12 +223,27 @@ class JobStore:
             return None
 
     def claim_next(self, *, now: datetime | None = None) -> Job | None:
-        """Claim the oldest available job, trying each candidate in turn."""
+        """Claim the oldest available job, trying each candidate in turn.
+
+        Waiting jobs are tried first, then jobs abandoned by a worker that
+        stopped heartbeating. Including the second group matters: without it a
+        crashed job is only recoverable once the reaper happens to run, so a
+        worker could sit idle next to work it is entitled to take. The extra
+        query only happens when the queue is empty, so the hot path stays at one
+        read.
+        """
         now = now or datetime.now(UTC)
+
         for job in self.queued():
             claimed = self.try_claim(job.id, now=now)
             if claimed is not None:
                 return claimed
+
+        for job in self.expired(now):
+            claimed = self.try_claim(job.id, now=now)
+            if claimed is not None:
+                return claimed
+
         return None
 
     def renew(self, job_id: str, *, now: datetime | None = None) -> Job | None:

@@ -188,12 +188,17 @@
       "description": "Append-only transition log at jobs/{jobId}/events/{eventId}. Never mutated, which is what makes it trustworthy when debugging a job that failed hours ago.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "jobId", "kind", "at"],
+      "required": ["id", "jobId", "kind", "at", "seq"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "jobId": { "type": "string", "minLength": 1 },
         "kind": { "$ref": "#/definitions/JobEventKind" },
         "at": { "type": "string", "format": "date-time" },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Order within a single transition. One transition can emit several events at the identical instant — a reap emits LEASE_EXPIRED and REQUEUED together — and ordering by timestamp alone would then fall back to document id, which is random. The log is ordered by (at, seq)."
+        },
         "stage": {
           "anyOf": [{ "$ref": "#/definitions/StageName" }, { "type": "null" }],
           "default": null

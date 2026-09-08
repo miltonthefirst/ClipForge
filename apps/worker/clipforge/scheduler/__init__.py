@@ -15,6 +15,7 @@ from clipforge.scheduler.lease import (
     is_claimable,
     is_lease_expired,
     reap,
+    release,
     renew,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "is_claimable",
     "is_lease_expired",
     "reap",
+    "release",
     "renew",
 ]

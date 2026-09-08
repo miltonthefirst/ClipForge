@@ -4,7 +4,7 @@
 > hardware, cut high-potential vertical clips, review them from your phone, publish, and learn from
 > what actually performed.
 
-**Status:** Phase 0 complete · **Target of record:** v0.1.0 · **Owner:** @miltonthefirst
+**Status:** Milestone M0 complete (Phases 0-2) · **Target of record:** v0.1.0 · **Owner:** @miltonthefirst
 **Supersedes:** [`initial-plan.md`](../initial-plan.md) (kept for provenance)
 
 ---
@@ -328,14 +328,24 @@ reaper; [ADR-0004](adr/0004-dedicated-firebase-project.md) (dedicated Firebase p
 [ADR-0005](adr/0005-single-source-contracts.md) (single-source contracts) and
 [ADR-0006](adr/0006-lease-based-job-claiming.md) (lease-based job claiming).
 
-**Exit criteria**
+**Exit criteria** — ✅ **all met, 2026-09-08**
 
-1. Emulator-backed test: user A creates a job; user B receives `PERMISSION_DENIED` on read, write and
-   list. Same for Storage paths.
-2. Emulator-backed test: two simulated workers race to claim one `QUEUED` job; exactly one wins.
-3. Emulator-backed test: a `RUNNING` job whose `leaseExpiresAt` is in the past is returned to `QUEUED`
-   by the reaper, with `attempts` incremented.
-4. Editing a JSON Schema without regenerating fails CI.
+1. ✅ 42 emulator-backed rules tests. User B is denied read, write, list and delete on user A's job,
+   and denied their Storage objects. Also covers the narrower boundary: a client may create only a
+   `QUEUED` job with no worker and no lease, may drive only cancellation, and may write only the
+   review fields of a clip.
+2. ✅ Two workers race one job; exactly one wins. Also run with **eight** workers, since two can pass
+   by luck of scheduling.
+3. ✅ A `RUNNING` job with a lapsed lease returns to `QUEUED` with `attempts` incremented, retaining
+   its stage checkpoints. Exhausting `maxAttempts` fails it instead.
+4. ✅ Verified by deliberately drifting the schema and confirming both the TypeScript and Pydantic
+   checks exit non-zero.
+
+**Delivered.** `packages/contracts` (one JSON Schema → TS `.d.ts` + Pydantic, CI staleness gate) ·
+`firestore.rules`, `storage.rules`, indexes with cost-motivated `fieldOverrides` · emulator wiring for
+local dev and CI · the lease protocol as pure functions plus its transactional Firestore adapter ·
+ADRs [0004](adr/0004-dedicated-firebase-project.md), [0005](adr/0005-single-source-contracts.md),
+[0006](adr/0006-lease-based-job-claiming.md).
 
 **Risks.** *Rules complexity growing untested* → every rule change requires a corresponding emulator
 test in the same PR. Treat `firestore.rules` as production code.
@@ -372,17 +382,34 @@ test in the same PR. Treat `firestore.rules` as production code.
 
 **Deliverables.** `apps/worker` package; the `ECHO` job type; integration tests against the emulator.
 
-**Exit criteria**
+**Exit criteria** — ✅ **all met, 2026-09-08**
 
-1. An `ECHO` job submitted to the emulator flows `QUEUED → RUNNING → COMPLETED`, with per-stage timings
-   recorded and an append-only event log.
-2. The worker is `taskkill /F`'d mid-stage-2; on restart it re-claims the job after lease expiry and
-   resumes at stage 2 without re-running stage 1. Asserted in a test, not merely observed.
-3. Two worker instances run concurrently against one queue with no double execution.
-4. `ModelBroker` refuses a synthetic 8 GB allocation request and reports the budget shortfall.
-5. With free VRAM artificially constrained, the broker reports the shortfall and names the holding
-   process rather than surfacing a CUDA OOM.
-6. `Ctrl-C` releases the lease within two seconds and flips the heartbeat to `OFFLINE`.
+1. ✅ An `ECHO` job flows `QUEUED → RUNNING → COMPLETED` with per-stage timings, checkpoints and an
+   eight-entry append-only event log.
+2. ✅ A **real subprocess** is killed inside stage 2 with `os._exit(137)`, a second worker reclaims the
+   job after the lease lapses, and stage 1 is never re-executed — asserted by counting stage
+   executions in a trace file, not by inspection. A simulated crash would have unwound the stack and
+   released the lease, proving nothing.
+3. ✅ Six jobs, two workers, concurrent. Proven from the event log rather than final status, because a
+   doubly-executed job would still *end* `COMPLETED`.
+4. ✅ The broker refuses a synthetic 8 GB request on a 6 GB card and reports the shortfall.
+5. ✅ With free VRAM constrained to the 1.3 GB Phase 0 actually observed, the refusal names
+   `ollama.exe`, its pid and its 4800 MiB.
+6. ✅ Shutdown returns running jobs to `QUEUED` and flips the heartbeat to `OFFLINE`, asserted under a
+   two-second budget. Releasing rather than letting the lease lapse is what lets another worker take
+   the work immediately.
+
+**Delivered.** Config · structured logging with job/stage correlation · the two-lane scheduler (CPU
+pool, and the `ModelBroker` lock *as* the depth-1 GPU lane) · checkpointed stage runner · NVML VRAM
+accounting that names foreign consumers · graceful shutdown exercised on Windows · the `ECHO` job type
+· `clipforge-worker run | submit | status | gpu` · ADRs
+[0007](adr/0007-checkpointed-stage-pipeline.md),
+[0008](adr/0008-model-broker-owns-gpu-residency.md).
+
+**Two bugs this phase's tests caught**, both of which would have been intermittent in production:
+a worker and its store could hold *different* worker ids, so a worker failed to recognise its own jobs
+when releasing them on shutdown; and `claim_next` only ever looked at `QUEUED`, so a crashed job was
+invisible to it until the reaper happened to run.
 
 **Risks.** *Windows signal handling for graceful shutdown is unlike POSIX* → exercise the real shutdown
 path on Windows in this phase, not at release time.
@@ -786,21 +813,31 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 
 ## 8. Immediate next actions
 
-**Phase 0 is complete** (2026-09-07) — `doctor` reports 16/16 passing and both apps are green on
-lint, strict typecheck, tests and build. Next is **Phase 1 — Contracts and control plane**:
+**Milestone M0 is complete** (2026-09-08). Phases 0, 1 and 2 have all met their exit criteria, and
+the repository now has a control plane and a worker that runs a checkpointed job reliably and
+survives being killed.
 
-1. **Decide the Firebase posture.** Spark vs. Blaze on `miltongore` — see the Phase 1 addendum.
-   This is a conversation, not a task, and it does **not** block items 2–4 because they are all
-   emulator-backed.
-2. **Define the contracts.** JSON Schema for `Job`, `Stage`, `Source`, `Transcript`, `Candidate`,
-   `Clip`, `WorkerHeartbeat` and the LLM response, in `packages/contracts`. Wire the TypeScript and
-   Pydantic codegen plus the CI staleness check.
-3. **Stand up the Emulator Suite** and write the security rules, with the per-user isolation tests
-   in the same commit.
-4. **Build the lease reaper as a pure function** over job documents, bindable to either a worker
-   task or a Cloud Function — this is what keeps the Spark option open (Phase 1 addendum,
-   mitigation 1).
+Current test coverage, all runnable from a clean clone with no GPU and no network:
 
-One correction worth carrying forward: Phase 0 found that `faster-whisper` needs no PyTorch, so
-several assumptions in earlier drafts of §2 have been revised. See
-[ADR-0002](adr/0002-ctranslate2-without-pytorch.md).
+| Suite | Count | Needs |
+| --- | --- | --- |
+| Worker unit | 94 | nothing |
+| Worker integration | 35 | Firestore emulator |
+| Security rules | 42 | Auth + Firestore + Storage emulators |
+| Web | 7 | nothing |
+| Contracts staleness | 2 gates | nothing |
+
+Next is **Phase 3 — Ingestion**. Before starting it:
+
+1. **Verify the billing tier on `bytepic-clipforge`.** Nothing so far has needed it — every exit
+   criterion in Phases 1 and 2 is emulator-backed — but Phase 6 uploads clips and needs the Storage
+   decision settled. See [ADR-0004](adr/0004-dedicated-firebase-project.md).
+2. **Choose the Firestore location deliberately when the database is first created.** It is
+   permanent, and Cloud Storage's always-free tier is US-region-only.
+3. **Set a Cloud Billing budget with a Pub/Sub kill switch.** GCP budgets notify; they do not cap.
+4. **Build `LocalFileAdapter` before the YouTube one.** §6 requires the integration tier to run with
+   no network, so the committed fixture path is what keeps Phase 3 testable in CI at all.
+
+One correction carried forward from Phase 2: the `ECHO` job type is not scaffolding to be deleted. It
+is the harness that makes scheduler behaviour testable in milliseconds, and Phases 3 onward should
+keep using it rather than waiting on a real twenty-minute pipeline to test a scheduling change.
