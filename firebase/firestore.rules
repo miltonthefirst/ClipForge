@@ -1,0 +1,153 @@
+rules_version = '2';
+
+// ClipForge Firestore security rules.
+//
+// These rules are production code. Every change needs a corresponding emulator
+// test in the same PR (docs/PLAN.md Phase 1, "Risks").
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// A note on what these rules can and cannot do.
+//
+// The worker authenticates with the Admin SDK, which BYPASSES these rules
+// entirely. So nothing here constrains the worker — it is the PWA's boundary,
+// not the worker's. That asymmetry is deliberate and is why ClipForge lives in
+// its own Firebase project rather than sharing one: rules could not have
+// protected a neighbouring app's data from a worker bug.
+// See docs/adr/0004-dedicated-firebase-project.md.
+//
+// The design rule that follows: the PWA may CREATE work and REVIEW results, but
+// may never write pipeline state. Anything the worker owns is read-only here,
+// so a compromised or buggy client cannot forge a COMPLETED job, invent a
+// candidate, or rewrite an event log.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // The document being written must be stamped with the caller's own uid.
+    // Without this, a signed-in user could create documents owned by someone else.
+    function ownsIncoming() {
+      return signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+
+    function ownsExisting() {
+      return signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // Which fields an update actually touched.
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // ── User settings ────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // ── Workers ──────────────────────────────────────────────────────────────
+    // Heartbeats are written by the worker through the Admin SDK. The PWA reads
+    // them to show whether a worker is online and why a job might be stalled.
+    match /workers/{workerId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    // ── Jobs ─────────────────────────────────────────────────────────────────
+    match /jobs/{jobId} {
+      allow read: if ownsExisting();
+
+      // The PWA may enqueue work, but only as itself and only in the one state
+      // that means "not yet started". It may not create a job that is already
+      // RUNNING, already has a worker, or already holds a lease.
+      allow create: if ownsIncoming()
+                    && request.resource.data.status == 'QUEUED'
+                    && request.resource.data.workerId == null
+                    && request.resource.data.leaseExpiresAt == null
+                    && request.resource.data.attempts == 0;
+
+      // The only state transition a user may drive is cancellation. Everything
+      // else — claiming, progress, stage results — belongs to the worker.
+      allow update: if ownsExisting()
+                    && ownsIncoming()
+                    && request.resource.data.status == 'CANCELLED'
+                    && resource.data.status in ['QUEUED', 'RUNNING']
+                    && changed().hasOnly(['status', 'updatedAt', 'endedAt']);
+
+      allow delete: if ownsExisting();
+
+      // ── Job events ─────────────────────────────────────────────────────────
+      // Append-only, written by the worker. Readable by the job's owner so a
+      // failure can be diagnosed from the phone rather than from worker logs.
+      match /events/{eventId} {
+        allow read: if signedIn()
+                    && get(/databases/$(database)/documents/jobs/$(jobId)).data.uid == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    // ── Sources ──────────────────────────────────────────────────────────────
+    match /sources/{sourceId} {
+      allow read: if ownsExisting();
+      allow create: if ownsIncoming();
+      allow update, delete: if false;
+
+      // Transcripts are expensive to produce and are cached by content hash.
+      // Nothing about them is user-editable.
+      match /transcripts/{modelVersion} {
+        allow read: if signedIn()
+                    && get(/databases/$(database)/documents/sources/$(sourceId)).data.uid == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    // ── Candidates ───────────────────────────────────────────────────────────
+    // Produced by the ANALYZE stage. Read-only to the client: a user who could
+    // write these could fabricate a score and corrupt the Phase 9 feedback loop.
+    match /candidates/{candidateId} {
+      allow read: if ownsExisting();
+      allow write: if false;
+    }
+
+    // ── Clips ────────────────────────────────────────────────────────────────
+    match /clips/{clipId} {
+      allow read: if ownsExisting();
+      allow create, delete: if false;
+
+      // Review is the one thing the user genuinely owns. Restricting the
+      // writable field set matters: publishing is gated on `rights`, so a rule
+      // that allowed a blanket update would let the client relabel storagePath
+      // or forge an attestation on someone else's render.
+      allow update: if ownsExisting()
+                    && ownsIncoming()
+                    && changed().hasOnly(['review', 'reviewedAt', 'rights', 'title', 'description'])
+                    && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED'];
+
+      match /publications/{pubId} {
+        allow read: if signedIn()
+                    && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
+        allow write: if false;
+      }
+
+      match /metrics/{day} {
+        allow read: if signedIn()
+                    && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    // ── Everything else ──────────────────────────────────────────────────────
+    // Default deny. A new collection is inaccessible until it is granted access
+    // deliberately, rather than inheriting a permissive fallback.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

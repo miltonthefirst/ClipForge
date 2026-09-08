@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// ClipForge Cloud Storage security rules.
+//
+// Only rendered artefacts live here: clips and their thumbnails. Source video
+// never leaves the worker (docs/PLAN.md decision D3) — a 60-minute 1080p source
+// is 1-3 GB, and uploading it would invert the local-first thesis and cost real
+// money. Clips are 5-20 MB.
+//
+// As with Firestore, the worker writes through the Admin SDK and bypasses these
+// rules. So every path here is READ-ONLY to the client: the PWA plays clips, it
+// never produces them.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // Rendered vertical clips, and the poster frames the review queue shows.
+    match /users/{uid}/clips/{clipId} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    match /users/{uid}/thumbnails/{clipId} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    // Default deny.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

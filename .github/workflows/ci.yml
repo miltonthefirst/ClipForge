@@ -94,8 +94,71 @@ jobs:
       - name: Type check
         run: uv run mypy
 
-      - name: Test (unit + integration; gpu deselected)
-        run: uv run pytest -m "not gpu" --cov=clipforge --cov-report=term-missing
+      # Unit tier only: no GPU, no network, no emulator. The integration tier
+      # needs the Emulator Suite and runs in the `emulator` job below.
+      - name: Test (unit tier)
+        run: uv run pytest -m unit --cov=clipforge --cov-report=term-missing
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Emulator-backed tiers: security rules, and the transactional lease protocol.
+  #
+  # Everything here runs against a `demo-` prefixed project id, which puts the
+  # Emulator Suite in fully offline mode — no credentials, no billing, no real
+  # Firebase project, no network. That is what lets these run on a PR from a
+  # fork with no secrets at all.
+  # ───────────────────────────────────────────────────────────────────────────
+  emulator:
+    name: emulator (rules · lease protocol)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: firebase/tests/package-lock.json
+
+      # The Firestore and Storage emulators are Java processes.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install
+        run: |
+          npm ci --no-fund --no-audit --prefix firebase/tests
+          uv sync --locked --project apps/worker
+
+      - name: Cache emulator binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}
+
+      # Phase 1, exit criterion 1: per-user isolation on read, write and list,
+      # for both Firestore and Storage.
+      - name: Security rules
+        working-directory: firebase/tests
+        run: npm test
+
+      # Phase 1, exit criteria 2 and 3: exactly one worker wins a contested
+      # claim, and an expired lease is reclaimed with attempts incremented.
+      - name: Lease protocol
+        working-directory: apps/worker
+        run: >
+          ../../firebase/tests/node_modules/.bin/firebase emulators:exec
+          --config ../../firebase.json --project demo-clipforge --only firestore
+          "uv run pytest -m integration -q"
 
   # ───────────────────────────────────────────────────────────────────────────
   # Angular PWA. Tests run under Vitest + jsdom, so no browser is needed.

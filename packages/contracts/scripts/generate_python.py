@@ -113,8 +113,16 @@ def _generate_into(target: Path) -> None:
         check=True,
     )
 
-    (target / "__init__.py").write_text(_render_init(_exported_names()), encoding="utf-8")
-    (target / "py.typed").write_text("", encoding="utf-8")
+    # Normalise to LF. .gitattributes checks every generated file out as LF on
+    # all platforms, but Python's text mode writes CRLF on Windows — so without
+    # this the generator leaves a tree that looks dirty on Windows and clean on
+    # Linux. (The --check comparison itself is unaffected either way, because
+    # read_text() translates line endings on the way in.)
+    models.write_text(models.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+    (target / "__init__.py").write_text(
+        _render_init(_exported_names()), encoding="utf-8", newline="\n"
+    )
+    (target / "py.typed").write_text("", encoding="utf-8", newline="\n")
 
 
 def main() -> int:
