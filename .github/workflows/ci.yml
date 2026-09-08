@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Python worker.
+  #
+  # Installs CORE dependencies only — no `--extra gpu`. Runners have no NVIDIA
+  # device, and the `gpu` test tier is deselected here by design. That the core
+  # install succeeds without CUDA is itself part of what this job proves.
+  # ───────────────────────────────────────────────────────────────────────────
+  worker:
+    name: worker (lint · types · tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync dependencies (core + dev)
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test (unit + integration; gpu deselected)
+        run: uv run pytest -m "not gpu" --cov=clipforge --cov-report=term-missing
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Angular PWA. Tests run under Vitest + jsdom, so no browser is needed.
+  # ───────────────────────────────────────────────────────────────────────────
+  web:
+    name: web (lint · types · tests · build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NG_CLI_ANALYTICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install
+        run: npm ci --no-fund --no-audit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test
+        run: npm run test:ci
+
+      - name: Build
+        run: npm run build
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Parse `tools/doctor.ps1` on a real Windows PowerShell host.
+  #
+  # This is not busywork: Windows PowerShell 5.1 reads .ps1 files as ANSI unless
+  # they carry a BOM, so a stray non-ASCII byte turns into a parser error that
+  # only appears on a contributor's machine. The runner has none of ClipForge's
+  # dependencies, so we check that the script *parses*, not that it passes.
+  # ───────────────────────────────────────────────────────────────────────────
+  scripts:
+    name: scripts (powershell parse)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell scripts (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem -Path tools -Filter *.ps1 -Recurse | ForEach-Object {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$null, [ref]$errors)
+            if ($errors) {
+              Write-Host "FAIL $($_.Name)" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host "  $_" }
+              $failed = $true
+            } else {
+              Write-Host "PASS $($_.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Require a UTF-8 BOM on every .ps1
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem -Path tools -Filter *.ps1 -Recurse | ForEach-Object {
+            $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              Write-Host "FAIL $($_.Name): missing UTF-8 BOM" -ForegroundColor Red
+              $failed = $true
+            } else {
+              Write-Host "PASS $($_.Name)"
+            }
+          }
+          if ($failed) { exit 1 }

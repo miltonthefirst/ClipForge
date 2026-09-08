@@ -1,0 +1,293 @@
+"""Environment diagnostics.
+
+These checks exist because two of the highest-impact risks in ``docs/PLAN.md``
+are environmental rather than logical:
+
+* a CPU-only or mismatched CUDA install silently making transcription ~20x
+  slower instead of failing, and
+* CTranslate2 failing to resolve the cuBLAS / cuDNN 9 DLLs on Windows, which
+  surfaces as an opaque load error deep inside Phase 4.
+
+``tools/doctor.ps1`` invokes this module so both failures happen in Phase 0, on
+a five-second synthetic clip, rather than twenty minutes into a real job.
+
+Run directly for machine-readable output::
+
+    uv run python -m clipforge.diagnostics --json
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import math
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+import wave
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+from clipforge.models.cuda import (
+    find_cuda_dll_directories,
+    register_cuda_dll_directories,
+)
+
+# VRAM headroom reserved for the desktop and browser. Mirrors
+# CLIPFORGE_VRAM_RESERVE_MB in .env.example and docs/PLAN.md §2.1.
+DEFAULT_VRAM_RESERVE_MB = 700
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """Outcome of a single diagnostic check."""
+
+    name: str
+    ok: bool
+    detail: str
+    data: dict[str, Any] | None = None
+
+
+def probe_gpu(reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> CheckResult:
+    """Report GPU name, total/free VRAM and the resulting model budget."""
+    try:
+        import pynvml
+    except ImportError:  # pragma: no cover - dependency is declared in core
+        return CheckResult("gpu", False, "nvidia-ml-py is not installed")
+
+    try:
+        pynvml.nvmlInit()
+    except Exception as exc:  # noqa: BLE001 - any NVML failure means "no usable GPU"
+        return CheckResult("gpu", False, f"NVML init failed: {exc}")
+
+    try:
+        if pynvml.nvmlDeviceGetCount() == 0:
+            return CheckResult("gpu", False, "no NVIDIA device found")
+
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        raw_name = pynvml.nvmlDeviceGetName(handle)
+        name = raw_name.decode() if isinstance(raw_name, bytes) else raw_name
+        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+
+        total_mb = mem.total // (1024 * 1024)
+        free_mb = mem.free // (1024 * 1024)
+        budget_mb = max(0, total_mb - reserve_mb)
+
+        return CheckResult(
+            name="gpu",
+            ok=True,
+            detail=f"{name} · {total_mb} MiB total · {free_mb} MiB free · {budget_mb} MiB budget",
+            data={
+                "name": name,
+                "total_mb": total_mb,
+                "free_mb": free_mb,
+                "reserve_mb": reserve_mb,
+                "model_budget_mb": budget_mb,
+            },
+        )
+    finally:
+        # A failed shutdown is not actionable and must not mask the report.
+        with contextlib.suppress(Exception):
+            pynvml.nvmlShutdown()
+
+
+def _write_spoken_tone_wav(path: Path, seconds: float = 5.0, rate: int = 16000) -> None:
+    """Write a short 16 kHz mono WAV.
+
+    Content is irrelevant: this check verifies that CUDA kernels load and run,
+    not that the transcription is accurate. Accuracy is asserted against a real
+    fixture in the Phase 4 test suite.
+    """
+    frames = bytearray()
+    for i in range(int(rate * seconds)):
+        t = i / rate
+        envelope = 0.5 * (1.0 - math.cos(2.0 * math.pi * min(t, 1.0)))
+        sample = int(12000 * envelope * math.sin(2.0 * math.pi * 220.0 * t))
+        frames += struct.pack("<h", sample)
+
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(bytes(frames))
+
+
+def smoke_transcribe(device: str = "cuda", compute_type: str = "int8_float16") -> CheckResult:
+    """Run a real transcription through CTranslate2 on the GPU.
+
+    Uses the ``tiny`` model deliberately: it downloads in seconds and exercises
+    exactly the same CUDA / cuDNN load path as ``large-v3-turbo``, which is the
+    thing that actually breaks on Windows.
+    """
+    # MUST happen before faster_whisper/ctranslate2 is imported, or the bundled
+    # cuBLAS and cuDNN DLLs will not resolve. See clipforge.models.cuda.
+    register_cuda_dll_directories()
+
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return CheckResult(
+            "cuda_transcribe",
+            False,
+            "faster-whisper not installed — run: uv sync --extra gpu",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        audio = Path(tmp) / "smoke.wav"
+        _write_spoken_tone_wav(audio)
+
+        try:
+            model = WhisperModel("tiny", device=device, compute_type=compute_type)
+        except Exception as exc:  # noqa: BLE001 - surface the raw loader error verbatim
+            return CheckResult(
+                "cuda_transcribe",
+                False,
+                f"model load failed on device={device!r}: {exc}",
+            )
+
+        try:
+            segments, info = model.transcribe(str(audio), beam_size=1)
+            count = sum(1 for _ in segments)
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult("cuda_transcribe", False, f"transcription failed: {exc}")
+        finally:
+            del model
+
+    return CheckResult(
+        name="cuda_transcribe",
+        ok=True,
+        detail=(
+            f"CTranslate2 ran on device={device!r} compute_type={compute_type!r} "
+            f"({count} segment(s), detected language {info.language!r})"
+        ),
+        data={"device": device, "compute_type": compute_type, "segments": count},
+    )
+
+
+def probe_ollama(host: str = "http://127.0.0.1:11434", required: str = "qwen3.5:4b") -> CheckResult:
+    """Confirm the Ollama daemon is reachable and the analysis model is pulled."""
+    try:
+        import httpx
+
+        response = httpx.get(f"{host}/api/tags", timeout=5.0)
+        response.raise_for_status()
+        models = [m["name"] for m in response.json().get("models", [])]
+    except Exception as exc:  # noqa: BLE001 - daemon down, refused, malformed: all the same
+        return CheckResult("ollama", False, f"unreachable at {host}: {exc}")
+
+    if required not in models:
+        return CheckResult(
+            "ollama",
+            False,
+            f"model {required!r} not pulled — run: ollama pull {required}",
+            {"available": models},
+        )
+
+    return CheckResult(
+        "ollama",
+        True,
+        f"reachable · {required} present · {len(models)} model(s) total",
+        {"available": models},
+    )
+
+
+def has_capability(listing: str, name: str) -> bool:
+    """Test whether `name` appears as a capability NAME in an ffmpeg listing.
+
+    ``ffmpeg -filters`` and ``-encoders`` both print ``<flags> <name> <description>``,
+    so the name must be matched as its own column. A naive substring test is
+    badly wrong here: ``"ass" in listing`` is satisfied by ``bass``, ``lowpass``,
+    ``allpass`` and fifteen other entries, which would report libass as present
+    on a build that lacks it entirely — and burned-in captions (Phase 6) would
+    then fail far from this check.
+    """
+    return re.search(rf"^\s*\S+\s+{re.escape(name)}\s", listing, re.MULTILINE) is not None
+
+
+def probe_ffmpeg(binary: str = "ffmpeg") -> CheckResult:
+    """Confirm ffmpeg exists and exposes the encoders and filters we depend on."""
+    try:
+        encoders = subprocess.run(  # noqa: S603
+            [binary, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+        filters = subprocess.run(  # noqa: S603
+            [binary, "-hide_banner", "-filters"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CheckResult("ffmpeg", False, f"{binary} not runnable: {exc}")
+
+    required = {
+        "h264_nvenc": encoders,
+        "libx264": encoders,
+        "ass": filters,
+        "loudnorm": filters,
+        "silencedetect": filters,
+    }
+    missing = [name for name, listing in required.items() if not has_capability(listing, name)]
+
+    if missing:
+        return CheckResult("ffmpeg", False, f"missing capabilities: {', '.join(missing)}")
+    return CheckResult("ffmpeg", True, "h264_nvenc, libx264, ass, loudnorm, silencedetect present")
+
+
+def probe_cuda_libraries() -> CheckResult:
+    """Confirm the bundled cuBLAS / cuDNN DLLs were found and registered."""
+    directories = find_cuda_dll_directories()
+    if not directories:
+        return CheckResult(
+            "cuda_libs",
+            False,
+            "no nvidia/*/bin directories found — run: uv sync --extra gpu",
+        )
+
+    register_cuda_dll_directories()
+    names = ", ".join(d.parent.name for d in directories)
+    return CheckResult(
+        "cuda_libs",
+        True,
+        f"registered {len(directories)} DLL director(ies): {names}",
+        {"directories": [str(d) for d in directories]},
+    )
+
+
+def run_all(*, include_gpu: bool = True) -> list[CheckResult]:
+    """Run every diagnostic and return the results in report order."""
+    results = [probe_ffmpeg(), probe_ollama(), probe_gpu()]
+    if include_gpu:
+        results.append(probe_cuda_libraries())
+        results.append(smoke_transcribe())
+    return results
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entrypoint. Returns a process exit code: 0 if every check passed."""
+    parser = argparse.ArgumentParser(description="ClipForge worker diagnostics")
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument("--skip-gpu", action="store_true", help="skip the CUDA transcription check")
+    args = parser.parse_args(argv)
+
+    results = run_all(include_gpu=not args.skip_gpu)
+
+    if args.json:
+        print(json.dumps([asdict(r) for r in results], indent=2))
+    else:
+        for result in results:
+            print(f"[{'PASS' if result.ok else 'FAIL'}] {result.name}: {result.detail}")
+
+    return 0 if all(r.ok for r in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

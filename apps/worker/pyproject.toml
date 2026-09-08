@@ -1,0 +1,129 @@
+[project]
+name = "clipforge-worker"
+version = "0.0.1"
+description = "ClipForge local worker — transcription, clip selection and rendering on local hardware"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = "==3.12.*"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core dependencies.
+#
+# Deliberately light: everything here must install on a machine with NO GPU and
+# NO CUDA, because CI runs the `unit` and `integration` test tiers on plain
+# runners (docs/PLAN.md §6). Heavy inference dependencies live in the `gpu`
+# extra and are imported lazily.
+# ─────────────────────────────────────────────────────────────────────────────
+dependencies = [
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "firebase-admin>=6.6",
+    "google-cloud-firestore>=2.19",
+    "tenacity>=9.0",
+    "typer>=0.15",
+    "rich>=13.9",
+    "httpx>=0.28",
+    # Pure-python NVML bindings. Safe to import without a GPU; the VRAM probe
+    # degrades to "unknown" rather than failing. Needed by `doctor` and the
+    # ModelBroker budget check, so it belongs in core rather than the gpu extra.
+    "nvidia-ml-py>=12.560",
+]
+
+[project.optional-dependencies]
+# Local inference. Requires an NVIDIA GPU with CUDA 12 runtime libraries.
+#
+# NOTE: faster-whisper runs on CTranslate2, NOT PyTorch. torch is deliberately
+# absent — it would add ~2.5 GB and a class of CUDA wheel-matching problems for
+# no benefit. See docs/adr/0002-ctranslate2-without-pytorch.md.
+#
+# The two `nvidia-*` packages ship the cuBLAS and cuDNN 9 DLLs that CTranslate2
+# dynamically loads on Windows. Without them CUDA transcription fails at runtime
+# with an opaque DLL-load error — this is the sharp edge called out in
+# docs/PLAN.md Phase 4.
+gpu = [
+    "faster-whisper>=1.1",
+    "nvidia-cublas-cu12>=12.4",
+    "nvidia-cudnn-cu12>=9.1,<10",
+]
+
+# Ingestion (Phase 3).
+media = [
+    "yt-dlp>=2025.1.15",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.scripts]
+clipforge-worker = "clipforge.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clipforge"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["clipforge", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # flake8-bugbear
+    "A",         # flake8-builtins
+    "C4",        # flake8-comprehensions
+    "SIM",       # flake8-simplify
+    "BLE",       # flake8-blind-except
+    "S",         # flake8-bandit
+    "PTH",       # flake8-use-pathlib
+    "RUF",       # ruff-specific
+]
+ignore = [
+    "E501",      # line length is enforced by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "SLF001"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+pretty = true
+files = ["clipforge", "tests"]
+
+# Third-party packages without bundled type stubs.
+[[tool.mypy.overrides]]
+module = ["faster_whisper.*", "pynvml.*", "yt_dlp.*", "firebase_admin.*"]
+ignore_missing_imports = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+markers = [
+    "unit: pure logic. No GPU, no network, no emulator. Always runs in CI.",
+    "integration: requires the Firebase Emulator Suite. Runs in CI.",
+    "gpu: requires a real NVIDIA GPU, Ollama and ffmpeg. Opt-in, local only.",
+]
