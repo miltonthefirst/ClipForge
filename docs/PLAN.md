@@ -744,6 +744,9 @@ stubbed worker; screenshots for the README.
    an explicit "playable on the worker machine" affordance, asserted in E2E.
 7. ⏸ **`v0.1.0` not tagged**, pending items 1 and 3.
 
+Items 1, 3 and 7 are consolidated into [Phase 11](#phase-11--open-source-hardening), which is where
+everything blocked on a real account or a real device now lives.
+
 **Delivered.** The worker's read-only local file server on 127.0.0.1 · Angular PWA with Google
 sign-in, a jobs view with live per-stage progress, and the review queue · the three-tier playback
 precedence · PWA manifest and icons · Playwright E2E against the emulator, wired into CI.
@@ -805,7 +808,8 @@ rules, worker and UI; an ADR on worker-held credentials.
    HTTP call is tested against a mock transport that asserts the *request* — resumable session,
    `part=snippet,status`, `privacyStatus: unlisted`, the 100-character title truncation — so what is
    untested is precisely the network hop and nothing else. Recorded as unverified rather than
-   claimed, in the same spirit as Phase 7's physical-phone demo.
+   claimed, in the same spirit as Phase 7's physical-phone demo, and consolidated with it into
+   [Phase 11](#phase-11--open-source-hardening).
 2. ✅ Enforced twice, tested independently: 17 pure-function tests in
    `apps/worker/tests/unit/test_rights.py`, and 15 emulator tests in
    `firebase/tests/publishing.rules.spec.ts`. Neither copy is redundant — the worker uses the Admin
@@ -931,8 +935,25 @@ templates; `SECURITY.md`; a public roadmap; an honest **Limitations** section (t
 fragility, YouTube quota, OAuth verification, rights responsibility); and a README rewritten to lead
 with the §1 thesis.
 
+**Carried here deliberately.** Four items were deferred from earlier phases rather than faked, and
+they are consolidated here because they share one blocker — they all need real accounts, real
+hardware in someone's hand, or a served build, and none of them can be satisfied by a test:
+
+| Item | From | Blocked on |
+| --- | --- | --- |
+| The physical-phone review demo | 7 | A real Firebase project with Auth and FCM enabled |
+| A Lighthouse PWA audit | 7 | A served build; worth running with the phone demo |
+| `v0.1.0` not yet tagged | 7 | The two items above |
+| A real upload appearing on a real channel | 8 | The operator's Google account and an OAuth client |
+
+None of these gates the code. Everything each one exercises is built and tested up to the point where
+the real account or the real device begins; what is unverified in each case is precisely that last
+hop and nothing before it. They are listed as unverified rather than claimed, which is the whole
+reason they are still visible here.
+
 **Exit criteria.** A clean machine reaches a rendered clip by following the docs alone; the README
-states limitations plainly; CI badges are green; the repository is made public.
+states limitations plainly; every item in the table above is either closed or restated in the README
+as a known limitation; CI badges are green; the repository is made public.
 
 ---
 
@@ -986,9 +1007,10 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 | A foreign process holds the VRAM the pipeline needs | **High** | High | Broker measures actual free VRAM and names the holding process; observed in Phase 0 | 2 |
 | yt-dlp breaks on a YouTube change | High | Medium | Pinned version, isolated behind the adapter, nightly canary, honest README note | 3 |
 | A small model produces bland clip selections | Medium | High | Golden tests make quality measurable; a documented mitigation ladder | 5 |
-| YouTube quota allows only ~6 uploads/day | Certain | Medium | Quota budgeting in the scheduler, surfaced in the UI | 8 |
-| OAuth refresh tokens expire every 7 days in Testing mode | High | Medium | Build for re-auth; document Google verification as the production path | 8 |
-| Rights exposure on third-party source material | Medium | High | Attestation gate in rules and worker; publishing off by default; documented | 8 |
+| YouTube quota allows only ~6 uploads/day | Certain | Medium | ✅ **Addressed in Phase 8** — `QuotaLedger` refuses *before* an upload starts rather than failing on the seventh; `clipforge-worker quota` reports what is left | 8 |
+| OAuth refresh tokens expire every 7 days in Testing mode | High | Medium | ✅ **Addressed in Phase 8** — a rejected refresh names the 7-day limit and the command that fixes it, and `doctor` reports the token's age before it expires; Google verification documented as the production path | 8 |
+| Rights exposure on third-party source material | Medium | High | ✅ **Addressed in Phase 8** — attestation gate in rules *and* worker (the Admin SDK bypasses rules, so both are load-bearing), publishing off by default, every upload audit-logged with the attestation copied at publish time | 8 |
+| A refresh token leaks through Firestore, a backup or a log | Low | **Critical** | Worker-held and encrypted at rest, never written to Firestore, never logged unredacted ([ADR-0010](adr/0010-worker-held-publishing-credentials.md)); asserted by a test that sweeps every emulator document | 8 |
 | Firestore cost from chatty progress updates | Low | Medium | Throttle progress writes to ≥2s; batch event-log entries | 2, 7 |
 | **No Cloud Storage on Spark**, so no remote clip playback | **Certain** | Medium | Clips stay local behind a `BlobStore` port; poster frame in Firestore; playback precedence resolves `playbackUrl` → local server → poster. Enabling Blaze is one adapter ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)) | 6, 7 |
 | A large transcript exceeds Firestore's 1 MiB document limit | Medium | Medium | Transcripts live on the worker; Firestore holds a `TranscriptRef` only | 4 |
@@ -997,29 +1019,33 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 
 ## 8. Immediate next actions
 
-**Milestone M0 is complete** (2026-09-08). Phases 0, 1 and 2 have all met their exit criteria, and
-the repository now has a control plane and a worker that runs a checkpointed job reliably and
-survives being killed.
+**Milestones M0, M1 and M2 are complete, and M3 is half complete** (2026-09-09). Phases 0 through 8
+have met their exit criteria, with four items honestly outstanding and consolidated into Phase 11
+(see the table there). The pipeline runs end to end on the free tier: a YouTube URL becomes a
+transcript, a ranked set of candidates, a rendered vertical clip with captions, a phone review, a
+recorded rights basis, and an unlisted upload.
 
-Current test coverage, all runnable from a clean clone with no GPU and no network:
+Current test coverage, all runnable from a clean clone with no GPU and no network except where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 94 | nothing |
-| Worker integration | 35 | Firestore emulator |
-| Security rules | 42 | Auth + Firestore + Storage emulators |
-| Web | 7 | nothing |
-| Contracts staleness | 2 gates | nothing |
+| Worker unit | 329 | nothing |
+| Worker integration | 74 | Firestore emulator |
+| Security rules | 62 | Auth + Firestore + Storage emulators |
+| Web unit | 28 | nothing |
+| Playwright E2E | 20 | Auth + Firestore emulators, stubbed worker |
+| Worker GPU (opt-in) | 12 | RTX 3050, Ollama, ffmpeg |
+| `doctor` | 18 checks | the real machine |
 
-### The free-tier posture
+### The free-tier posture, and the Blaze on-ramp
 
-ClipForge now targets the **Spark free tier** and must not be blocked on Blaze
+ClipForge targets the **Spark free tier** and must not be blocked on Blaze
 ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)). Verified 2026-09-08: since 3 February 2026 Cloud
 Storage for Firebase requires Blaze outright — on Spark there is no bucket at all, and bucket API calls
 return 402/403. Firestore, Auth, FCM and Hosting are all free and unaffected, and Cloud Functions were
 already designed around in [ADR-0006](adr/0006-lease-based-job-claiming.md).
 
-What that costs, and what it does not:
+What that costs, and what it does not — now settled rather than predicted, with Phase 8 shipped:
 
 | | Status |
 | --- | --- |
@@ -1027,15 +1053,16 @@ What that costs, and what it does not:
 | Live per-stage progress | ✅ unaffected |
 | Push notification on completion | ✅ unaffected |
 | Approve / reject from the phone | ✅ unaffected — the decision travels through Firestore |
+| Record a rights basis and publish from the phone | ✅ unaffected — the phone sends an intent, not a file |
 | **Watch the clip on the phone** | ❌ poster frame + filmstrip + metadata instead |
 | Watch the clip on the machine | ✅ through the worker's local file server |
-| **Publish to YouTube (v0.2)** | ✅ **unaffected** — the worker holds both the file and the token (D7) |
-| Analytics (v0.2) | ✅ unaffected |
+| **Publish to YouTube** | ✅ **unaffected** — the worker holds both the file and the token (D7, [ADR-0010](adr/0010-worker-held-publishing-credentials.md)) |
+| Analytics (v0.2) | ✅ expected unaffected — the Analytics API is not a Firebase product |
 
-**The Blaze on-ramp**, so the upgrade is configuration rather than a project:
+**The Blaze on-ramp**, so the upgrade stays configuration rather than a project:
 
 1. `Clip` already carries `localPath`, `playbackUrl` and a `location` discriminator. Both states are
-   first-class in the schema now, so switching populates a field rather than migrating a model.
+   first-class in the schema, so switching populates a field rather than migrating a model.
 2. All artefact writes go through the `BlobStore` port. The `firebase` adapter is the only code the
    upgrade needs, selected by `CLIPFORGE_BLOB_STORE`.
 3. Playback resolves through one documented precedence, so enabling Blaze lights up a branch the UI
@@ -1045,19 +1072,31 @@ What that costs, and what it does not:
 5. A `backfill-storage` command uploads existing clips and fills `playbackUrl` — written on the day,
    against a contract that already supports its result.
 
-### Next: Phase 3 — Ingestion
+Publishing is deliberately *not* on that list. It never depended on Blaze, and it should not acquire a
+dependency on it: the credentials belong on the worker whichever tier the project is on.
 
-1. **Build `LocalFileAdapter` before the YouTube one.** §6 requires the integration tier to run with no
-   network, so the committed fixture path is what keeps Phase 3 testable in CI at all. It matters more
-   now: local files are the whole storage story, not just a test convenience.
-2. **Introduce the `BlobStore` port in Phase 3**, not Phase 6. Ingestion is the first thing to write an
-   artefact, and defining the port at its first use is cheaper than retrofitting it at its third.
-3. **Give the workspace a real quota and GC.** With clips never leaving the machine, `WORKSPACE_MAX_GB`
-   stops being a nicety — it is the only thing standing between a long run and a full disk.
+### Next: Phase 9 — Analytics and calibration
 
-Deliberately **not** doing now: verifying billing, choosing a Firestore location under a Storage
-constraint, or setting a budget kill switch. Spark cannot incur a bill, which is the point.
+Phase 9 is the one that makes the rest of the project falsifiable. Everything up to here produces
+scores; Phase 9 finds out whether they predicted anything. Three notes for whoever starts it:
 
-One correction carried forward from Phase 2: the `ECHO` job type is not scaffolding to be deleted. It
-is the harness that makes scheduler behaviour testable in milliseconds, and Phases 3 onward should
-keep using it rather than waiting on a real twenty-minute pipeline to test a scheduling change.
+1. **The `Publication` record is already the join key.** It carries the video id, the attestation and
+   the publish time, so retention and view data has somewhere to attach without a new model. Phase 8
+   wrote it as an audit log; Phase 9 reads it as an experiment log.
+2. **Quota is the constraint again, and it is the same budget.** The Analytics API draws on the same
+   10,000 daily units an upload spends 1,600 of. A poller that ignores this will starve publishing —
+   `QuotaLedger` already exists and should be shared rather than duplicated.
+3. **Do not let calibration silently rewrite history.** Candidate documents record `modelVersion` and
+   `promptVersion` precisely so a score can be attributed to the thing that produced it. A
+   recalibration that overwrites past scores destroys the only evidence the phase exists to gather.
+
+Deliberately **not** doing now: trend-driven sourcing (Phase 10 is gated on Phase 9 producing
+evidence, not on it merely running), and any additional publishing platform — TikTok and Instagram
+both need app review with materially harder approval paths and are scoped separately.
+
+One correction carried forward from Phase 8: a stage that exists is not a stage that runs.
+`RenderStage` was implemented, unit-tested and never registered, and `submit` built job documents
+from whichever stage implementations its caller happened to construct. Both were invisible to a test
+suite that assembled its own pipelines. The pipeline's shape is now declared once, in `CLIP_PIPELINE`,
+and asserted against the runnable stages — and a phase that adds a stage should extend that
+declaration first.
