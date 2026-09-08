@@ -111,7 +111,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "SLF001"]
+# S101: asserts are the point of a test.
+# SLF001: tests may reach into internals.
+# S607: tests invoke ffmpeg by name. Resolving it via PATH is the project's
+#       documented dependency model — `doctor` verifies it is there — and
+#       hardcoding an absolute path would make the suite machine-specific.
+"tests/**" = ["S101", "SLF001", "S607"]
 
 [tool.ruff.format]
 quote-style = "double"

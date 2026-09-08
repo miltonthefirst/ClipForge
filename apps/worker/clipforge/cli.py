@@ -40,8 +40,10 @@ def run(
     from clipforge.media.workspace import Workspace
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
+    from clipforge.store.blobs import build_blob_store
     from clipforge.store.firestore import (
         CandidateStore,
+        ClipStore,
         JobStore,
         SourceStore,
         WorkerStore,
@@ -68,6 +70,8 @@ def run(
             transcripts=TranscriptStore(client, settings),
             archive=TranscriptArchive(workspace.transcripts_dir),
             candidates=CandidateStore(client, settings),
+            clips=ClipStore(client, settings),
+            blobs=build_blob_store(settings),
         ),
     )
     worker.install_signal_handlers()

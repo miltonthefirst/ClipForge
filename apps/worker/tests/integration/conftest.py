@@ -60,13 +60,22 @@ def client(settings: Settings) -> firestore.Client:
 
 
 @pytest.fixture(autouse=True)
-def _clean(settings: Settings, client: firestore.Client) -> Iterator[None]:
-    """Wipe the emulator between tests.
+def _clean() -> Iterator[None]:
+    """Wipe the emulator between tests, when there is one.
+
+    Deliberately does NOT depend on the `settings` fixture. Doing so would make
+    every test in this tier require the emulator, including the ones that only
+    need ffmpeg — the render tests would skip on a machine that could run them
+    perfectly well. Tests that genuinely need Firestore request a store fixture
+    and skip through `settings` on their own.
 
     The emulator's own REST endpoint is used rather than deleting documents one
     by one: it is atomic, and it cannot leave a half-cleared collection behind
     when a test fails mid-way.
     """
+    if not _emulator_running():
+        yield
+        return
     _wipe()
     yield
     _wipe()

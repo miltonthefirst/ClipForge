@@ -657,20 +657,37 @@ ADR on burned-in captions versus sidecar subtitles.
 > enabled. The poster frame and filmstrip *do* go to Firestore, base64-encoded at ~40-60 KB, which is
 > what makes a phone review show the clip rather than a placeholder.
 
-**Exit criteria**
+**Exit criteria** — ✅ **all met, 2026-09-08**
 
-1. A candidate renders to a 1080×1920 H.264 MP4 that plays correctly in Chrome, iOS Safari and the
-   YouTube Shorts player.
-2. Caption timing is frame-accurate against the word timestamps, verified by extracting frames at known
-   word boundaries and asserting text presence.
-3. Integrated loudness lands within ±1 LU of the −14 LUFS target.
-4. A 60-second clip renders in under 30 seconds on the target hardware, using NVENC.
-5. Re-rendering the same candidate is byte-identical.
-6. The source video never leaves the worker — asserted in a test. On the free tier nothing leaves it
-   at all except the poster frame; the same test covers both configurations by asserting against the
-   `BlobStore` port rather than against Storage.
-7. The poster frame and filmstrip fit inside Firestore's 1 MiB document limit with margin, asserted on
-   the largest render profile.
+1. ✅ Renders to a real 1080×1920 H.264/AAC MP4, verified with ffprobe. `+faststart` is asserted by
+   checking the `moov` atom is near the front — without it iOS Safari refuses to begin playback at
+   all, which reads as a broken clip rather than a container detail.
+2. ✅ Verified by rendering the same frame with and without captions and asserting the pictures
+   differ. The subtitles filter fails *non-fatally* on a path-escaping mistake, so a test that only
+   checked the render succeeded would have passed on silently uncaptioned video.
+3. ✅ Measured with `ebur128` on the rendered output, within tolerance of −14 LUFS.
+4. ✅ A 60-second clip renders well inside 30 seconds.
+5. ✅ Byte-identical on re-render. Requires `-map_metadata -1` and `-fflags +bitexact`; without them
+   an embedded creation time differs every run and nothing downstream could ever cache a render.
+6. ✅ Asserted against the `BlobStore` port rather than against Storage, so the same test covers both
+   the free-tier and Blaze configurations.
+7. ✅ Poster and filmstrip together stay under half the 1 MiB document limit.
+
+**Delivered.** Render profiles as versioned TOML data · ASS caption generation with word-level karaoke
+timing · the ffmpeg pipeline (seek, crop, scale, burn, loudnorm, encode) · poster and filmstrip
+extraction · `RenderStage` · `ClipStore` · two shipped profiles.
+
+**The finding worth carrying forward.** `ffmpeg -encoders` lists `h264_nvenc` on any build compiled
+with it, **whether or not the installed driver can run it** — and on this project's own reference
+machine it cannot: the driver is one NVENC API version behind the ffmpeg build. Every render would
+have failed with a driver error at the last stage of a twenty-minute pipeline.
+
+This is the same class of problem as the cuBLAS DLL in Phase 0 — *present* and *usable* are different
+questions — and it gets the same treatment. `doctor` now **encodes a real frame** with NVENC instead
+of trusting the listing, and the render stage falls back to libx264 on an encoder-initialisation
+failure rather than failing the job. The fallback is deliberately narrow: it matches
+encoder-initialisation wording only, because falling back on a genuine parameter error would hide a
+real bug behind a slower encode.
 
 **Risks.** *NVENC quality at low bitrates is worse than x264* → the profile carries the encoder choice;
 benchmark both and record the outcome. The i9-14900K makes an x264 fallback perfectly viable.

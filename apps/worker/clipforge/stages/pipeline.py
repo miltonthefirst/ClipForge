@@ -28,7 +28,8 @@ from clipforge.stages.base import Stage, StageRegistry
 from clipforge.stages.download import DownloadStage
 from clipforge.stages.echo import echo_registry
 from clipforge.stages.transcribe import TranscribeStage
-from clipforge.store.firestore import CandidateStore, SourceStore
+from clipforge.store.blobs import BlobStore
+from clipforge.store.firestore import CandidateStore, ClipStore, SourceStore
 from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
 __all__ = [
@@ -48,6 +49,8 @@ def build_clip_stages(
     transcripts: TranscriptStore | None = None,
     archive: TranscriptArchive | None = None,
     candidates: CandidateStore | None = None,
+    clips: ClipStore | None = None,
+    blobs: BlobStore | None = None,
 ) -> list[Stage]:
     """Every CLIP stage that is implemented, in pipeline order.
 
@@ -81,6 +84,8 @@ def build_clip_registry(
     transcripts: TranscriptStore,
     archive: TranscriptArchive,
     candidates: CandidateStore,
+    clips: ClipStore,
+    blobs: BlobStore,
 ) -> StageRegistry:
     registry = StageRegistry()
     for stage in build_clip_stages(
@@ -90,6 +95,8 @@ def build_clip_registry(
         transcripts=transcripts,
         archive=archive,
         candidates=candidates,
+        clips=clips,
+        blobs=blobs,
     ):
         registry.register(stage)
     return registry
@@ -140,6 +147,8 @@ def build_registry_factory(
     transcripts: TranscriptStore,
     archive: TranscriptArchive,
     candidates: CandidateStore,
+    clips: ClipStore,
+    blobs: BlobStore,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -154,6 +163,8 @@ def build_registry_factory(
         transcripts=transcripts,
         archive=archive,
         candidates=candidates,
+        clips=clips,
+        blobs=blobs,
     )
 
     def factory(job_type: JobType) -> StageRegistry:

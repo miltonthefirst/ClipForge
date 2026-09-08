@@ -29,6 +29,8 @@ from typing import Any
 
 from clipforge_contracts import (
     Candidate,
+    Clip,
+    ClipPreview,
     Job,
     JobStatus,
     Source,
@@ -48,6 +50,8 @@ JOBS = "jobs"
 WORKERS = "workers"
 SOURCES = "sources"
 CANDIDATES = "candidates"
+CLIPS = "clips"
+PREVIEW = "preview"
 EVENTS = "events"
 
 
@@ -70,7 +74,7 @@ def firestore_client(settings: Settings) -> firestore.Client:
 
 
 def _to_document(
-    model: Job | WorkerHeartbeat | Source | TranscriptRef | Candidate,
+    model: Job | WorkerHeartbeat | Source | TranscriptRef | Candidate | Clip | ClipPreview,
 ) -> dict[str, Any]:
     """Model to Firestore document.
 
@@ -432,6 +436,52 @@ class CandidateStore:
                 self._db.collection(CANDIDATES).document(candidate.id),
                 _to_document(candidate),
             )
+        batch.commit()
+
+
+class ClipStore:
+    """Rendered clips at ``clips/{clipId}``, with previews in a subcollection."""
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def get(self, clip_id: str) -> Clip | None:
+        snapshot = self._db.collection(CLIPS).document(clip_id).get()
+        if not snapshot.exists:
+            return None
+        return Clip.model_validate(snapshot.to_dict() or {})
+
+    def for_job(self, job_id: str) -> list[Clip]:
+        query = self._db.collection(CLIPS).where(
+            filter=firestore.FieldFilter("jobId", "==", job_id)
+        )
+        return [Clip.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+
+    def preview(self, clip_id: str) -> ClipPreview | None:
+        snapshot = (
+            self._db.collection(CLIPS)
+            .document(clip_id)
+            .collection(PREVIEW)
+            .document("poster")
+            .get()
+        )
+        if not snapshot.exists:
+            return None
+        return ClipPreview.model_validate(snapshot.to_dict() or {})
+
+    def save(self, clip: Clip, *, preview: ClipPreview | None = None) -> None:
+        """Write a clip and its poster together.
+
+        One batch, deliberately. On the free tier the poster is most of what a
+        phone review has to go on, so a clip that appeared in the queue without
+        one would render as a broken card — worse than not appearing yet.
+        """
+        batch = self._db.batch()
+        clip_ref = self._db.collection(CLIPS).document(clip.id)
+        batch.set(clip_ref, _to_document(clip))
+        if preview is not None:
+            batch.set(clip_ref.collection(PREVIEW).document("poster"), _to_document(preview))
         batch.commit()
 
 

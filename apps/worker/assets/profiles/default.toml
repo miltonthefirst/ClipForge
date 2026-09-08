@@ -1,0 +1,49 @@
+# The default render profile.
+#
+# Everything about how a clip LOOKS lives here rather than in the render code, so
+# changing the look is a data edit and every clip records which profile produced
+# it. Bump `version` when a change would alter output: the identifier is stamped
+# on the clip, and that is what makes "why does this one look different"
+# answerable six months later.
+
+version = "v1"
+
+# centre | left | right — where the 9:16 window sits in a landscape source.
+# `centre` is right for most talking-head footage; `left`/`right` help when the
+# speaker is consistently off-centre.
+crop = "centre"
+
+video_bitrate = "6M"
+audio_bitrate = "192k"
+
+# EBU R128. -14 LUFS is what the short-form platforms normalise to, so
+# delivering louder just means they turn it down with the dynamics already
+# squashed.
+loudness_lufs = -14.0
+loudness_true_peak = -1.5
+loudness_range = 11.0
+
+[captions]
+font_name = "Arial"
+font_size = 72
+# ASS colours are &HAABBGGRR — alpha first, then BLUE, green, red. Not RGB.
+primary_colour = "&H00FFFFFF"
+highlight_colour = "&H0000D7FF"
+outline_colour = "&H00000000"
+back_colour = "&HA0000000"
+outline = 4
+shadow = 2
+bold = true
+
+# Percentage of frame height from the bottom. Kept clear of the platform's own
+# overlay furniture, which sits higher than people expect.
+margin_v_pct = 22.0
+margin_h_pct = 8.0
+
+max_chars_per_line = 22
+max_lines = 2
+
+# Word-by-word highlighting. This is what Phase 4's word-level timestamps are
+# for, and what makes captions feel like part of the video rather than a
+# transcript pasted over it.
+karaoke = true

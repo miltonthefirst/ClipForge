@@ -52,12 +52,13 @@ def test_run_all_can_skip_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     subprocess (docs/PLAN.md §6).
     """
     stub = CheckResult(name="stub", ok=True, detail="")
-    for probe in ("probe_ffmpeg", "probe_ollama", "probe_gpu"):
+    probes = ("probe_ffmpeg", "probe_nvenc", "probe_ollama", "probe_gpu")
+    for probe in probes:
         monkeypatch.setattr(diagnostics, probe, lambda *_, **__: stub)
 
     names = [check.name for check in run_all(include_gpu=False)]
     assert "cuda_transcribe" not in names
-    assert len(names) == 3
+    assert len(names) == len(probes)
 
 
 # --- ffmpeg capability matching -------------------------------------------
