@@ -82,6 +82,12 @@ jobs:
       - name: Install Python 3.12
         run: uv python install 3.12
 
+      # ffmpeg is a hard dependency of the media stages, and ffprobe is what the
+      # ingest adapters use to decide whether a file is usable at all. Without it
+      # the entire Phase 3 test surface would silently skip.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Sync dependencies (core + dev)
         run: uv sync --locked
 
@@ -133,6 +139,9 @@ jobs:
 
       - name: Install Python 3.12
         run: uv python install 3.12
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Install
         run: |

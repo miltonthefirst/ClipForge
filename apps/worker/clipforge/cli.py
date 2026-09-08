@@ -37,17 +37,28 @@ def run(
     are returned to the queue so another worker can take them immediately, and
     the heartbeat flips to OFFLINE.
     """
+    from clipforge.media.workspace import Workspace
     from clipforge.scheduler.worker import Worker
-    from clipforge.store.firestore import JobStore, WorkerStore, firestore_client
+    from clipforge.stages.pipeline import build_registry_factory
+    from clipforge.store.firestore import JobStore, SourceStore, WorkerStore, firestore_client
 
     settings = get_settings()
     configure_logging(level=settings.log_level, fmt=settings.log_format)
 
     client = firestore_client(settings)
+    workspace = Workspace(settings.workspace_dir, max_gb=settings.workspace_max_gb)
+    # Anything left in tmp/ belongs to a run that is already over.
+    workspace.clear_tmp()
+
     worker = Worker(
         settings=settings,
         jobs=JobStore(client, settings),
         workers=WorkerStore(client, settings),
+        registry_factory=build_registry_factory(
+            settings=settings,
+            sources=SourceStore(client, settings),
+            workspace=workspace,
+        ),
     )
     worker.install_signal_handlers()
 
@@ -63,21 +74,41 @@ def run(
 
 @app.command()
 def submit(
+    submission: str = typer.Argument(
+        "", help="A YouTube URL or a local media file. Omit to enqueue an ECHO job."
+    ),
     uid: str = typer.Option("local", help="Owning user id."),
     job_id: str = typer.Option("", help="Explicit job id; generated when omitted."),
 ) -> None:
-    """Enqueue an ECHO job — three no-op stages that exercise the scheduler.
+    """Enqueue a job.
 
-    ECHO touches no media, so this works before any of the pipeline exists.
+    With a submission, this is a real CLIP job. Without one it is an ECHO job —
+    three no-op stages that exercise the scheduler without touching any media.
     """
+    from clipforge.media.workspace import Workspace
     from clipforge.stages.echo import new_echo_job
-    from clipforge.store.firestore import JobStore, firestore_client
+    from clipforge.stages.pipeline import build_clip_stages, new_clip_job
+    from clipforge.store.firestore import JobStore, SourceStore, firestore_client
 
     settings = get_settings()
     configure_logging(level=settings.log_level, fmt=settings.log_format)
+    client = firestore_client(settings)
 
-    job = new_echo_job(uid=uid, job_id=job_id or None)
-    JobStore(firestore_client(settings), settings).create(job)
+    if submission:
+        job = new_clip_job(
+            uid=uid,
+            submission=submission,
+            job_id=job_id or None,
+            stages=build_clip_stages(
+                settings=settings,
+                sources=SourceStore(client, settings),
+                workspace=Workspace(settings.workspace_dir, max_gb=settings.workspace_max_gb),
+            ),
+        )
+    else:
+        job = new_echo_job(uid=uid, job_id=job_id or None)
+
+    JobStore(client, settings).create(job)
     typer.echo(job.id)
 
 
@@ -103,6 +134,27 @@ def status(job_id: str = typer.Argument(..., help="Job id to inspect.")) -> None
             indent=2,
         )
     )
+
+
+@app.command()
+def workspace() -> None:
+    """Report workspace usage against its cap.
+
+    Clips never leave this machine on the free tier, so the disk budget is a
+    first-class operational concern rather than an implementation detail.
+    """
+    from clipforge.media.workspace import Workspace as WorkspaceManager
+
+    settings = get_settings()
+    manager = WorkspaceManager(settings.workspace_dir, max_gb=settings.workspace_max_gb)
+    used = manager.used_bytes()
+    gb = 1024**3
+
+    typer.echo(f"{manager.root}")
+    typer.echo(f"  used   {used / gb:.2f} GB of {settings.workspace_max_gb} GB cap")
+    typer.echo(f"  free   {manager.free_disk_bytes() / gb:.2f} GB on the volume")
+    over = manager.over_budget_by()
+    typer.echo(f"  over budget by {over / gb:.2f} GB" if over else "  within budget")
 
 
 @app.command()

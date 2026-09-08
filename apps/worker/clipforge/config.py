@@ -71,9 +71,14 @@ class Settings(BaseSettings):
     gpu_lane_depth: int = Field(default=1, ge=1, le=1)
     cpu_lane_depth: int = Field(default=3, ge=1)
 
-    # ── Workspace ────────────────────────────────────────────────────────────
+    # ── Workspace and ingestion ──────────────────────────────────────────────
     workspace_dir: Path = Path("./workspace")
     workspace_max_gb: int = Field(default=60, ge=1)
+
+    # Refuse a video longer than this rather than discovering the problem after a
+    # 2 GB download and a twenty-minute transcription. Four hours by default:
+    # generous enough not to be a nuisance, short enough to catch a mistake.
+    max_source_duration_sec: float = Field(default=4 * 60 * 60, gt=0)
 
     # ── Models ───────────────────────────────────────────────────────────────
     whisper_model: str = "large-v3-turbo"
@@ -83,6 +88,13 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3.5:4b"
     ollama_num_ctx: int = 16384
     vram_reserve_mb: int = Field(default=700, ge=0)
+
+    # ── Media ────────────────────────────────────────────────────────────────
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+    render_profile: str = "default"
+    video_encoder: str = "h264_nvenc"
+    loudness_target_lufs: float = -14.0
 
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"

@@ -10,6 +10,7 @@
     "jobEvent": { "$ref": "#/definitions/JobEvent" },
     "stage": { "$ref": "#/definitions/Stage" },
     "source": { "$ref": "#/definitions/Source" },
+    "ingestErrorCode": { "$ref": "#/definitions/IngestErrorCode" },
     "transcript": { "$ref": "#/definitions/Transcript" },
     "transcriptRef": { "$ref": "#/definitions/TranscriptRef" },
     "candidate": { "$ref": "#/definitions/Candidate" },
@@ -73,6 +74,11 @@
       "properties": {
         "type": { "type": "string", "description": "Exception class name." },
         "message": { "type": "string" },
+        "code": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "A stable, machine-readable cause the PWA can map to a written explanation — see IngestErrorCode for the ingest stage's vocabulary. Null when a failure has no classified cause, in which case the UI falls back to `message`. Typed as a string rather than an enum so each stage can own its own vocabulary without every stage's codes leaking into every error."
+        },
         "traceback": { "type": ["string", "null"], "default": null },
         "retryable": {
           "type": "boolean",
@@ -140,7 +146,16 @@
         },
         "type": { "$ref": "#/definitions/JobType" },
         "status": { "$ref": "#/definitions/JobStatus" },
-        "sourceId": { "type": ["string", "null"], "default": null },
+        "sourceId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Set by the DOWNLOAD stage once ingestion resolves the submission to a source. Null until then."
+        },
+        "submission": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected."
+        },
         "stages": {
           "type": "array",
           "items": { "$ref": "#/definitions/Stage" },
@@ -211,6 +226,26 @@
       }
     },
 
+    "IngestErrorCode": {
+      "title": "IngestErrorCode",
+      "description": "Why an ingest failed, in terms a user can act on. Phase 3 requires each of these to map to a distinct user-facing message rather than a stack trace: 'this video is age-restricted' is actionable, 'DownloadError' is not. Only RATE_LIMITED and NETWORK are worth retrying.",
+      "type": "string",
+      "enum": [
+        "UNSUPPORTED_URL",
+        "NOT_FOUND",
+        "PRIVATE",
+        "GEO_BLOCKED",
+        "AGE_RESTRICTED",
+        "LIVE_STREAM",
+        "TOO_LONG",
+        "NO_SUITABLE_FORMAT",
+        "RATE_LIMITED",
+        "NETWORK",
+        "DISK_FULL",
+        "UNKNOWN"
+      ]
+    },
+
     "SourceProvider": {
       "title": "SourceProvider",
       "description": "local exists so the whole pipeline can be exercised from a committed fixture with no network, which is what keeps the integration tier runnable in CI.",
@@ -246,6 +281,18 @@
           "type": ["string", "null"],
           "default": null,
           "description": "Worker-local absolute path. Advisory only for the PWA, which can never read it."
+        },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "pinned": {
+          "type": "boolean",
+          "default": false,
+          "description": "Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with."
+        },
+        "lastAccessedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read."
         },
         "createdAt": { "type": "string", "format": "date-time" }
       }

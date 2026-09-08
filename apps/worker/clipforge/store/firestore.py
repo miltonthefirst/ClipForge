@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from clipforge_contracts import Job, JobStatus, WorkerHeartbeat
+from clipforge_contracts import Job, JobStatus, Source, SourceProvider, WorkerHeartbeat
 from google.api_core import exceptions as gcloud_exceptions
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
@@ -38,6 +38,7 @@ from clipforge.scheduler.lease import Transition
 
 JOBS = "jobs"
 WORKERS = "workers"
+SOURCES = "sources"
 EVENTS = "events"
 
 
@@ -59,7 +60,7 @@ def firestore_client(settings: Settings) -> firestore.Client:
     return firestore.Client(project=settings.firebase_project_id)
 
 
-def _to_document(model: Job | WorkerHeartbeat) -> dict[str, Any]:
+def _to_document(model: Job | WorkerHeartbeat | Source) -> dict[str, Any]:
     """Model to Firestore document.
 
     ``mode="python"`` rather than ``"json"`` so datetimes stay as datetimes and
@@ -316,6 +317,80 @@ class JobStore:
                 reaped.append(result)
 
         return reaped
+
+
+class SourceStore:
+    """Ingested sources at ``sources/{sourceId}``."""
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def get(self, source_id: str) -> Source | None:
+        snapshot = self._db.collection(SOURCES).document(source_id).get()
+        if not snapshot.exists:
+            return None
+        return Source.model_validate(snapshot.to_dict() or {})
+
+    def find_by_external_id(
+        self, *, uid: str, provider: SourceProvider, external_id: str
+    ) -> Source | None:
+        """Dedupe *before* downloading.
+
+        Re-submitting a known video must not re-fetch two gigabytes, so this is
+        keyed on the identity an adapter can derive with no network access.
+        Content hashing catches the remaining case — the same video under two
+        URLs — but only after the bytes have already arrived.
+        """
+        query = (
+            self._db.collection(SOURCES)
+            .where(filter=firestore.FieldFilter("uid", "==", uid))
+            .where(filter=firestore.FieldFilter("provider", "==", provider.value))
+            .where(filter=firestore.FieldFilter("externalId", "==", external_id))
+            .limit(1)
+        )
+        for doc in query.stream():
+            return Source.model_validate(doc.to_dict() or {})
+        return None
+
+    def find_by_content_hash(self, *, uid: str, content_hash: str) -> Source | None:
+        query = (
+            self._db.collection(SOURCES)
+            .where(filter=firestore.FieldFilter("uid", "==", uid))
+            .where(filter=firestore.FieldFilter("contentHash", "==", content_hash))
+            .limit(1)
+        )
+        for doc in query.stream():
+            return Source.model_validate(doc.to_dict() or {})
+        return None
+
+    def save(self, source: Source) -> None:
+        self._db.collection(SOURCES).document(source.id).set(_to_document(source))
+
+    def touch(self, source_id: str, *, now: datetime | None = None) -> None:
+        """Record that a stage read the file, for least-recently-used eviction.
+
+        A separate, tiny write rather than part of a larger update: it happens on
+        every stage that opens the media, and the workspace GC is worthless
+        without it.
+        """
+        self._db.collection(SOURCES).document(source_id).update(
+            {"lastAccessedAt": now or datetime.now(UTC)}
+        )
+
+    def eviction_candidates(self, *, uid: str | None = None) -> list[Source]:
+        """Downloaded sources the GC may consider.
+
+        Local-file sources are excluded by the caller, not here: the workspace
+        does not own those files and must never delete them.
+        """
+        collection = self._db.collection(SOURCES)
+        query: firestore.Query | firestore.CollectionReference = (
+            collection.where(filter=firestore.FieldFilter("uid", "==", uid))
+            if uid is not None
+            else collection
+        )
+        return [Source.model_validate(doc.to_dict() or {}) for doc in query.stream()]
 
 
 class WorkerStore:

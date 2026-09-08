@@ -462,14 +462,33 @@ once, without ever filling the disk.
 **Deliverables.** The ingest stage; the workspace GC; adapter tests using a locally generated fixture
 video (`ffmpeg testsrc` plus `sine`) so CI needs no network.
 
-**Exit criteria**
+**Exit criteria** — ✅ **all met, 2026-09-08**
 
-1. A URL submitted from a test client results in a source file on disk and a `sources/{id}` document
-   with title, channel, duration and content hash.
-2. Submitting the same URL twice creates one source and one job, not two.
-3. With the cap set below the current workspace size, GC reclaims space and the pipeline still runs.
-4. Each failure mode in the taxonomy produces its mapped error code, verified with stubbed responses.
-5. The full downstream pipeline can be exercised through `LocalFileAdapter` with zero network access.
+1. ✅ A submission produces a source file and a `sources/{id}` document carrying title, duration,
+   content hash, size and `lastAccessedAt`.
+2. ✅ Submitting the same media twice creates **two jobs and one source** — the user asked twice, so
+   two jobs is correct; re-fetching gigabytes is the waste. Dedupe happens on identity *before* any
+   download, and on content hash afterwards to catch the same video under two URLs.
+3. ✅ A workspace over its cap forces a collection pass and the stage still completes. GC is
+   least-recently-used, never touches pinned or in-use sources, and **reports** a shortfall rather
+   than raising from underneath an unrelated stage.
+4. ✅ Fifteen stubbed yt-dlp messages, each mapping to its own `IngestErrorCode`, plus a retry-policy
+   test asserting that only `RATE_LIMITED` and `NETWORK` are worth retrying. This caught a real gap:
+   yt-dlp phrases geo-blocking two different ways and the narrower pattern silently downgraded one to
+   `UNKNOWN`.
+5. ✅ The whole tier runs through `LocalFileAdapter` against a committed `ffmpeg testsrc` fixture with
+   **no network access at all**.
+
+**Delivered.** The `BlobStore` port with its `local` adapter (moved here from Phase 6, since ingestion
+is the first thing to write an artefact) · workspace manager with LRU GC and a disk cap · `ffprobe`
+wrapper · `SourceAdapter` with local and YouTube implementations · the ingest failure taxonomy ·
+`DownloadStage` · `SourceStore` · the CLIP pipeline assembled from the stages that exist ·
+`clipforge-worker submit <url|path>` and `workspace` · a nightly, non-blocking yt-dlp canary.
+
+**One design note worth carrying forward.** A local-file source is **never copied into the workspace
+and never evicted**. The file is the user's, it may be very large, and duplicating it would double the
+disk cost of the one thing already straining the disk budget — which matters more on the free tier,
+where rendered clips also never leave the machine.
 
 **Risks.** *yt-dlp breaks when YouTube changes* → pin the version, isolate every yt-dlp call behind the
 adapter, and add a nightly non-blocking CI job that flags upstream breakage early. This is a

@@ -86,6 +86,10 @@ class StageError(BaseModel):
     Exception class name.
     """
     message: str
+    code: str | None = None
+    """
+    A stable, machine-readable cause the PWA can map to a written explanation — see IngestErrorCode for the ingest stage's vocabulary. Null when a failure has no classified cause, in which case the UI falls back to `message`. Typed as a string rather than an enum so each stage can own its own vocabulary without every stage's codes leaking into every error.
+    """
     traceback: str | None = None
     retryable: bool | None = True
     """
@@ -137,6 +141,13 @@ class Job(BaseModel):
     type: JobType
     status: JobStatus
     source_id: str | None = Field(None, alias="sourceId")
+    """
+    Set by the DOWNLOAD stage once ingestion resolves the submission to a source. Null until then.
+    """
+    submission: str | None = None
+    """
+    What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected.
+    """
     stages: list[Stage] = Field(..., min_length=1)
     """
     Ordered. Executed front to back; DONE stages are skipped on retry.
@@ -194,6 +205,25 @@ class JobEvent(BaseModel):
     attempts: int | None = Field(None, ge=0)
 
 
+class IngestErrorCode(StrEnum):
+    """
+    Why an ingest failed, in terms a user can act on. Phase 3 requires each of these to map to a distinct user-facing message rather than a stack trace: 'this video is age-restricted' is actionable, 'DownloadError' is not. Only RATE_LIMITED and NETWORK are worth retrying.
+    """
+
+    UNSUPPORTED_URL = "UNSUPPORTED_URL"
+    NOT_FOUND = "NOT_FOUND"
+    PRIVATE = "PRIVATE"
+    GEO_BLOCKED = "GEO_BLOCKED"
+    AGE_RESTRICTED = "AGE_RESTRICTED"
+    LIVE_STREAM = "LIVE_STREAM"
+    TOO_LONG = "TOO_LONG"
+    NO_SUITABLE_FORMAT = "NO_SUITABLE_FORMAT"
+    RATE_LIMITED = "RATE_LIMITED"
+    NETWORK = "NETWORK"
+    DISK_FULL = "DISK_FULL"
+    UNKNOWN = "UNKNOWN"
+
+
 class SourceProvider(StrEnum):
     """
     local exists so the whole pipeline can be exercised from a committed fixture with no network, which is what keeps the integration tier runnable in CI.
@@ -230,6 +260,15 @@ class Source(BaseModel):
     local_path: str | None = Field(None, alias="localPath")
     """
     Worker-local absolute path. Advisory only for the PWA, which can never read it.
+    """
+    size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
+    pinned: bool | None = False
+    """
+    Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with.
+    """
+    last_accessed_at: AwareDatetime | None = Field(None, alias="lastAccessedAt")
+    """
+    Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read.
     """
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
@@ -556,6 +595,7 @@ class ClipForgeContracts(BaseModel):
     job_event: JobEvent | None = Field(None, alias="jobEvent")
     stage: Stage | None = None
     source: Source | None = None
+    ingest_error_code: IngestErrorCode | None = Field(None, alias="ingestErrorCode")
     transcript: Transcript | None = None
     transcript_ref: TranscriptRef | None = Field(None, alias="transcriptRef")
     candidate: Candidate | None = None

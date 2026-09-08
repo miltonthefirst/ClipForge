@@ -5,6 +5,16 @@ legal lives in :mod:`clipforge.scheduler.lease` as a pure function; the adapters
 only read, apply, and compare-and-swap.
 """
 
-from clipforge.store.firestore import JobStore, WorkerStore, firestore_client
+from clipforge.store.blobs import BlobRef, BlobStore, LocalBlobStore, build_blob_store
+from clipforge.store.firestore import JobStore, SourceStore, WorkerStore, firestore_client
 
-__all__ = ["JobStore", "WorkerStore", "firestore_client"]
+__all__ = [
+    "BlobRef",
+    "BlobStore",
+    "JobStore",
+    "LocalBlobStore",
+    "SourceStore",
+    "WorkerStore",
+    "build_blob_store",
+    "firestore_client",
+]

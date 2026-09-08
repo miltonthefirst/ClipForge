@@ -234,15 +234,27 @@ class StageRunner:
     def _record_failure(self, job: Job, index: int, running: Stage, exc: Exception) -> Job:
         ended = self._clock()
 
-        # A VRAM shortfall is not the job's fault and will very likely succeed
-        # once whatever is holding the card lets go, so it stays retryable. A
-        # programming error will not fix itself, and burning two more attempts on
-        # it wastes twenty minutes to learn nothing.
-        retryable = isinstance(exc, InsufficientVramError | TimeoutError | ConnectionError)
+        # A stage that classified its own failure wins: only it knows whether
+        # "age-restricted" is worth retrying. Ingestion does this, because the
+        # difference between a rate limit and a private video is the difference
+        # between waiting and giving up.
+        code = getattr(exc, "code", None)
+        declared = getattr(exc, "retryable", None)
+
+        # Otherwise: a VRAM shortfall will very likely succeed once whatever is
+        # holding the card lets go, so it stays retryable. A programming error
+        # will not fix itself, and burning two more attempts on it wastes twenty
+        # minutes to learn nothing.
+        retryable = (
+            bool(declared)
+            if isinstance(declared, bool)
+            else isinstance(exc, InsufficientVramError | TimeoutError | ConnectionError)
+        )
 
         error = StageError(
             type=type(exc).__name__,
             message=str(exc),
+            code=str(code) if code else None,
             traceback="".join(traceback.format_exception(exc))[-4000:],
             retryable=retryable,
         )

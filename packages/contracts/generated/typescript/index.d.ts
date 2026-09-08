@@ -52,6 +52,22 @@ export type JobEventKind =
  */
 export type SourceProvider = 'youtube' | 'local';
 /**
+ * Why an ingest failed, in terms a user can act on. Phase 3 requires each of these to map to a distinct user-facing message rather than a stack trace: 'this video is age-restricted' is actionable, 'DownloadError' is not. Only RATE_LIMITED and NETWORK are worth retrying.
+ */
+export type IngestErrorCode =
+  | 'UNSUPPORTED_URL'
+  | 'NOT_FOUND'
+  | 'PRIVATE'
+  | 'GEO_BLOCKED'
+  | 'AGE_RESTRICTED'
+  | 'LIVE_STREAM'
+  | 'TOO_LONG'
+  | 'NO_SUITABLE_FORMAT'
+  | 'RATE_LIMITED'
+  | 'NETWORK'
+  | 'DISK_FULL'
+  | 'UNKNOWN';
+/**
  * Where the authoritative copy of a rendered clip lives. LOCAL is the free-tier default: Cloud Storage for Firebase requires the Blaze plan, so on Spark there is no bucket at all and clips stay on the worker. REMOTE means a copy exists that any browser can fetch. See docs/adr/0009-spark-tier-local-artefacts.md.
  */
 export type ClipLocation = 'LOCAL' | 'REMOTE';
@@ -71,6 +87,7 @@ export interface ClipForgeContracts {
   jobEvent?: JobEvent;
   stage?: Stage;
   source?: Source;
+  ingestErrorCode?: IngestErrorCode;
   transcript?: Transcript;
   transcriptRef?: TranscriptRef;
   candidate?: Candidate;
@@ -90,7 +107,14 @@ export interface Job {
   uid: string;
   type: JobType;
   status: JobStatus;
+  /**
+   * Set by the DOWNLOAD stage once ingestion resolves the submission to a source. Null until then.
+   */
   sourceId?: string | null;
+  /**
+   * What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected.
+   */
+  submission?: string | null;
   /**
    * Ordered. Executed front to back; DONE stages are skipped on retry.
    *
@@ -145,6 +169,10 @@ export interface StageError {
    */
   type: string;
   message: string;
+  /**
+   * A stable, machine-readable cause the PWA can map to a written explanation — see IngestErrorCode for the ingest stage's vocabulary. Null when a failure has no classified cause, in which case the UI falls back to `message`. Typed as a string rather than an enum so each stage can own its own vocabulary without every stage's codes leaking into every error.
+   */
+  code?: string | null;
   traceback?: string | null;
   /**
    * False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts.
@@ -191,6 +219,15 @@ export interface Source {
    * Worker-local absolute path. Advisory only for the PWA, which can never read it.
    */
   localPath?: string | null;
+  sizeBytes?: number | null;
+  /**
+   * Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with.
+   */
+  pinned?: boolean;
+  /**
+   * Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read.
+   */
+  lastAccessedAt?: string | null;
   createdAt: string;
 }
 /**
