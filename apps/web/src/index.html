@@ -2,12 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Web</title>
+    <title>ClipForge</title>
     <base href="/" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#020617" />
+    <meta
+      name="description"
+      content="A local-first AI content agent. Review AI-selected clips from your phone; the video stays on your machine."
+    />
+    <link rel="icon" href="favicon.ico" />
+    <link rel="manifest" href="manifest.webmanifest" />
+
+    <!--
+      Runtime configuration. Firebase identifiers are configuration, never
+      source, so the same built bundle can point at the emulator or at a real
+      project without a rebuild. Defaults live in src/environments.ts; anything
+      set here overrides them.
+      See docs/adr/0004-dedicated-firebase-project.md.
+    -->
+    <script>
+      window.__clipforge = {
+        // useEmulators: false,
+        // firebase: { projectId: '...', apiKey: '...', authDomain: '...', appId: '...' },
+      };
+    </script>
   </head>
-  <body>
+  <body class="min-h-screen bg-slate-950">
     <app-root></app-root>
   </body>
 </html>

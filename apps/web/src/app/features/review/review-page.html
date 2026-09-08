@@ -1,0 +1,128 @@
+<h1 class="text-xl font-semibold">Review queue</h1>
+
+@if (!localAvailable()) {
+  <!-- The honest statement of the free-tier constraint, in the one place a user
+       would otherwise wonder why there is no video. -->
+  <p
+    class="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-400"
+  >
+    Clips stay on the machine that rendered them. Open this page
+    <strong class="text-slate-200">on that machine</strong> to watch them; from here you can still
+    review by poster, hook and score, and your decision syncs either way.
+  </p>
+}
+
+@if (error(); as message) {
+  <p class="mt-4 rounded-lg border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+    {{ message }}
+  </p>
+}
+
+@if (cards() === null) {
+  <p class="py-16 text-center text-slate-500">Loading your queue…</p>
+} @else if (cards()!.length === 0) {
+  <div class="py-16 text-center">
+    <p class="text-slate-300">Nothing waiting for review.</p>
+    <p class="mt-2 text-sm text-slate-500">
+      Submit a video on the Jobs page and clips will appear here when the worker finishes.
+    </p>
+  </div>
+} @else {
+  <ul class="mt-6 space-y-6">
+    @for (card of cards(); track card.clip.id) {
+      <li class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+        @if (card.source.kind !== 'poster') {
+          <video
+            class="w-full bg-black"
+            [src]="card.source.url"
+            [poster]="posterSrc(card) ?? ''"
+            controls
+            playsinline
+            preload="metadata"
+          ></video>
+        } @else if (posterSrc(card); as poster) {
+          <img
+            class="w-full bg-black object-contain"
+            [src]="poster"
+            [alt]="'Poster frame for ' + (card.clip.title ?? 'clip')"
+          />
+        }
+
+        @if (filmstripSrc(card); as strip) {
+          <img
+            class="w-full border-t border-slate-800 bg-black"
+            [src]="strip"
+            alt="Four frames from across the clip"
+          />
+        }
+
+        <div class="space-y-4 p-4">
+          <div class="flex items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <p class="font-medium text-slate-100">{{ card.clip.title ?? 'Untitled clip' }}</p>
+              @if (card.clip.description; as reason) {
+                <p class="mt-1 text-sm text-slate-400">{{ reason }}</p>
+              }
+            </div>
+            @if (card.candidate; as candidate) {
+              <span
+                class="shrink-0 rounded-md bg-forge-500/15 px-2.5 py-1 text-sm font-semibold text-forge-400"
+                >{{ candidate.total }}</span
+              >
+            }
+          </div>
+
+          @if (subScores(card); as rows) {
+            @if (rows.length) {
+              <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                @for (row of rows; track row.label) {
+                  <div>
+                    <div class="flex justify-between text-slate-400">
+                      <dt>{{ row.label }}</dt>
+                      <dd class="tabular-nums">{{ row.value }}</dd>
+                    </div>
+                    <div class="mt-1 h-1 rounded-full bg-slate-800">
+                      <div class="h-1 rounded-full bg-forge-500" [style.width.%]="row.pct"></div>
+                    </div>
+                  </div>
+                }
+              </dl>
+            }
+          }
+
+          @if (card.candidate?.transcriptExcerpt; as excerpt) {
+            <p class="rounded-lg bg-slate-950/60 p-3 text-sm leading-relaxed text-slate-400">
+              {{ excerpt }}
+            </p>
+          }
+
+          <p class="text-xs text-slate-500">
+            {{ card.clip.durationSec | number: '1.0-0' }}s · {{ card.clip.renderProfile }}
+            @if (card.source.kind === 'poster') {
+              · <span class="text-slate-400">playable on the worker machine</span>
+            }
+          </p>
+
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="flex-1 rounded-lg bg-forge-500 px-4 py-2.5 font-medium text-white hover:bg-forge-600 disabled:opacity-50"
+              [disabled]="busy() === card.clip.id"
+              (click)="decide(card.clip, 'APPROVED')"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              class="flex-1 rounded-lg border border-slate-700 px-4 py-2.5 font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+              [disabled]="busy() === card.clip.id"
+              (click)="decide(card.clip, 'REJECTED')"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      </li>
+    }
+  </ul>
+}

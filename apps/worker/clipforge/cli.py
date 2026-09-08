@@ -37,6 +37,7 @@ def run(
     are returned to the queue so another worker can take them immediately, and
     the heartbeat flips to OFFLINE.
     """
+    from clipforge.localserver import LocalFileServer
     from clipforge.media.workspace import Workspace
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
@@ -76,6 +77,23 @@ def run(
     )
     worker.install_signal_handlers()
 
+    # Playback branch 2: with no Cloud Storage there is no URL a phone can play,
+    # but the PWA opened on THIS machine can play a clip if something serves it.
+    # See docs/adr/0009-spark-tier-local-artefacts.md.
+    file_server: LocalFileServer | None = None
+    if settings.local_server_enabled:
+        file_server = LocalFileServer(
+            workspace.root,
+            host=settings.local_server_host,
+            port=settings.local_server_port,
+        )
+        try:
+            file_server.start()
+        except OSError as exc:
+            # A port clash must not stop the worker doing its actual job.
+            typer.echo(f"local file server could not start: {exc}", err=True)
+            file_server = None
+
     if once:
         finished = worker.run_once()
         typer.echo(
@@ -83,7 +101,11 @@ def run(
         )
         raise typer.Exit(code=0)
 
-    worker.run_forever()
+    try:
+        worker.run_forever()
+    finally:
+        if file_server is not None:
+            file_server.stop()
 
 
 @app.command()

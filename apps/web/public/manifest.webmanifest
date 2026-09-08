@@ -1,0 +1,24 @@
+{
+  "name": "ClipForge",
+  "short_name": "ClipForge",
+  "description": "Review AI-selected clips from your phone. The video stays on your machine.",
+  "start_url": "/review",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

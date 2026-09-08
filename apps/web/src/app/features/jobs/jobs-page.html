@@ -1,0 +1,91 @@
+<h1 class="text-xl font-semibold">Jobs</h1>
+
+<form class="mt-4 flex gap-2" (ngSubmit)="submit()">
+  <input
+    class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-slate-100 placeholder:text-slate-600 focus:border-forge-500 focus:outline-none"
+    type="text"
+    name="submission"
+    placeholder="YouTube URL, or a file path on the worker"
+    autocomplete="off"
+    [ngModel]="submission()"
+    (ngModelChange)="submission.set($event)"
+  />
+  <button
+    type="submit"
+    class="rounded-lg bg-forge-500 px-5 py-2.5 font-medium text-white hover:bg-forge-600 disabled:opacity-50"
+    [disabled]="submitting() || !submission().trim()"
+  >
+    {{ submitting() ? 'Adding…' : 'Add' }}
+  </button>
+</form>
+
+@if (error(); as message) {
+  <p class="mt-4 rounded-lg border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+    {{ message }}
+  </p>
+}
+
+@if (jobs() === null) {
+  <p class="py-16 text-center text-slate-500">Loading your jobs…</p>
+} @else if (jobs()!.length === 0) {
+  <p class="py-16 text-center text-slate-500">
+    No jobs yet. Paste a YouTube URL above and the worker will pick it up.
+  </p>
+} @else {
+  <ul class="mt-6 space-y-3">
+    @for (job of jobs(); track job.id) {
+      <li class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div class="flex items-start gap-3">
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm text-slate-300">{{ job.submission ?? job.id }}</p>
+            <p class="mt-1 text-xs text-slate-500">
+              {{ progress(job).done }} of {{ progress(job).total }} stages
+              @if (progress(job).current; as stage) {
+                · <span class="text-forge-400">{{ stage }}</span>
+              }
+              @if (job.attempts) {
+                · attempt {{ job.attempts + 1 }}
+              }
+            </p>
+          </div>
+          <span
+            class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium"
+            [class]="statusTone(job)"
+          >
+            {{ job.status }}
+          </span>
+        </div>
+
+        <div class="mt-3 flex gap-1">
+          @for (stage of job.stages; track stage.name) {
+            <div
+              class="h-1.5 flex-1 rounded-full"
+              [class.bg-forge-500]="stage.status === 'DONE'"
+              [class.bg-forge-500\/40]="stage.status === 'RUNNING'"
+              [class.bg-slate-700]="stage.status === 'PENDING'"
+              [class.bg-slate-600]="stage.status === 'SKIPPED'"
+              [class.bg-red-600]="stage.status === 'FAILED'"
+              [title]="stage.name + ': ' + stage.status"
+            ></div>
+          }
+        </div>
+
+        @if (job.error; as failure) {
+          <p class="mt-3 rounded-lg bg-red-950/40 px-3 py-2 text-xs text-red-300">
+            {{ failure.message }}
+          </p>
+        }
+
+        @if (cancellable(job)) {
+          <button
+            type="button"
+            class="mt-3 text-xs text-slate-500 hover:text-slate-300"
+            (click)="cancel(job)"
+          >
+            Cancel
+          </button>
+        }
+      </li>
+    }
+  </ul>
+}
