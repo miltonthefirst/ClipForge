@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Any
 
 from clipforge_contracts import (
+    Candidate,
     Job,
     JobStatus,
     Source,
@@ -46,6 +47,7 @@ from clipforge.scheduler.lease import Transition
 JOBS = "jobs"
 WORKERS = "workers"
 SOURCES = "sources"
+CANDIDATES = "candidates"
 EVENTS = "events"
 
 
@@ -67,7 +69,9 @@ def firestore_client(settings: Settings) -> firestore.Client:
     return firestore.Client(project=settings.firebase_project_id)
 
 
-def _to_document(model: Job | WorkerHeartbeat | Source | TranscriptRef) -> dict[str, Any]:
+def _to_document(
+    model: Job | WorkerHeartbeat | Source | TranscriptRef | Candidate,
+) -> dict[str, Any]:
     """Model to Firestore document.
 
     ``mode="python"`` rather than ``"json"`` so datetimes stay as datetimes and
@@ -398,6 +402,37 @@ class SourceStore:
             else collection
         )
         return [Source.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+
+
+class CandidateStore:
+    """LLM-proposed clip windows at ``candidates/{candidateId}``."""
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def for_job(self, job_id: str) -> list[Candidate]:
+        query = self._db.collection(CANDIDATES).where(
+            filter=firestore.FieldFilter("jobId", "==", job_id)
+        )
+        return [Candidate.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+
+    def replace_for_job(self, job_id: str, candidates: list[Candidate]) -> None:
+        """Write this job's candidates, removing any from a previous attempt.
+
+        Replace rather than append: ANALYZE is idempotent and a retry must not
+        leave the review queue holding two generations of proposals for the same
+        job, half of which were superseded.
+        """
+        batch = self._db.batch()
+        for existing in self.for_job(job_id):
+            batch.delete(self._db.collection(CANDIDATES).document(existing.id))
+        for candidate in candidates:
+            batch.set(
+                self._db.collection(CANDIDATES).document(candidate.id),
+                _to_document(candidate),
+            )
+        batch.commit()
 
 
 class WorkerStore:

@@ -23,11 +23,12 @@ from clipforge_contracts import Stage as ContractStage
 
 from clipforge.config import Settings
 from clipforge.media.workspace import Workspace
+from clipforge.stages.analyze import AnalyzeStage
 from clipforge.stages.base import Stage, StageRegistry
 from clipforge.stages.download import DownloadStage
 from clipforge.stages.echo import echo_registry
 from clipforge.stages.transcribe import TranscribeStage
-from clipforge.store.firestore import SourceStore
+from clipforge.store.firestore import CandidateStore, SourceStore
 from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
 __all__ = [
@@ -46,6 +47,7 @@ def build_clip_stages(
     workspace: Workspace,
     transcripts: TranscriptStore | None = None,
     archive: TranscriptArchive | None = None,
+    candidates: CandidateStore | None = None,
 ) -> list[Stage]:
     """Every CLIP stage that is implemented, in pipeline order.
 
@@ -66,6 +68,8 @@ def build_clip_stages(
                 workspace=workspace,
             )
         )
+    if candidates is not None and archive is not None:
+        stages.append(AnalyzeStage(sources=sources, candidates=candidates, archive=archive))
     return stages
 
 
@@ -76,6 +80,7 @@ def build_clip_registry(
     workspace: Workspace,
     transcripts: TranscriptStore,
     archive: TranscriptArchive,
+    candidates: CandidateStore,
 ) -> StageRegistry:
     registry = StageRegistry()
     for stage in build_clip_stages(
@@ -84,6 +89,7 @@ def build_clip_registry(
         workspace=workspace,
         transcripts=transcripts,
         archive=archive,
+        candidates=candidates,
     ):
         registry.register(stage)
     return registry
@@ -133,6 +139,7 @@ def build_registry_factory(
     workspace: Workspace,
     transcripts: TranscriptStore,
     archive: TranscriptArchive,
+    candidates: CandidateStore,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -146,6 +153,7 @@ def build_registry_factory(
         workspace=workspace,
         transcripts=transcripts,
         archive=archive,
+        candidates=candidates,
     )
 
     def factory(job_type: JobType) -> StageRegistry:

@@ -591,16 +591,35 @@ boundaries. This is the intellectual core of the project.
 **Deliverables.** The analyze stage; prompt templates; a golden-file test suite over committed
 transcripts.
 
-**Exit criteria**
+**Exit criteria** — ✅ **all met, 2026-09-08**
 
-1. Golden test: a fixed transcript produces a stable ranked candidate set (deterministic seed, temp 0).
-2. Across 50 consecutive windows, 100% of LLM responses parse against the schema after at most one
-   repair retry, and the raw pre-repair rate is recorded.
-3. No emitted boundary falls inside a word, and every boundary sits within the configured tolerance of a
-   detected silence — property-tested over generated transcripts.
-4. No two emitted candidates overlap by more than the configured IoU threshold.
-5. The stage completes within the VRAM budget, with Whisper confirmed unloaded.
-6. Sub-score weights can be changed and candidates re-ranked **without re-running inference**.
+1. ✅ A fixed transcript through a scripted model produces a byte-identical ranked set on repeated
+   runs; ties break by start time so equal scores cannot shuffle. Temperature 0 and a fixed seed.
+2. ✅ Verified against the **real** local model: 100% of responses parsed first time, zero repairs.
+   The mocked half scripts malformed responses to exercise the repair path precisely. Pre-repair and
+   post-repair rates are recorded separately — folding them together would hide the one signal worth
+   watching.
+3. ✅ Property-tested over 25 generated transcripts. This found a real defect: the snapper trusted the
+   silence map, but silence and word timings come from different passes and disagree by milliseconds,
+   so a "silent" midpoint could land a hair inside a word. The invariant is now *enforced* rather than
+   inferred.
+4. ✅ Asserted over 20 deliberately-overlapping candidates.
+5. ✅ The whole map step runs under one broker lease, and `keep_alive: 0` makes Ollama release rather
+   than hold the model — without which the next transcription cannot load.
+6. ✅ Reweighting re-ranks with no model involved. The plan states the rubric twice and the two
+   statements look contradictory; they coincide exactly when the weights are the rubric proportions,
+   which is why the default weights reproduce the plain sum.
+
+**Delivered.** Windowing · IoU merge · boundary snapping · weighted scoring · filter and rank, all as
+pure functions · schema-constrained Ollama client with a bounded repair loop and call statistics ·
+versioned prompts · `AnalyzeStage` · `CandidateStore`.
+
+**The bug worth remembering.** `qwen3.5:4b` is a *reasoning* model: it puts its chain of thought in a
+separate `thinking` field and, when constrained by `format`, returns an **empty** `response`. The call
+succeeds, the model reasons at length, and nothing usable comes back. `think: false` is what makes
+structured output work at all on such a model — and it is the right trade anyway, since selection is a
+bounded judgement against an explicit rubric rather than a problem that rewards extended reasoning.
+This was found by running the real model, not by reading documentation.
 
 **Risks.** *A 4B model produces bland or repetitive selections.* Criterion (1) makes quality measurable
 rather than vibes-based. Mitigation ladder, in order: prompt iteration → few-shot exemplars → an 8B

@@ -6,11 +6,18 @@ only read, apply, and compare-and-swap.
 """
 
 from clipforge.store.blobs import BlobRef, BlobStore, LocalBlobStore, build_blob_store
-from clipforge.store.firestore import JobStore, SourceStore, WorkerStore, firestore_client
+from clipforge.store.firestore import (
+    CandidateStore,
+    JobStore,
+    SourceStore,
+    WorkerStore,
+    firestore_client,
+)
 
 __all__ = [
     "BlobRef",
     "BlobStore",
+    "CandidateStore",
     "JobStore",
     "LocalBlobStore",
     "SourceStore",

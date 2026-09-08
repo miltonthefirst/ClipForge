@@ -40,7 +40,13 @@ def run(
     from clipforge.media.workspace import Workspace
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
-    from clipforge.store.firestore import JobStore, SourceStore, WorkerStore, firestore_client
+    from clipforge.store.firestore import (
+        CandidateStore,
+        JobStore,
+        SourceStore,
+        WorkerStore,
+        firestore_client,
+    )
     from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
     settings = get_settings()
@@ -61,6 +67,7 @@ def run(
             workspace=workspace,
             transcripts=TranscriptStore(client, settings),
             archive=TranscriptArchive(workspace.transcripts_dir),
+            candidates=CandidateStore(client, settings),
         ),
     )
     worker.install_signal_handlers()
