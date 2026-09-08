@@ -363,9 +363,18 @@ class RightsAttestation(BaseModel):
     note: str | None = None
 
 
+class ClipLocation(StrEnum):
+    """
+    Where the authoritative copy of a rendered clip lives. LOCAL is the free-tier default: Cloud Storage for Firebase requires the Blaze plan, so on Spark there is no bucket at all and clips stay on the worker. REMOTE means a copy exists that any browser can fetch. See docs/adr/0009-spark-tier-local-artefacts.md.
+    """
+
+    LOCAL = "LOCAL"
+    REMOTE = "REMOTE"
+
+
 class Clip(BaseModel):
     """
-    A rendered artefact at clips/{clipId}. Only clips and thumbnails are ever uploaded (decision D3).
+    A rendered artefact at clips/{clipId}. The FILE itself never enters Firestore. On the free tier it stays on the worker and is reachable through the worker's local file server; when Blaze is available the same document also carries a playbackUrl. Both states are first-class here on purpose, so enabling Blaze populates a field rather than migrating a model.
     """
 
     model_config = ConfigDict(
@@ -377,7 +386,19 @@ class Clip(BaseModel):
     candidate_id: str = Field(..., alias="candidateId", min_length=1)
     source_id: str | None = Field(None, alias="sourceId")
     job_id: str | None = Field(None, alias="jobId")
+    location: ClipLocation
+    local_path: str = Field(..., alias="localPath", min_length=1)
+    """
+    Absolute path on the worker. Always set, even once a remote copy exists — the worker still needs it to publish (decision D7).
+    """
+    playback_url: str | None = Field(None, alias="playbackUrl")
+    """
+    A URL any browser can fetch. Null on the free tier. Populated by the Cloud Storage adapter, and equally by a tunnel — this field is 'a URL', not 'a Firebase thing'.
+    """
     storage_path: str | None = Field(None, alias="storagePath")
+    """
+    Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL.
+    """
     thumbnail_path: str | None = Field(None, alias="thumbnailPath")
     duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
     width_px: int | None = Field(None, alias="widthPx", ge=1)
@@ -389,6 +410,52 @@ class Clip(BaseModel):
     review: ReviewState
     reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
     rights: RightsAttestation | None = None
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+
+
+class ClipPreview(BaseModel):
+    """
+    What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    clip_id: str = Field(..., alias="clipId", min_length=1)
+    poster_base64: str = Field(..., alias="posterBase64", min_length=1)
+    """
+    A single representative frame, JPEG, base64-encoded without a data: prefix.
+    """
+    filmstrip_base64: str | None = Field(None, alias="filmstripBase64")
+    """
+    Four frames tiled into one JPEG, so a reviewer gets a sense of motion rather than a single still.
+    """
+    width_px: int = Field(..., alias="widthPx", ge=1)
+    height_px: int = Field(..., alias="heightPx", ge=1)
+    byte_size: int | None = Field(None, alias="byteSize", ge=0)
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+
+
+class TranscriptRef(BaseModel):
+    """
+    What Firestore keeps about a transcript, at sources/{sourceId}/transcripts/{modelVersion}. The word-level segments themselves live on the worker: a 60-minute word-level transcript approaches Firestore's 1 MiB document limit, and the PWA never needs one whole — Candidate.transcriptExcerpt carries the part a reviewer reads.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    source_id: str = Field(..., alias="sourceId", min_length=1)
+    model_version: str = Field(..., alias="modelVersion", min_length=1)
+    local_path: str = Field(..., alias="localPath", min_length=1)
+    """
+    Worker-local path to the full Transcript document, as JSON.
+    """
+    language: str | None = None
+    duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
+    segment_count: int | None = Field(None, alias="segmentCount", ge=0)
+    word_count: int | None = Field(None, alias="wordCount", ge=0)
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
@@ -490,7 +557,9 @@ class ClipForgeContracts(BaseModel):
     stage: Stage | None = None
     source: Source | None = None
     transcript: Transcript | None = None
+    transcript_ref: TranscriptRef | None = Field(None, alias="transcriptRef")
     candidate: Candidate | None = None
     clip: Clip | None = None
+    clip_preview: ClipPreview | None = Field(None, alias="clipPreview")
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")

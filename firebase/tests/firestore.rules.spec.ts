@@ -304,6 +304,60 @@ describe('clip review', () => {
   it('denies creating a clip from the client', async () => {
     await assertFails(setDoc(doc(aliceDb(), 'clips/forged'), pendingClip(ALICE, { id: 'forged' })));
   });
+
+  it('denies repointing a clip at a file on the worker', async () => {
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'clips/clip-1'), {
+        review: 'APPROVED',
+        localPath: 'C:/Windows/System32/config/SAM',
+      }),
+    );
+  });
+
+  it('denies inventing a playbackUrl', async () => {
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'clips/clip-1'), {
+        review: 'APPROVED',
+        playbackUrl: 'https://example.com/not-mine.mp4',
+      }),
+    );
+  });
+});
+
+// On the free tier the poster is the only part of a clip a phone can see, so it
+// is read-often — but it is produced by the render stage, never by a client.
+describe('clip previews', () => {
+  beforeEach(async () => {
+    await seed('clips/clip-1', pendingClip(ALICE));
+    await seed('clips/clip-1/preview/poster', {
+      clipId: 'clip-1',
+      posterBase64: 'AAAA',
+      filmstripBase64: null,
+      widthPx: 1080,
+      heightPx: 1920,
+      createdAt: '2026-09-08T12:00:00.000Z',
+    });
+  });
+
+  it('lets the owner read the poster', async () => {
+    await assertSucceeds(getDoc(doc(aliceDb(), 'clips/clip-1/preview/poster')));
+  });
+
+  it("denies another user reading it", async () => {
+    await assertFails(getDoc(doc(bobDb(), 'clips/clip-1/preview/poster')));
+  });
+
+  it('denies the client writing one', async () => {
+    await assertFails(
+      setDoc(doc(aliceDb(), 'clips/clip-1/preview/forged'), {
+        clipId: 'clip-1',
+        posterBase64: 'BBBB',
+        widthPx: 1,
+        heightPx: 1,
+        createdAt: '2026-09-08T12:00:00.000Z',
+      }),
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

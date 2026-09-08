@@ -2,6 +2,18 @@ rules_version = '2';
 
 // ClipForge Cloud Storage security rules.
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// NOT CURRENTLY DEPLOYED.
+//
+// ClipForge runs on the Spark free tier, and since February 2026 Cloud Storage
+// for Firebase requires Blaze outright — on Spark there is no bucket at all.
+// Rendered clips therefore stay on the worker.
+//
+// This file is kept, and kept *tested* against the emulator (which does not care
+// about billing), so that enabling Blaze is a deploy rather than a design
+// exercise. See docs/adr/0009-spark-tier-local-artefacts.md.
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // Only rendered artefacts live here: clips and their thumbnails. Source video
 // never leaves the worker (docs/PLAN.md decision D3) — a 60-minute 1080p source
 // is 1-3 GB, and uploading it would invert the local-first thesis and cost real

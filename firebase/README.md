@@ -5,7 +5,7 @@
 | Path | Contents |
 | --- | --- |
 | `firestore.rules` | Per-user isolation. Treated as production code: every change needs an emulator test in the same PR |
-| `storage.rules` | Clip and thumbnail access |
+| `storage.rules` | Clip and thumbnail access. **Kept and tested, but not deployed** — see below |
 | `firestore.indexes.json` | Indexes for the claim query, the reaper, the review queue and analytics |
 | `tests/` | Emulator-backed rules tests (`@firebase/rules-unit-testing` + Vitest) |
 | `functions/` | Empty. The lease reaper runs as a worker task instead — see below |
@@ -51,6 +51,17 @@ or rewrite an event log. Anything the worker owns is read-only to the client.
 That asymmetry is also why ClipForge has its own Firebase project rather than
 sharing one: rules could not have protected a neighbouring app's data from a
 worker bug. See [ADR-0004](../docs/adr/0004-dedicated-firebase-project.md).
+
+## Why there is no Storage bucket
+
+ClipForge runs on the **Spark free tier**, and since February 2026 Cloud Storage for
+Firebase requires Blaze outright: on Spark there is no bucket at all, and bucket
+API calls return 402/403. Rendered clips therefore stay on the worker and are
+served to the PWA by a read-only local file server on `127.0.0.1:8765`.
+
+`storage.rules` stays here and stays tested against the emulator, which does not
+care about billing — so enabling Blaze later is a deploy, not a design exercise.
+See [ADR-0009](../docs/adr/0009-spark-tier-local-artefacts.md).
 
 ## Why `functions/` is empty
 

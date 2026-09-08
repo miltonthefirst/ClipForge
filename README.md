@@ -43,9 +43,9 @@ residency is scheduled explicitly and jobs are checkpointed pipelines that can r
                 │ Firebase SDK (as the signed-in user)
                 ▼
 ┌───────────────────────────────┐
-│  FIREBASE - control plane     │   Auth · Firestore · Storage (clips only) · FCM
-│  rules enforce per-user       │   Functions: lease reaper, analytics poller
-│  isolation                    │
+│  FIREBASE - control plane     │   Auth · Firestore · FCM · Hosting
+│  Spark free tier              │   rules enforce per-user isolation
+│  no Storage, no Functions     │   the lease reaper runs on the worker
 └───────────────┬───────────────┘
                 │ Admin SDK - onSnapshot, transactional lease claim
                 ▼
@@ -56,8 +56,18 @@ residency is scheduled explicitly and jobs are checkpointed pipelines that can r
 │            └─ CPU lane (N) ───┼─▶ Ollama LLM  ────┼─ ModelBroker (exclusive)
 │                               │   yt-dlp ─────────┤
 │  Stage runner + checkpoints   │   ffmpeg/NVENC ───┘
+│  Local file server 127.0.0.1  │
 └───────────────────────────────┘
+        rendered clips stay here
 ```
+
+**Rendered clips never leave the machine.** Cloud Storage for Firebase has required a paid plan since
+February 2026, and ClipForge is built to run without one. The phone gets the poster frame, the hook,
+the score breakdown and the transcript excerpt — enough to approve or reject, which is the decision
+that actually matters — and the video itself plays when the PWA is opened on the worker machine. All
+artefact writes go through a `BlobStore` port, so enabling the paid plan later is one adapter and one
+environment variable, not a redesign. See
+[ADR-0009](docs/adr/0009-spark-tier-local-artefacts.md).
 
 Full detail, including the data model and the job/lease protocol, is in
 [`docs/PLAN.md`](docs/PLAN.md).
@@ -174,6 +184,10 @@ Stated plainly, because they are real:
   this is an ongoing maintenance cost, not a solved problem.
 - **YouTube publishing is quota-bound.** An upload costs 1,600 of the default 10,000 daily units —
   about six uploads per day. An unverified OAuth app also expires refresh tokens every 7 days.
+- **No remote video playback on the free tier.** Cloud Storage requires a paid Firebase plan, so
+  clips stay on the worker. You review from your phone against a poster frame and metadata, and watch
+  the actual video on the machine. Publishing is unaffected — the worker holds both the file and the
+  OAuth token.
 - **Publishing third-party content is your responsibility.** See below.
 - **Windows-first.** The worker is developed and tested on Windows. Nothing is deliberately
   platform-locked, but Linux and macOS are unverified.

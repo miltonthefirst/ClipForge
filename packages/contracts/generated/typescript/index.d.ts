@@ -51,6 +51,10 @@ export type JobEventKind =
  * local exists so the whole pipeline can be exercised from a committed fixture with no network, which is what keeps the integration tier runnable in CI.
  */
 export type SourceProvider = 'youtube' | 'local';
+/**
+ * Where the authoritative copy of a rendered clip lives. LOCAL is the free-tier default: Cloud Storage for Firebase requires the Blaze plan, so on Spark there is no bucket at all and clips stay on the worker. REMOTE means a copy exists that any browser can fetch. See docs/adr/0009-spark-tier-local-artefacts.md.
+ */
+export type ClipLocation = 'LOCAL' | 'REMOTE';
 export type ReviewState = 'PENDING' | 'APPROVED' | 'REJECTED';
 /**
  * Why the user believes they may publish this. Publishing is gated on an explicit attestation; see docs/PLAN.md 7.
@@ -68,8 +72,10 @@ export interface ClipForgeContracts {
   stage?: Stage;
   source?: Source;
   transcript?: Transcript;
+  transcriptRef?: TranscriptRef;
   candidate?: Candidate;
   clip?: Clip;
+  clipPreview?: ClipPreview;
   workerHeartbeat?: WorkerHeartbeat;
   llmClipResponse?: LlmClipResponse;
 }
@@ -218,6 +224,22 @@ export interface TranscriptWord {
   probability?: number | null;
 }
 /**
+ * What Firestore keeps about a transcript, at sources/{sourceId}/transcripts/{modelVersion}. The word-level segments themselves live on the worker: a 60-minute word-level transcript approaches Firestore's 1 MiB document limit, and the PWA never needs one whole — Candidate.transcriptExcerpt carries the part a reviewer reads.
+ */
+export interface TranscriptRef {
+  sourceId: string;
+  modelVersion: string;
+  /**
+   * Worker-local path to the full Transcript document, as JSON.
+   */
+  localPath: string;
+  language?: string | null;
+  durationSec?: number | null;
+  segmentCount?: number | null;
+  wordCount?: number | null;
+  createdAt: string;
+}
+/**
  * An LLM-proposed clip window at candidates/{candidateId}, after deterministic boundary snapping.
  */
 export interface Candidate {
@@ -259,7 +281,7 @@ export interface SubScores {
   shareability: number;
 }
 /**
- * A rendered artefact at clips/{clipId}. Only clips and thumbnails are ever uploaded (decision D3).
+ * A rendered artefact at clips/{clipId}. The FILE itself never enters Firestore. On the free tier it stays on the worker and is reachable through the worker's local file server; when Blaze is available the same document also carries a playbackUrl. Both states are first-class here on purpose, so enabling Blaze populates a field rather than migrating a model.
  */
 export interface Clip {
   id: string;
@@ -267,6 +289,18 @@ export interface Clip {
   candidateId: string;
   sourceId?: string | null;
   jobId?: string | null;
+  location: ClipLocation;
+  /**
+   * Absolute path on the worker. Always set, even once a remote copy exists — the worker still needs it to publish (decision D7).
+   */
+  localPath: string;
+  /**
+   * A URL any browser can fetch. Null on the free tier. Populated by the Cloud Storage adapter, and equally by a tunnel — this field is 'a URL', not 'a Firebase thing'.
+   */
+  playbackUrl?: string | null;
+  /**
+   * Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL.
+   */
   storagePath?: string | null;
   thumbnailPath?: string | null;
   durationSec?: number | null;
@@ -286,6 +320,24 @@ export interface RightsAttestation {
   attestedBy?: string | null;
   attestedAt?: string | null;
   note?: string | null;
+}
+/**
+ * What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.
+ */
+export interface ClipPreview {
+  clipId: string;
+  /**
+   * A single representative frame, JPEG, base64-encoded without a data: prefix.
+   */
+  posterBase64: string;
+  /**
+   * Four frames tiled into one JPEG, so a reviewer gets a sense of motion rather than a single still.
+   */
+  filmstripBase64?: string | null;
+  widthPx: number;
+  heightPx: number;
+  byteSize?: number | null;
+  createdAt: string;
 }
 /**
  * Liveness and capability advertisement at workers/{workerId}.

@@ -11,8 +11,10 @@
     "stage": { "$ref": "#/definitions/Stage" },
     "source": { "$ref": "#/definitions/Source" },
     "transcript": { "$ref": "#/definitions/Transcript" },
+    "transcriptRef": { "$ref": "#/definitions/TranscriptRef" },
     "candidate": { "$ref": "#/definitions/Candidate" },
     "clip": { "$ref": "#/definitions/Clip" },
+    "clipPreview": { "$ref": "#/definitions/ClipPreview" },
     "workerHeartbeat": { "$ref": "#/definitions/WorkerHeartbeat" },
     "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" }
   },
@@ -383,19 +385,41 @@
       }
     },
 
+    "ClipLocation": {
+      "title": "ClipLocation",
+      "description": "Where the authoritative copy of a rendered clip lives. LOCAL is the free-tier default: Cloud Storage for Firebase requires the Blaze plan, so on Spark there is no bucket at all and clips stay on the worker. REMOTE means a copy exists that any browser can fetch. See docs/adr/0009-spark-tier-local-artefacts.md.",
+      "type": "string",
+      "enum": ["LOCAL", "REMOTE"]
+    },
+
     "Clip": {
       "title": "Clip",
-      "description": "A rendered artefact at clips/{clipId}. Only clips and thumbnails are ever uploaded (decision D3).",
+      "description": "A rendered artefact at clips/{clipId}. The FILE itself never enters Firestore. On the free tier it stays on the worker and is reachable through the worker's local file server; when Blaze is available the same document also carries a playbackUrl. Both states are first-class here on purpose, so enabling Blaze populates a field rather than migrating a model.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "uid", "candidateId", "review", "createdAt"],
+      "required": ["id", "uid", "candidateId", "location", "localPath", "review", "createdAt"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "uid": { "type": "string", "minLength": 1 },
         "candidateId": { "type": "string", "minLength": 1 },
         "sourceId": { "type": ["string", "null"], "default": null },
         "jobId": { "type": ["string", "null"], "default": null },
-        "storagePath": { "type": ["string", "null"], "default": null },
+        "location": { "$ref": "#/definitions/ClipLocation" },
+        "localPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path on the worker. Always set, even once a remote copy exists — the worker still needs it to publish (decision D7)."
+        },
+        "playbackUrl": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "A URL any browser can fetch. Null on the free tier. Populated by the Cloud Storage adapter, and equally by a tunnel — this field is 'a URL', not 'a Firebase thing'."
+        },
+        "storagePath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL."
+        },
         "thumbnailPath": { "type": ["string", "null"], "default": null },
         "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
         "widthPx": { "type": ["integer", "null"], "minimum": 1, "default": null },
@@ -410,6 +434,53 @@
           "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
           "default": null
         },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "ClipPreview": {
+      "title": "ClipPreview",
+      "description": "What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clipId", "posterBase64", "widthPx", "heightPx", "createdAt"],
+      "properties": {
+        "clipId": { "type": "string", "minLength": 1 },
+        "posterBase64": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A single representative frame, JPEG, base64-encoded without a data: prefix."
+        },
+        "filmstripBase64": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Four frames tiled into one JPEG, so a reviewer gets a sense of motion rather than a single still."
+        },
+        "widthPx": { "type": "integer", "minimum": 1 },
+        "heightPx": { "type": "integer", "minimum": 1 },
+        "byteSize": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "TranscriptRef": {
+      "title": "TranscriptRef",
+      "description": "What Firestore keeps about a transcript, at sources/{sourceId}/transcripts/{modelVersion}. The word-level segments themselves live on the worker: a 60-minute word-level transcript approaches Firestore's 1 MiB document limit, and the PWA never needs one whole — Candidate.transcriptExcerpt carries the part a reviewer reads.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "modelVersion", "localPath", "createdAt"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 },
+        "modelVersion": { "type": "string", "minLength": 1 },
+        "localPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Worker-local path to the full Transcript document, as JSON."
+        },
+        "language": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "segmentCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "wordCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
         "createdAt": { "type": "string", "format": "date-time" }
       }
     },

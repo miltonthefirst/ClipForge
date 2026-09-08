@@ -1,8 +1,15 @@
 # ADR-0004 — Give ClipForge its own Firebase project, and engineer for near-zero spend
 
-- **Status:** Accepted
+- **Status:** Accepted, **amended by [ADR-0009](0009-spark-tier-local-artefacts.md)**
 - **Date:** 2026-09-08
 - **Phase:** 1
+
+> **Amendment note.** The choice of project stands unchanged. What did not survive
+> is this ADR's assumption that Blaze would become available: ClipForge now
+> targets the **Spark free tier**, which means no Cloud Storage and no Cloud
+> Functions. The cost measures below still apply — they are what keep a free-tier
+> project *inside* its free tier. See
+> [ADR-0009](0009-spark-tier-local-artefacts.md).
 
 ## Context
 

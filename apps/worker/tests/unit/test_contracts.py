@@ -18,12 +18,16 @@ from typing import Any
 import clipforge_contracts
 import pytest
 from clipforge_contracts import (
+    Clip,
+    ClipLocation,
+    ClipPreview,
     GpuInfo,
     Job,
     JobStatus,
     JobType,
     Lane,
     LlmClipResponse,
+    ReviewState,
     Stage,
     StageName,
     StageStatus,
@@ -261,3 +265,72 @@ def test_heartbeat_gpu_is_optional_for_a_cpu_only_worker() -> None:
         last_seen_at=_now(),
     )
     assert heartbeat.gpu is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The free-tier storage posture. See docs/adr/0009-spark-tier-local-artefacts.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _local_clip(**overrides: Any) -> Clip:
+    defaults: dict[str, Any] = {
+        "id": "clip-1",
+        "uid": "user-1",
+        "candidate_id": "cand-1",
+        "location": ClipLocation.LOCAL,
+        "local_path": "P:/workspace/clips/clip-1.mp4",
+        "review": ReviewState.PENDING,
+        "created_at": _now(),
+    }
+    return Clip(**{**defaults, **overrides})
+
+
+@pytest.mark.unit
+def test_a_clip_always_knows_where_its_file_is() -> None:
+    """`localPath` is required even once a remote copy exists: the worker still
+    needs the file to publish (decision D7)."""
+    with pytest.raises(ValidationError):
+        _local_clip(local_path=None)
+
+
+@pytest.mark.unit
+def test_a_clip_needs_no_remote_url() -> None:
+    """The free-tier default. Cloud Storage requires Blaze, so on Spark there is
+    no bucket at all and a clip is complete without one."""
+    clip = _local_clip()
+    assert clip.playback_url is None
+    assert clip.storage_path is None
+    assert clip.location is ClipLocation.LOCAL
+
+
+@pytest.mark.unit
+def test_a_clip_can_carry_both_locations_at_once() -> None:
+    """What the Blaze upgrade populates. Both states are first-class in the
+    schema now, so enabling Storage fills a field rather than migrating a
+    model."""
+    clip = _local_clip(
+        location=ClipLocation.REMOTE,
+        playback_url="https://storage.example/clip-1.mp4",
+        storage_path="users/user-1/clips/clip-1.mp4",
+    )
+    wire = clip.model_dump(by_alias=True, mode="json")
+    assert wire["localPath"]
+    assert wire["playbackUrl"]
+    assert Clip.model_validate(wire) == clip
+
+
+@pytest.mark.unit
+def test_a_preview_stays_well_inside_the_firestore_document_limit() -> None:
+    """The poster is what a phone sees when the file is unreachable. Firestore
+    caps a document at 1 MiB; this asserts the budget the render stage must hit."""
+    poster = "A" * 60_000
+    preview = ClipPreview(
+        clip_id="clip-1",
+        poster_base64=poster,
+        filmstrip_base64=poster,
+        width_px=1080,
+        height_px=1920,
+        created_at=_now(),
+    )
+    encoded = json.dumps(preview.model_dump(by_alias=True, mode="json")).encode()
+    assert len(encoded) < 1_048_576 // 2, "a preview should sit well under half the 1 MiB limit"

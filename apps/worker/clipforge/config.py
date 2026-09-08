@@ -12,6 +12,7 @@ from __future__ import annotations
 import socket
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,6 +43,21 @@ class Settings(BaseSettings):
     firestore_emulator_host: str = "127.0.0.1:8080"
     storage_emulator_host: str = "127.0.0.1:9199"
     auth_emulator_host: str = "127.0.0.1:9099"
+
+    # ── Artefact storage ─────────────────────────────────────────────────────
+    # The one switch the Blaze upgrade flips. `local` writes clips to the
+    # workspace and never uploads; `firebase` also uploads and populates
+    # Clip.playbackUrl. Cloud Storage has required Blaze since February 2026, so
+    # `local` is the only option that works on the free tier.
+    # See docs/adr/0009-spark-tier-local-artefacts.md.
+    blob_store: Literal["local", "firebase"] = "local"
+
+    # The worker serves its workspace read-only so the PWA can play clips when
+    # opened on this machine. Keep the host at 127.0.0.1: this is a convenience,
+    # not an authenticated surface.
+    local_server_enabled: bool = True
+    local_server_host: str = "127.0.0.1"
+    local_server_port: int = Field(default=8765, ge=1024, le=65535)
 
     # ── Identity and scheduling ──────────────────────────────────────────────
     worker_id: str = ""
@@ -98,6 +114,25 @@ class Settings(BaseSettings):
                 "CLIPFORGE_USE_EMULATORS is false"
             )
         return self
+
+    @model_validator(mode="after")
+    def _require_bucket_for_firebase_blob_store(self) -> Settings:
+        """Refuse a configuration that cannot possibly work.
+
+        Selecting the `firebase` blob store without a bucket would fail at the
+        first upload — after a render has already cost minutes of GPU time.
+        """
+        if self.blob_store == "firebase" and not self.firebase_storage_bucket:
+            raise ValueError(
+                "CLIPFORGE_BLOB_STORE=firebase requires CLIPFORGE_FIREBASE_STORAGE_BUCKET. "
+                "On the Spark free tier there is no bucket: use CLIPFORGE_BLOB_STORE=local."
+            )
+        return self
+
+    @property
+    def local_server_origin(self) -> str:
+        """Where the PWA looks for locally-stored clips."""
+        return f"http://{self.local_server_host}:{self.local_server_port}"
 
     @property
     def lease_timedelta_seconds(self) -> int:

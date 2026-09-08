@@ -130,6 +130,16 @@ service cloud.firestore {
                     && changed().hasOnly(['review', 'reviewedAt', 'rights', 'title', 'description'])
                     && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED'];
 
+      // The poster frame and filmstrip. On the free tier this is the only part
+      // of a clip a phone can see at all, so it is read-often and must stay
+      // readable — but it is produced by the render stage, never by a client.
+      // See docs/adr/0009-spark-tier-local-artefacts.md.
+      match /preview/{previewId} {
+        allow read: if signedIn()
+                    && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
+        allow write: if false;
+      }
+
       match /publications/{pubId} {
         allow read: if signedIn()
                     && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;

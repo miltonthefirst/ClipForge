@@ -55,6 +55,16 @@ Every architectural decision below is downstream of that sentence.
 > Paste a YouTube URL on your phone → walk away → get a push notification → review 3 AI-selected
 > vertical clips → approve one.
 
+**What "review" means on the free tier.** ClipForge runs with no Blaze plan, and since February 2026
+Cloud Storage for Firebase requires Blaze outright — on Spark there is no bucket at all
+([ADR-0009](adr/0009-spark-tier-local-artefacts.md)). Rendered clips therefore stay on the worker.
+
+From the phone you get the poster frame, a four-frame filmstrip, the hook, the score breakdown and the
+transcript excerpt — and approve or reject from anywhere, because that decision travels through
+Firestore. The clip itself plays when the PWA is opened **on the machine**, where the worker serves its
+workspace on `127.0.0.1:8765`. The day Blaze is enabled, a `playbackUrl` starts being populated and
+video plays everywhere, with no other change.
+
 Nothing else ships in v0.1.
 
 ---
@@ -122,10 +132,10 @@ git 2.54. (Billing tier on `bytepic-clipforge` is still unverified — see
                 │ Firebase SDK (authenticated as the user)
                 ▼
 ┌───────────────────────────────┐
-│  FIREBASE — control plane     │   Auth · Firestore (jobs, state, metadata)
-│  Blaze                        │   Storage (rendered clips only) · FCM
-│  Functions: lease reaper,     │   Rules enforce per-user isolation
-│  analytics poller             │
+│  FIREBASE — control plane     │   Auth · Firestore (jobs, state, metadata,
+│  Spark (free tier)            │   poster frames) · FCM · Hosting
+│  No Functions, no Storage     │   Rules enforce per-user isolation
+│  (see ADR-0009)               │   Reaper runs on the worker, not as a Function
 └───────────────┬───────────────┘
                 │ Admin SDK (service account) — onSnapshot, not polling
                 ▼
@@ -142,7 +152,9 @@ git 2.54. (Billing tier on `bytepic-clipforge` is still unverified — see
      ┌──────────┴──────────┐
      ▼                     ▼
   Local workspace     YouTube Data API
-  (sources, temp)     (publish — worker holds the token)
+  sources · clips     (publish — worker holds the token)
+  served read-only
+  on 127.0.0.1:8765
 ```
 
 ### 3.1 Decisions that differ from the initial brainstorm
@@ -179,7 +191,10 @@ sources/{sourceId}                # one ingested long-form video (owner: uid)
   provider: youtube|local
   externalId, title, channel, durationSec, contentHash
   localPath                       # never uploaded
-  transcripts/{modelVersion}      # word-level segments, cached by contentHash
+  transcripts/{modelVersion}      # TranscriptRef only: language, counts, localPath.
+                                  # The word-level segments live on the worker — a
+                                  # 60-min transcript approaches Firestore's 1 MiB
+                                  # document limit and the PWA never needs it whole
 
 jobs/{jobId}                      # one pipeline run over one source
   status: QUEUED|RUNNING|COMPLETED|FAILED|CANCELLED
@@ -191,10 +206,16 @@ candidates/{candidateId}          # an LLM-proposed clip window
   sourceId, startSec, endSec, subScores{}, total, hook, reason
   modelVersion, promptVersion
 
-clips/{clipId}                    # a rendered artefact
-  candidateId, storagePath, thumbnailPath, durationSec, renderProfile
+clips/{clipId}                    # a rendered artefact — the FILE stays on the worker
+  candidateId, durationSec, renderProfile
+  location: LOCAL|REMOTE           # which of the two below is authoritative
+  localPath                        # always set
+  playbackUrl                      # null on Spark; set by Blaze Storage, or a tunnel
   review: PENDING|APPROVED|REJECTED
   rights: { basis, attestedBy, attestedAt, note }
+  preview/poster                   # base64 poster + filmstrip, ~40-60 KB.
+                                   # A subcollection so the review-queue query does
+                                   # not drag image bytes on every read
   publications/{pubId}            # platform, externalId, state, attempts
   metrics/{yyyymmdd}              # daily analytics snapshot
 ```
@@ -476,6 +497,12 @@ maintenance cost the README should state honestly.
 **Deliverables.** The transcribe stage; transcript and VAD schema and storage; a committed 60-second
 fixture with a known reference transcript.
 
+> **Free tier.** The word-level transcript and the VAD silence map are written to the **workspace**,
+> not Firestore. A 60-minute word-level transcript approaches Firestore's 1 MiB document limit, and the
+> PWA never needs one whole — `Candidate.transcriptExcerpt` carries the part a reviewer reads.
+> Firestore keeps a `TranscriptRef`: language, duration, word and segment counts, and the local path.
+> See [ADR-0009](adr/0009-spark-tier-local-artefacts.md).
+
 **Exit criteria**
 
 1. A 10-minute video transcribes end to end, and every segment carries word-level timestamps.
@@ -563,8 +590,15 @@ ADR once measured.
 **Explicitly out of scope (Phase 6b or later).** Face tracking, B-roll, zoom and motion effects, music
 beds, background removal, multi-speaker cuts.
 
-**Deliverables.** The render stage; two shipped render profiles; upload of clip and thumbnail to Storage
-with a signed-URL accessor; an ADR on burned-in captions versus sidecar subtitles.
+**Deliverables.** The render stage; two shipped render profiles; the **`BlobStore` port** with its
+`local` adapter; poster-frame and filmstrip extraction written to `clips/{clipId}/preview/poster`; an
+ADR on burned-in captions versus sidecar subtitles.
+
+> **Free tier.** There is no Storage bucket ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)), so
+> renders are written to the workspace and `Clip.localPath` — never uploaded. Every write goes through
+> the `BlobStore` port, whose `firebase` adapter is the one thing that needs writing the day Blaze is
+> enabled. The poster frame and filmstrip *do* go to Firestore, base64-encoded at ~40-60 KB, which is
+> what makes a phone review show the clip rather than a placeholder.
 
 **Exit criteria**
 
@@ -575,7 +609,11 @@ with a signed-URL accessor; an ADR on burned-in captions versus sidecar subtitle
 3. Integrated loudness lands within ±1 LU of the −14 LUFS target.
 4. A 60-second clip renders in under 30 seconds on the target hardware, using NVENC.
 5. Re-rendering the same candidate is byte-identical.
-6. Only the clip and thumbnail reach Storage; the source never does — asserted in a test.
+6. The source video never leaves the worker — asserted in a test. On the free tier nothing leaves it
+   at all except the poster frame; the same test covers both configurations by asserting against the
+   `BlobStore` port rather than against Storage.
+7. The poster frame and filmstrip fit inside Firestore's 1 MiB document limit with margin, asserted on
+   the largest render profile.
 
 **Risks.** *NVENC quality at low bitrates is worse than x264* → the profile carries the encoder choice;
 benchmark both and record the outcome. The i9-14900K makes an x264 fallback perfectly viable.
@@ -594,8 +632,16 @@ benchmark both and record the outcome. The i9-14900K makes an x264 fallback perf
 - **Submit**: paste a URL, validate it, create the source and job, watch it appear in the queue.
 - **Progress**: live per-stage progress driven by `onSnapshot` — the user sees `TRANSCRIBE 40%`, not a
   spinner. This is where the checkpointed stage model pays off visibly.
-- **Review queue**: a card per clip with an inline video player, the score and its sub-score breakdown,
-  the hook line, the LLM's stated reason, and the source timestamp linking back to the original.
+- **Review queue**: a card per clip with the score and its sub-score breakdown, the hook line, the
+  LLM's stated reason, the transcript excerpt, and the source timestamp linking back to the original.
+- **Playback, resolved through one documented precedence** ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)):
+  `playbackUrl` if set → the worker's local file server if reachable → poster frame and filmstrip
+  otherwise. One component, three sources; enabling Blaze later lights up the first branch and changes
+  nothing else in the product.
+- **The worker's local file server**: read-only, bound to `127.0.0.1:8765`, every path confined to the
+  workspace root. It is what makes full video review work when the PWA is opened on the machine —
+  browsers exempt `localhost` from mixed-content blocking, so it works even over HTTPS. It is a
+  convenience, not an authenticated surface, and must not quietly become one.
 - Approve and reject with an undo window; swipe gestures on touch, keyboard shortcuts on desktop.
 - **FCM push** when a job completes, deep-linking into the review queue.
 - A worker status indicator (online/offline/busy, VRAM, current job) driven by the heartbeat document.
@@ -611,12 +657,15 @@ stubbed worker; screenshots for the README.
 **Exit criteria**
 
 1. **The demo:** on a physical phone, paste a URL, lock the phone, receive a push notification, open it,
-   review the clips, approve one. Recorded as the README demo.
+   review the clips against poster, hook and score, approve one. Then open the same queue on the
+   machine and watch the approved clip play through the local file server. Recorded as the README demo.
 2. Playwright E2E covers submit → progress → review → approve against the emulator.
 3. Lighthouse: PWA installable, accessibility ≥ 90.
 4. Every view has defined empty, loading, error and offline states.
 5. Killing the worker mid-job shows an honest "worker offline, job will resume" state rather than a hang.
-6. **Tag `v0.1.0`.**
+6. A clip with no `playbackUrl` and no reachable local server renders as poster-plus-metadata with an
+   explicit "playable on the worker machine" affordance — never a broken player.
+7. **Tag `v0.1.0`.**
 
 **Risks.** *iOS PWA push requires home-screen installation and has its own quirks* → verify on the
 actual target device early in the phase; fall back to an in-app notification plus email if it proves
@@ -809,6 +858,9 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 | OAuth refresh tokens expire every 7 days in Testing mode | High | Medium | Build for re-auth; document Google verification as the production path | 8 |
 | Rights exposure on third-party source material | Medium | High | Attestation gate in rules and worker; publishing off by default; documented | 8 |
 | Firestore cost from chatty progress updates | Low | Medium | Throttle progress writes to ≥2s; batch event-log entries | 2, 7 |
+| **No Cloud Storage on Spark**, so no remote clip playback | **Certain** | Medium | Clips stay local behind a `BlobStore` port; poster frame in Firestore; playback precedence resolves `playbackUrl` → local server → poster. Enabling Blaze is one adapter ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)) | 6, 7 |
+| A large transcript exceeds Firestore's 1 MiB document limit | Medium | Medium | Transcripts live on the worker; Firestore holds a `TranscriptRef` only | 4 |
+| The local file server becomes an unauthenticated file-read surface | Low | High | Bind `127.0.0.1` only, read-only, every path confined to the workspace root; never bind `0.0.0.0` without adding auth first | 7 |
 | Scope creep into "autonomous viral agent" | **High** | High | Every phase names what it explicitly excludes; Phase 10 is gated on Phase 9 evidence | all |
 
 ## 8. Immediate next actions
@@ -827,16 +879,52 @@ Current test coverage, all runnable from a clean clone with no GPU and no networ
 | Web | 7 | nothing |
 | Contracts staleness | 2 gates | nothing |
 
-Next is **Phase 3 — Ingestion**. Before starting it:
+### The free-tier posture
 
-1. **Verify the billing tier on `bytepic-clipforge`.** Nothing so far has needed it — every exit
-   criterion in Phases 1 and 2 is emulator-backed — but Phase 6 uploads clips and needs the Storage
-   decision settled. See [ADR-0004](adr/0004-dedicated-firebase-project.md).
-2. **Choose the Firestore location deliberately when the database is first created.** It is
-   permanent, and Cloud Storage's always-free tier is US-region-only.
-3. **Set a Cloud Billing budget with a Pub/Sub kill switch.** GCP budgets notify; they do not cap.
-4. **Build `LocalFileAdapter` before the YouTube one.** §6 requires the integration tier to run with
-   no network, so the committed fixture path is what keeps Phase 3 testable in CI at all.
+ClipForge now targets the **Spark free tier** and must not be blocked on Blaze
+([ADR-0009](adr/0009-spark-tier-local-artefacts.md)). Verified 2026-09-08: since 3 February 2026 Cloud
+Storage for Firebase requires Blaze outright — on Spark there is no bucket at all, and bucket API calls
+return 402/403. Firestore, Auth, FCM and Hosting are all free and unaffected, and Cloud Functions were
+already designed around in [ADR-0006](adr/0006-lease-based-job-claiming.md).
+
+What that costs, and what it does not:
+
+| | Status |
+| --- | --- |
+| Submit a job from the phone | ✅ unaffected |
+| Live per-stage progress | ✅ unaffected |
+| Push notification on completion | ✅ unaffected |
+| Approve / reject from the phone | ✅ unaffected — the decision travels through Firestore |
+| **Watch the clip on the phone** | ❌ poster frame + filmstrip + metadata instead |
+| Watch the clip on the machine | ✅ through the worker's local file server |
+| **Publish to YouTube (v0.2)** | ✅ **unaffected** — the worker holds both the file and the token (D7) |
+| Analytics (v0.2) | ✅ unaffected |
+
+**The Blaze on-ramp**, so the upgrade is configuration rather than a project:
+
+1. `Clip` already carries `localPath`, `playbackUrl` and a `location` discriminator. Both states are
+   first-class in the schema now, so switching populates a field rather than migrating a model.
+2. All artefact writes go through the `BlobStore` port. The `firebase` adapter is the only code the
+   upgrade needs, selected by `CLIPFORGE_BLOB_STORE`.
+3. Playback resolves through one documented precedence, so enabling Blaze lights up a branch the UI
+   already has.
+4. `storage.rules` stays in the repository and stays tested against the emulator, which does not care
+   about billing. It deploys as-is.
+5. A `backfill-storage` command uploads existing clips and fills `playbackUrl` — written on the day,
+   against a contract that already supports its result.
+
+### Next: Phase 3 — Ingestion
+
+1. **Build `LocalFileAdapter` before the YouTube one.** §6 requires the integration tier to run with no
+   network, so the committed fixture path is what keeps Phase 3 testable in CI at all. It matters more
+   now: local files are the whole storage story, not just a test convenience.
+2. **Introduce the `BlobStore` port in Phase 3**, not Phase 6. Ingestion is the first thing to write an
+   artefact, and defining the port at its first use is cheaper than retrofitting it at its third.
+3. **Give the workspace a real quota and GC.** With clips never leaving the machine, `WORKSPACE_MAX_GB`
+   stops being a nicety — it is the only thing standing between a long run and a full disk.
+
+Deliberately **not** doing now: verifying billing, choosing a Firestore location under a Storage
+constraint, or setting a budget kill switch. Spark cannot incur a bill, which is the point.
 
 One correction carried forward from Phase 2: the `ECHO` job type is not scaffolding to be deleted. It
 is the harness that makes scheduler behaviour testable in milliseconds, and Phases 3 onward should
