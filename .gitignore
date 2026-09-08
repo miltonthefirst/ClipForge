@@ -51,11 +51,42 @@ apps/worker/workspace/
 !apps/worker/assets/fixtures/**/*.wav
 !apps/worker/assets/fixtures/**/*.mp4
 
-# --- Editors / OS ---
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.shared.json
+# --- Editors ---
+# `.vscode/*` contains a slash, so it anchors to this file's directory only.
+# `**/` makes it apply at every depth - which is what let apps/web/.vscode
+# through the first time.
+**/.vscode/*
+!**/.vscode/extensions.json
 .idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# --- OS ---
 Thumbs.db
 Desktop.ini
 .DS_Store
+$RECYCLE.BIN/
+
+# --- Logs and scratch ---
+*.log
+tmp/
+temp/
+.cache/
+
+# --- Angular / Node build caches ---
+.angular/
+coverage/
+*.tsbuildinfo
+.eslintcache
+
+# --- Firebase emulator artefacts ---
+firebase-export-*/
+.runtimeconfig.json
+emulator-data/
+
+# --- Model caches, if ever placed inside the repo ---
+# NOTE: deliberately NOT `models/` - apps/worker/clipforge/models is source.
+.huggingface/
+whisper-models/
