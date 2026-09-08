@@ -27,7 +27,14 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from clipforge_contracts import Job, JobStatus, Source, SourceProvider, WorkerHeartbeat
+from clipforge_contracts import (
+    Job,
+    JobStatus,
+    Source,
+    SourceProvider,
+    TranscriptRef,
+    WorkerHeartbeat,
+)
 from google.api_core import exceptions as gcloud_exceptions
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
@@ -60,7 +67,7 @@ def firestore_client(settings: Settings) -> firestore.Client:
     return firestore.Client(project=settings.firebase_project_id)
 
 
-def _to_document(model: Job | WorkerHeartbeat | Source) -> dict[str, Any]:
+def _to_document(model: Job | WorkerHeartbeat | Source | TranscriptRef) -> dict[str, Any]:
     """Model to Firestore document.
 
     ``mode="python"`` rather than ``"json"`` so datetimes stay as datetimes and

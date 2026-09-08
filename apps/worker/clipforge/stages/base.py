@@ -61,6 +61,11 @@ class StageOutcome:
     # leaves it PENDING so the next attempt resumes it, instead of marking it
     # DONE and silently skipping the work.
     incomplete: bool = False
+    # A stage whose work was already done — a cache hit. Recorded as SKIPPED
+    # rather than DONE so the distinction between "we did this" and "this was
+    # already there" survives into the job document, which is what makes a cache
+    # claim checkable rather than merely asserted.
+    skipped: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

@@ -491,6 +491,10 @@ class TranscriptRef(BaseModel):
     """
     Worker-local path to the full Transcript document, as JSON.
     """
+    vad_path: str | None = Field(None, alias="vadPath")
+    """
+    Worker-local path to the voice-activity map produced alongside the transcript: the speech spans, whose gaps are the silences. Phase 5 snaps clip boundaries to those gaps, so it is worth persisting rather than recomputing. Its contents are deliberately NOT modelled here — it never crosses to the PWA, and this document is the wire protocol.
+    """
     language: str | None = None
     duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
     segment_count: int | None = Field(None, alias="segmentCount", ge=0)

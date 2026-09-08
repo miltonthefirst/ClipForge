@@ -41,6 +41,7 @@ def run(
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
     from clipforge.store.firestore import JobStore, SourceStore, WorkerStore, firestore_client
+    from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
     settings = get_settings()
     configure_logging(level=settings.log_level, fmt=settings.log_format)
@@ -58,6 +59,8 @@ def run(
             settings=settings,
             sources=SourceStore(client, settings),
             workspace=workspace,
+            transcripts=TranscriptStore(client, settings),
+            archive=TranscriptArchive(workspace.transcripts_dir),
         ),
     )
     worker.install_signal_handlers()

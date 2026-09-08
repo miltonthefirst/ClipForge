@@ -26,7 +26,9 @@ from clipforge.media.workspace import Workspace
 from clipforge.stages.base import Stage, StageRegistry
 from clipforge.stages.download import DownloadStage
 from clipforge.stages.echo import echo_registry
+from clipforge.stages.transcribe import TranscribeStage
 from clipforge.store.firestore import SourceStore
+from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
 __all__ = [
     "build_clip_registry",
@@ -38,23 +40,51 @@ __all__ = [
 
 
 def build_clip_stages(
-    *, settings: Settings, sources: SourceStore, workspace: Workspace
+    *,
+    settings: Settings,
+    sources: SourceStore,
+    workspace: Workspace,
+    transcripts: TranscriptStore | None = None,
+    archive: TranscriptArchive | None = None,
 ) -> list[Stage]:
     """Every CLIP stage that is implemented, in pipeline order.
 
     Later phases append here. The order is the execution order.
     """
     del settings
-    return [
-        DownloadStage(sources=sources, workspace=workspace),
-    ]
+    stages: list[Stage] = [DownloadStage(sources=sources, workspace=workspace)]
+
+    # TRANSCRIBE needs Firestore, so it is only assembled where a client exists.
+    # `submit` builds the stage list to shape a job document and has no need to
+    # construct the machinery that runs it.
+    if transcripts is not None and archive is not None:
+        stages.append(
+            TranscribeStage(
+                sources=sources,
+                transcripts=transcripts,
+                archive=archive,
+                workspace=workspace,
+            )
+        )
+    return stages
 
 
 def build_clip_registry(
-    *, settings: Settings, sources: SourceStore, workspace: Workspace
+    *,
+    settings: Settings,
+    sources: SourceStore,
+    workspace: Workspace,
+    transcripts: TranscriptStore,
+    archive: TranscriptArchive,
 ) -> StageRegistry:
     registry = StageRegistry()
-    for stage in build_clip_stages(settings=settings, sources=sources, workspace=workspace):
+    for stage in build_clip_stages(
+        settings=settings,
+        sources=sources,
+        workspace=workspace,
+        transcripts=transcripts,
+        archive=archive,
+    ):
         registry.register(stage)
     return registry
 
@@ -97,7 +127,12 @@ def new_clip_job(
 
 
 def build_registry_factory(
-    *, settings: Settings, sources: SourceStore, workspace: Workspace
+    *,
+    settings: Settings,
+    sources: SourceStore,
+    workspace: Workspace,
+    transcripts: TranscriptStore,
+    archive: TranscriptArchive,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -105,7 +140,13 @@ def build_registry_factory(
     machine with no media dependencies at all, which is what makes it useful for
     testing scheduler behaviour in milliseconds.
     """
-    clip = build_clip_registry(settings=settings, sources=sources, workspace=workspace)
+    clip = build_clip_registry(
+        settings=settings,
+        sources=sources,
+        workspace=workspace,
+        transcripts=transcripts,
+        archive=archive,
+    )
 
     def factory(job_type: JobType) -> StageRegistry:
         if job_type is JobType.ECHO:

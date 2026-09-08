@@ -195,8 +195,15 @@ class StageRunner:
         duration_ms = int((time.monotonic() - monotonic_start) * 1000)
 
         # An incomplete stage goes back to PENDING, not DONE: it stopped on
-        # request, and marking it DONE would silently skip work.
-        settled = StageStatus.PENDING if outcome.incomplete else StageStatus.DONE
+        # request, and marking it DONE would silently skip work. A skipped one is
+        # a cache hit — the work was already done, which is worth distinguishing
+        # from having done it.
+        if outcome.incomplete:
+            settled = StageStatus.PENDING
+        elif outcome.skipped:
+            settled = StageStatus.SKIPPED
+        else:
+            settled = StageStatus.DONE
 
         finished = running.model_copy(
             update={

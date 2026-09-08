@@ -524,6 +524,11 @@
           "minLength": 1,
           "description": "Worker-local path to the full Transcript document, as JSON."
         },
+        "vadPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Worker-local path to the voice-activity map produced alongside the transcript: the speech spans, whose gaps are the silences. Phase 5 snaps clip boundaries to those gaps, so it is worth persisting rather than recomputing. Its contents are deliberately NOT modelled here — it never crosses to the PWA, and this document is the wire protocol."
+        },
         "language": { "type": ["string", "null"], "default": null },
         "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
         "segmentCount": { "type": ["integer", "null"], "minimum": 0, "default": null },

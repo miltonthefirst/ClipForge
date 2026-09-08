@@ -13,6 +13,7 @@ them fails instead of a user silently getting UNKNOWN.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,12 @@ FIXTURES = Path(__file__).resolve().parents[2] / "assets" / "fixtures"
 SAMPLE_AV = FIXTURES / "sample-av.mp4"
 VIDEO_ONLY = FIXTURES / "video-only.mp4"
 
-ffprobe_required = pytest.mark.skipif(not SAMPLE_AV.is_file(), reason="media fixtures are missing")
+# ffmpeg is a hard project dependency, but a shell without it on PATH should
+# skip with a reason rather than fail three tests confusingly.
+ffprobe_required = pytest.mark.skipif(
+    not SAMPLE_AV.is_file() or shutil.which("ffprobe") is None,
+    reason="needs the media fixtures and ffprobe on PATH",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

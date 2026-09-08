@@ -50,6 +50,13 @@ apps/worker/workspace/
 *.wav
 !apps/worker/assets/fixtures/**/*.wav
 !apps/worker/assets/fixtures/**/*.mp4
+!apps/worker/assets/fixtures/**/*.mp3
+
+# Your own voice recording, if you add one. Deliberately NOT committed: a test
+# needing a fixture is no reason for your voice to end up in a public repo.
+# See apps/worker/assets/fixtures/speech/SOURCES.md.
+apps/worker/assets/fixtures/speech/custom/*
+!apps/worker/assets/fixtures/speech/custom/.gitkeep
 
 # --- Editors ---
 # `.vscode/*` contains a slash, so it anchors to this file's directory only.

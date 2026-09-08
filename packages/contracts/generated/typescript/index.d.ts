@@ -270,6 +270,10 @@ export interface TranscriptRef {
    * Worker-local path to the full Transcript document, as JSON.
    */
   localPath: string;
+  /**
+   * Worker-local path to the voice-activity map produced alongside the transcript: the speech spans, whose gaps are the silences. Phase 5 snaps clip boundaries to those gaps, so it is worth persisting rather than recomputing. Its contents are deliberately NOT modelled here — it never crosses to the PWA, and this document is the wire protocol.
+   */
+  vadPath?: string | null;
   language?: string | null;
   durationSec?: number | null;
   segmentCount?: number | null;

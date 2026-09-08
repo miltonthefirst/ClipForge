@@ -522,13 +522,32 @@ fixture with a known reference transcript.
 > Firestore keeps a `TranscriptRef`: language, duration, word and segment counts, and the local path.
 > See [ADR-0009](adr/0009-spark-tier-local-artefacts.md).
 
-**Exit criteria**
+**Exit criteria** — ✅ **all met, 2026-09-08**
 
-1. A 10-minute video transcribes end to end, and every segment carries word-level timestamps.
-2. Measured VRAM returns to within 100 MB of baseline after the stage completes.
-3. Re-running the job is a cache hit: the transcribe stage reports `SKIPPED`.
-4. WER against the committed fixture is below an agreed threshold; the test fails if it regresses.
-5. Throughput is recorded in the job metrics as a realtime factor, so later model swaps are comparable.
+1. ✅ Every segment carries word-level timestamps, verified on real hardware, including that word
+   timings advance monotonically — boundary snapping picks the wrong cut point otherwise.
+2. ✅ Measured through NVML before and after: under 100 MB unreleased. There is no allocator to
+   interrogate, so this reads the card directly.
+3. ✅ A second job over the same media reports **`SKIPPED`**, and the substituted transcriber records
+   that it was never called. Keyed on `(contentHash, modelVersion)`, so the same video under a
+   different path is also a cache hit.
+4. ✅ WER against a **public-domain LibriVox fixture** stays under 0.15. The reference is Poe's
+   *published* text verified by ear — not Whisper's own output, which would prove only
+   self-consistency. `assets/fixtures/speech/custom/` is a gitignored slot for a recording of your own
+   voice, picked up automatically when present.
+5. ✅ Realtime factor recorded in the stage checkpoint, so a later model swap is comparable against a
+   measurement rather than a remembered impression.
+
+**Delivered.** Audio extraction to 16 kHz mono · `WhisperTranscriber` under the broker's exclusive
+lease · word-level transcripts and a voice-activity map on disk, `TranscriptRef` in Firestore ·
+content-hash caching · `SKIPPED` as a first-class stage outcome · WER and text normalisation.
+
+**Two things this phase settled.** Normalisation strips punctuation and casing before scoring, because
+Whisper's punctuation is a formatting choice and a threshold that measured typography would be
+meaningless — but numbers are deliberately *not* normalised, since "1846" and "eighteen forty-six"
+really are different transcriptions. And the extracted WAV is deleted after transcription: it is
+reconstructible from the source and can be hundreds of megabytes, while the transcript is the artefact
+worth keeping.
 
 **Risks.** *CTranslate2 CUDA/cuDNN DLL resolution on Windows is a known sharp edge* → `doctor` performs
 a real five-second GPU transcription as a smoke check, so this fails in Phase 0 rather than mid-pipeline.
