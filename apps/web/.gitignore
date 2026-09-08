@@ -22,11 +22,10 @@ yarn-error.log
 
 # Visual Studio Code
 .vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
+# Only the extension recommendations are shared - they point contributors at the
+# Angular language service. Debug configs, tasks and personal settings are local
+# preferences and stay out of the repository.
 !.vscode/extensions.json
-!.vscode/mcp.json
 .history/*
 
 # Miscellaneous

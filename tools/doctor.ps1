@@ -56,6 +56,43 @@ function Add-Result {
     $Results.Add([pscustomobject]@{ Name = $Name; Ok = $Ok; Detail = $Detail; Fix = $Fix })
 }
 
+function Invoke-Native {
+    <#
+    .SYNOPSIS
+        Runs a native executable and returns its output as plain strings.
+    .DESCRIPTION
+        Windows PowerShell 5.1 turns a native command's stderr into ErrorRecord
+        objects. With $ErrorActionPreference = 'Stop' those escalate into a
+        TERMINATING error even when the command exited 0 - so a tool that merely
+        chats on stderr aborts the whole doctor run.
+
+        This is not hypothetical: `uv run` prints "Building clipforge-worker" to
+        stderr the first time it builds the package, which is precisely what
+        happens on a fresh clone - the one moment doctor most needs to work.
+
+        Suppressing the preference around the call is the only reliable fix in
+        5.1, so every native invocation in this script goes through here.
+    #>
+    param(
+        [Parameter(Mandatory)] [string]   $FilePath,
+        [string[]] $Arguments = @(),
+        [switch]   $IncludeStderr
+    )
+
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($IncludeStderr) {
+            $output = & $FilePath @Arguments 2>&1
+        } else {
+            $output = & $FilePath @Arguments 2>$null
+        }
+        return @($output | ForEach-Object { [string]$_ })
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Test-Tool {
     param(
         [Parameter(Mandatory)] [string] $Name,
@@ -72,13 +109,19 @@ function Test-Tool {
     }
 
     try {
-        $raw = (& $Command @VersionArgs 2>&1 | Select-Object -First 1) -join ' '
+        # Some tools print their version to stderr, so stderr is included here.
+        $lines = Invoke-Native -FilePath $Command -Arguments $VersionArgs -IncludeStderr
     } catch {
         Add-Result -Name $Name -Ok $false -Detail "found but not runnable: $_" -Fix $Fix
         return
     }
 
-    $detail = $raw.Trim()
+    $first = @($lines | Where-Object { $_ -and $_.Trim() }) | Select-Object -First 1
+    if (-not $first) {
+        Add-Result -Name $Name -Ok $false -Detail 'produced no version output' -Fix $Fix
+        return
+    }
+    $detail = $first.Trim()
     if ($MinimumMajor -and $detail -match '(\d+)\.(\d+)') {
         if ([int]$Matches[1] -lt [int]$MinimumMajor) {
             Add-Result -Name $Name -Ok $false -Detail "$detail (need major >= $MinimumMajor)" -Fix $Fix
@@ -103,7 +146,11 @@ Test-Tool -Name 'firebase' -Command 'firebase' -Fix 'npm install -g firebase-too
 # The worker must resolve to the uv-managed 3.12 instead.
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     try {
-        $pythonVersion = (& uv run --project $WorkerDir python --version 2>&1 | Select-Object -First 1).ToString().Trim()
+        $pythonLines = Invoke-Native -FilePath 'uv' -IncludeStderr `
+            -Arguments @('run', '--project', $WorkerDir, 'python', '--version')
+        $pythonVersion = (@($pythonLines | Where-Object { $_ -match '^Python\s' }) |
+            Select-Object -First 1)
+        if (-not $pythonVersion) { $pythonVersion = ($pythonLines -join ' ').Trim() }
         if ($pythonVersion -match '3\.12') {
             Add-Result -Name 'python (worker venv)' -Ok $true -Detail $pythonVersion
         } else {
@@ -131,7 +178,8 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     if ($SkipGpu) { $diagArgs += '--skip-gpu' }
 
     $env:HF_HUB_DISABLE_SYMLINKS_WARNING = '1'
-    $raw = (& uv @diagArgs 2>$null) -join "`n"
+    # stdout only: uv's build chatter goes to stderr and would corrupt the JSON.
+    $raw = (Invoke-Native -FilePath 'uv' -Arguments $diagArgs) -join "`n"
 
     if ([string]::IsNullOrWhiteSpace($raw)) {
         Add-Result -Name 'worker diagnostics' -Ok $false -Detail 'produced no output' `

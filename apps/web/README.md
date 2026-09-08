@@ -1,59 +1,35 @@
-# Web
+# ClipForge PWA
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 22.0.6.
+The Angular front end. Submit a video, watch the pipeline progress live, and review
+and approve the clips the worker produces — installable, and usable one-handed on a
+phone.
 
-## Development server
+See [`docs/PLAN.md`](../../docs/PLAN.md) for the architecture and the repository
+[`README.md`](../../README.md) for setup.
 
-To start a local development server, run:
+> **Status: Phase 0.** This is a shell. The dashboard, submission flow and review
+> queue land in Phase 7, which is what ships v0.1.0.
 
-```bash
-ng serve
-```
-
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
-
-## Code scaffolding
-
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+## Commands
 
 ```bash
-ng generate component component-name
+npm start              # dev server on http://localhost:4200
+npm run lint
+npm run typecheck      # tsc --noEmit across app and spec configs
+npm run format:check   # prettier
+npm run test:ci        # vitest + jsdom, no watch
+npm run build          # production bundle
 ```
 
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+CI runs `lint`, `typecheck`, `format:check`, `test:ci` and `build` — the same five
+commands, so nothing fails only on the server.
 
-```bash
-ng generate --help
-```
+## Stack notes
 
-## Building
-
-To build the project run:
-
-```bash
-ng build
-```
-
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
-
-## Running unit tests
-
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
-
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
-
-```bash
-ng e2e
-```
-
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+- **Angular 22** standalone components with signals; no NgModules.
+- **Tailwind 4** via `@tailwindcss/postcss`, configured in
+  [`.postcssrc.json`](.postcssrc.json). Design tokens live in the `@theme` block in
+  [`src/styles.css`](src/styles.css) rather than a `tailwind.config.js`.
+- **Vitest + jsdom** for tests, so CI needs no browser.
+- Firebase project ids and emulator hosts come from `.env` only, never from source —
+  see the Phase 1 addendum in `docs/PLAN.md`.
