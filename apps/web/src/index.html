@@ -19,12 +19,26 @@
       project without a rebuild. Defaults live in src/environments.ts; anything
       set here overrides them.
       See docs/adr/0004-dedicated-firebase-project.md.
+
+      `tools/deploy.ps1` replaces everything between the two CLIPFORGE-CONFIG
+      markers with the real project's values, read from .env. It fails loudly if
+      it cannot find them, so do not reword or remove the markers.
+
+      Deliberately inlined here rather than loaded from a config.js: index.html
+      is served `no-cache` while every fingerprinted asset is served `immutable`,
+      and a separate config.js would sit in the overlap between those two rules —
+      one year of caching on the file that says which Firebase project this is.
+      Inlining also keeps the JS bundle itself project-agnostic, which is the
+      property ADR-0004 actually cares about.
     -->
     <script>
+      /* CLIPFORGE-CONFIG-START */
       window.__clipforge = {
-        // useEmulators: false,
-        // firebase: { projectId: '...', apiKey: '...', authDomain: '...', appId: '...' },
+        // Local development against the Emulator Suite. src/environments.ts
+        // already defaults to exactly this, so an empty object is the whole
+        // configuration — a deploy is what fills this in.
       };
+      /* CLIPFORGE-CONFIG-END */
     </script>
   </head>
   <body class="min-h-screen bg-slate-950">

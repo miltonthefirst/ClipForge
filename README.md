@@ -212,6 +212,78 @@ npm run --prefix apps/web test:ci
 npm run --prefix apps/web start
 ```
 
+## Deploying
+
+ClipForge is local-first, so "deploying" means two different things. The **worker
+never deploys** — it runs on your machine, holds the video files and the publishing
+credentials, and reaches out to Firestore. What deploys is the **control plane**:
+Firestore rules, indexes, and the PWA you review from.
+
+### One-time console setup
+
+Four things can only be done in the [Firebase console](https://console.firebase.google.com/),
+because they create resources rather than configure them:
+
+1. **Create the Firestore database.** Build → Firestore Database → Create. The
+   **location is permanent** and cannot be changed later, so pick the region
+   closest to where you will actually use the phone, not where the servers feel
+   familiar. Start in production mode; the rules in this repository replace the
+   defaults on first deploy.
+2. **Enable Google sign-in.** Build → Authentication → Sign-in method → Google.
+3. **Register a Web app.** Project settings → Your apps → Web. Copy the
+   `apiKey`, `authDomain` and `appId` into `.env` as `CLIPFORGE_WEB_*`. These are
+   not secrets — a Firebase web API key identifies a project, it does not
+   authorise anything. What protects the data is `firestore.rules` plus Auth,
+   which is why those are the parts with tests.
+4. **Generate a service account key** for the worker. Project settings → Service
+   accounts → Generate new private key. Save it **outside** the repository and
+   point `CLIPFORGE_GOOGLE_APPLICATION_CREDENTIALS` at it.
+
+All four are free on Spark.
+
+### Deploy
+
+```powershell
+# See exactly what would happen, and to which project. Nothing is published.
+pwsh -File tools/deploy.ps1 -DryRun
+
+# Build and inline the configuration, then stop — inspect the artefact first.
+pwsh -File tools/deploy.ps1 -Only hosting -BuildOnly
+
+# Rules and indexes only; useful on their own after a rules change.
+pwsh -File tools/deploy.ps1 -Only rules,indexes
+
+# Everything.
+pwsh -File tools/deploy.ps1
+```
+
+**Never run a bare `firebase deploy`.** A deploy *replaces* rather than merges,
+and it takes its project from whatever is ambient. `tools/deploy.ps1` exists to
+make that mistake impossible: it reads the project id from `.env`, passes it
+explicitly, always names its targets with `--only`, prints the exact command
+before running it, and refuses outright if the configured project is one it has
+been told not to touch.
+
+It also refuses to publish a PWA build still pointed at the emulators. That
+failure is otherwise silent and remote — the site loads perfectly, then every
+read hangs against `127.0.0.1:8080` on a phone that has no emulator to reach.
+
+### Point the worker at the real project
+
+```dotenv
+CLIPFORGE_USE_EMULATORS=false
+CLIPFORGE_GOOGLE_APPLICATION_CREDENTIALS=C:/keys/clipforge-service-account.json
+```
+
+Then `clipforge-worker run`. The worker refuses to start if credentials are
+missing rather than discovering it on its first write, by which point it would
+already have advertised itself as healthy.
+
+Storage rules are deliberately **not** deployable: the Spark tier has no bucket
+at all, so `--only storage` fails by definition. The file stays in the repository,
+stays tested against the emulator, and deploys as-is on the day Blaze is enabled
+([ADR-0009](docs/adr/0009-spark-tier-local-artefacts.md)).
+
 ## Testing tiers
 
 | Tier | In CI | Requires | Covers |
