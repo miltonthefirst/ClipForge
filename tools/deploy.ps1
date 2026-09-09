@@ -226,6 +226,31 @@ apps/web/src/index.html rather than removing this check.
         Fail 'The configuration did not land in index.html. Refusing to deploy an unconfigured build.'
     }
     Write-Host "   configured for $projectId"
+
+    # The service worker validates every asset against a hash recorded at build
+    # time, and index.html was just edited. Without regenerating the manifest the
+    # hash no longer matches, and the worker refuses the app shell it is supposed
+    # to be serving — offline stops working, and the first sign of it is a user
+    # with no network and a blank page.
+    Write-Step 'Regenerating the service worker manifest'
+    Push-Location (Join-Path $repoRoot 'apps/web')
+    try {
+        npx ngsw-config dist/web/browser ngsw-config.json /
+        if ($LASTEXITCODE -ne 0) { Fail 'ngsw-config failed; refusing to deploy a stale manifest.' }
+    }
+    finally {
+        Pop-Location
+    }
+
+    $manifestPath = Join-Path $repoRoot 'apps/web/dist/web/browser/ngsw.json'
+    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.index -ne '/index.html') {
+        # Seen for real: run this from Git Bash and MSYS rewrites the '/' base
+        # href into a Windows path, so every entry is hashed under
+        # 'C:/Program Files/Git/...' and the manifest is silently useless.
+        Fail "ngsw.json has index '$($manifest.index)', expected '/index.html'. Run this from PowerShell, not a POSIX shell."
+    }
+    Write-Host '   manifest regenerated'
 }
 
 if ($BuildOnly) {

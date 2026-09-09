@@ -735,14 +735,23 @@ stubbed worker; screenshots for the README.
    deliberately deferred. The rest of Phase 7 does not depend on it.
 2. ✅ Ten Playwright tests cover submit → progress → review → approve against the Emulator Suite, in a
    real browser, with a stubbed worker.
-3. ⏸ **Lighthouse not yet run.** The manifest, icons and installability are in place; the audit needs
-   a served build and is worth doing alongside item 1.
+3. ⏸ **Lighthouse not yet run.** The audit needs a served build and is worth doing alongside item 1.
+
+   *Corrected 2026-09-09.* This originally read "the manifest, icons and installability are in
+   place". The first two were; the third was not. `@angular/service-worker` was an installed
+   dependency that nothing used — no `ngsw-config.json`, no `serviceWorker` build option, no
+   `provideServiceWorker` — and Chrome does not offer to install a PWA without one. It is wired up
+   now, gated on `useEmulators` rather than `isDevMode()` so the emulator-backed E2E build does not
+   register a worker, and asserted in `apps/web/e2e/pwa.spec.ts`.
 4. ✅ Empty, loading and error states on every view, asserted in the E2E suite.
 5. ✅ A failed job shows the worker's own reason — "this video is age-restricted" — rather than a
    stack trace, which is what the Phase 3 taxonomy was for.
 6. ✅ A clip with no `playbackUrl` and no reachable local server renders as poster-plus-metadata with
    an explicit "playable on the worker machine" affordance, asserted in E2E.
 7. ⏸ **`v0.1.0` not tagged**, pending items 1 and 3.
+8. ❌ **FCM push was never built.** It is listed in this phase's scope and no exit criterion tested
+   it, which is exactly how it went unnoticed until the deployment review in Phase 8. There is no
+   messaging code in either the worker or the PWA. Carried to Phase 11 with the rest.
 
 Items 1, 3 and 7 are consolidated into [Phase 11](#phase-11--open-source-hardening), which is where
 everything blocked on a real account or a real device now lives.
@@ -750,6 +759,7 @@ everything blocked on a real account or a real device now lives.
 **Delivered.** The worker's read-only local file server on 127.0.0.1 · Angular PWA with Google
 sign-in, a jobs view with live per-stage progress, and the review queue · the three-tier playback
 precedence · PWA manifest and icons · Playwright E2E against the emulator, wired into CI.
+The service worker landed later, during the Phase 8 deployment work.
 
 **Two things worth recording.** The E2E suite found a genuine isolation defect in itself on first run:
 a stray worker holding port 8765 made the "no playable URL" test fail, because the probe *correctly*
@@ -945,11 +955,13 @@ hardware in someone's hand, or a served build, and none of them can be satisfied
 | A Lighthouse PWA audit | 7 | A served build; worth running with the phone demo |
 | `v0.1.0` not yet tagged | 7 | The two items above |
 | A real upload appearing on a real channel | 8 | The operator's Google account and an OAuth client |
+| FCM push on job completion | 7 | Nothing — it was simply never built. Needs a VAPID key from the console once it is |
 
-None of these gates the code. Everything each one exercises is built and tested up to the point where
-the real account or the real device begins; what is unverified in each case is precisely that last
-hop and nothing before it. They are listed as unverified rather than claimed, which is the whole
-reason they are still visible here.
+The first four do not gate the code: everything each one exercises is built and tested up to the
+point where the real account or the real device begins, and what is unverified is precisely that last
+hop and nothing before it. FCM is different and is marked differently — it is not unverified, it is
+absent, and the honest reason it survived a phase sign-off is that nothing in Phase 7's exit criteria
+tested it.
 
 **Exit criteria.** A clean machine reaches a rendered clip by following the docs alone; the README
 states limitations plainly; every item in the table above is either closed or restated in the README

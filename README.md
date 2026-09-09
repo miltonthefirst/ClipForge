@@ -310,6 +310,8 @@ Stated plainly, because they are real:
   clips stay on the worker. You review from your phone against a poster frame and metadata, and watch
   the actual video on the machine. Publishing is unaffected — the worker holds both the file and the
   OAuth token.
+- **No push notifications yet.** FCM was scoped for the review loop and has not been built, so you
+  find out a clip is ready by opening the app rather than by being told.
 - **Publishing third-party content is your responsibility.** See below.
 - **Windows-first.** The worker is developed and tested on Windows. Nothing is deliberately
   platform-locked, but Linux and macOS are unverified.
