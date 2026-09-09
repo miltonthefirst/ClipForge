@@ -28,6 +28,15 @@ export interface ClipForgeConfig {
    * machine. See docs/adr/0009-spark-tier-local-artefacts.md.
    */
   readonly localServerOrigin: string;
+  /**
+   * Force the service worker on or off. Left undefined it follows
+   * `useEmulators`, which is right for the browser.
+   *
+   * The desktop shell sets it to `false` explicitly: a worker there would cache
+   * the app shell from Tauri's custom protocol and serve it back after a
+   * rebuild, turning "I just rebuilt" into "why is it still the old one".
+   */
+  readonly serviceWorker?: boolean;
 }
 
 const DEFAULTS: ClipForgeConfig = {

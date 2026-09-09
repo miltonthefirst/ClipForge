@@ -252,6 +252,66 @@ themes. The primary button uses `forge-600` rather than the brand `forge-500`
 because white on `forge-500` is 3.6:1, and it darkens on hover rather than
 lightening so it does not drop below AA exactly while the pointer is on it.
 
+## The desktop app
+
+The same Angular build the PWA deploys, wrapped in [Tauri](https://tauri.app) and
+pointed at the real Firebase project.
+
+It exists for one reason the phone cannot cover: it runs **on the machine that
+rendered the clips**, so playback branch 2 resolves against the worker's local
+file server and the video actually plays. From a phone the identical code falls
+through to the poster frame, which is the free tier working as designed
+([ADR-0009](docs/adr/0009-spark-tier-local-artefacts.md)) but is not much of a
+review.
+
+```powershell
+pwsh -File tools/desktop.ps1              # build, point at the real project, refresh the shortcut
+pwsh -File tools/desktop.ps1 -Emulators   # point at the local Emulator Suite instead
+pwsh -File tools/desktop.ps1 -Bundle      # also produce the NSIS installer
+```
+
+That leaves `ClipForge.lnk` on the Desktop, pointing at the build output rather
+than an installed copy — so a rebuild is picked up by the same shortcut with
+nothing to reinstall. Start the worker alongside it, or the queue is empty and
+there is nothing to play:
+
+```powershell
+pwsh -File tools/worker.ps1 -Live
+```
+
+**Deploying to Firebase is unaffected**, and structurally so. The desktop
+frontend is staged into `apps/desktop/frontend` as its own copy, never
+`apps/web/dist`. Injecting desktop configuration into the directory
+`tools/deploy.ps1` publishes would be one mistimed command away from shipping a
+`127.0.0.1` playback origin and a disabled service worker to a phone; a copy
+costs a few megabytes and removes the whole class of mistake.
+
+Two things differ from the web build, both deliberate:
+
+- **`localServerOrigin` is meaningful**, because the worker is on this machine.
+- **No service worker.** One here would cache the app shell from Tauri's custom
+  protocol and serve it back after a rebuild, turning "I just rebuilt" into "why
+  is it still the old one". `serviceWorker: false` in the injected config forces
+  it off; the web build leaves the flag unset and keeps its worker.
+
+### Prerequisites, and the Firebase setting it needs
+
+Tauri needs the [Rust toolchain](https://rustup.rs), MSVC build tools, and the
+WebView2 runtime (already present on Windows 11). `tools/desktop.ps1` checks for
+cargo and says so rather than failing several layers down.
+
+The webview serves the app from **`http://tauri.localhost`** — measured, not
+assumed. Firebase Auth validates the origin that opens its sign-in popup against
+the project's authorized domains, so that host has to be on the list or Google
+sign-in fails with an unauthorized-domain error. It has been added. To see or
+change the list: Firebase console → Authentication → Settings → Authorized
+domains.
+
+Adding it means Firebase Auth accepts a sign-in flow started from that origin.
+Only a Tauri app running on this machine can present it, so the practical
+exposure is small — but it is a real entry on a real allowlist, and removing it
+is one click if the desktop app goes away.
+
 ## Deploying
 
 ClipForge is local-first, so "deploying" means two different things. The **worker

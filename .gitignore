@@ -36,6 +36,13 @@ dist/
 build/
 *.egg-info/
 
+# --- Tauri desktop shell ---
+# `frontend/` is a staged copy of the Angular build with desktop config injected;
+# `target/` is Rust's build output and is measured in gigabytes.
+/apps/desktop/frontend/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/
+
 # --- Node / Angular ---
 node_modules/
 /apps/web/dist/

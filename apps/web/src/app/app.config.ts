@@ -15,8 +15,12 @@ import { routes } from './app.routes';
  * registration against the first navigation. Keying on `useEmulators` instead
  * says what is actually meant: offline support is for the deployed app, and the
  * emulator-backed one neither needs it nor should have it.
+ *
+ * `serviceWorker` overrides both when a host has a reason to — the Tauri shell
+ * points at the real project and still must not register one.
  */
-const useServiceWorker = !loadConfig().useEmulators && !isDevMode();
+const config = loadConfig();
+const useServiceWorker = config.serviceWorker ?? (!config.useEmulators && !isDevMode());
 
 export const appConfig: ApplicationConfig = {
   providers: [
