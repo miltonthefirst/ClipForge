@@ -268,6 +268,26 @@ It also refuses to publish a PWA build still pointed at the emulators. That
 failure is otherwise silent and remote — the site loads perfectly, then every
 read hangs against `127.0.0.1:8080` on a phone that has no emulator to reach.
 
+#### Cache headers: the last matching rule wins
+
+Worth writing down, because Firebase's documentation implies the opposite and
+getting it backwards is invisible until someone's browser is a version behind.
+
+`firebase.json`'s `headers` array is applied **last match wins**, so the rules go
+broadest first and narrowest last. Established by deploying both orders and
+reading the responses:
+
+| Path | Header | Why |
+| --- | --- | --- |
+| `/`, `/review` | `no-cache` | Matched only by `**`. These are what people actually visit, and a cached shell means a deploy does not reach them |
+| `/main-*.js`, `/styles-*.css` | `immutable`, 1 year | Fingerprinted, so the name changes whenever the content does. This is most of the 630 kB bundle, and it protects the 360 MB/day Spark transfer budget |
+| `/ngsw-worker.js` | `no-cache` | **Not** fingerprinted. Caught by the `.js` rule unless a narrower one follows it — and a year-cached service worker is one that can never update |
+| `/ngsw.json` | `no-cache` | The worker's hash manifest. Stale here and the app never learns an update exists |
+
+Note also that headers match the **request** path, not the rewritten one. `/review`
+is served from `index.html`, but a rule targeting `/index.html` does not apply to
+it — which is why the catch-all exists.
+
 ### Point the worker at the real project
 
 ```dotenv
