@@ -115,6 +115,13 @@
       <section class="py-16 text-center">
         <img src="icons/mark.png" alt="" width="72" height="72" class="mx-auto mb-6 h-18 w-18" />
         <h1 class="text-2xl font-semibold">Sign in to ClipForge</h1>
+        @if (signInError(); as message) {
+          <p
+            class="mx-auto mt-4 max-w-md rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+          >
+            {{ message }}
+          </p>
+        }
         <p class="mx-auto mt-3 max-w-md text-ink-muted">
           Your clips stay on the machine that rendered them. This signs you in so the queue, the
           scores and your approvals can reach you anywhere.

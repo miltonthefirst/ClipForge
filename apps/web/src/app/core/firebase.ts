@@ -1,12 +1,14 @@
-import { Injectable, inject, InjectionToken } from '@angular/core';
+import { Injectable, inject, InjectionToken, signal } from '@angular/core';
 import { initializeApp, type FirebaseApp } from 'firebase/app';
 import {
   connectAuthEmulator,
   getAuth,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type Auth,
   type User,
@@ -34,6 +36,9 @@ export class FirebaseService {
   readonly auth: Auth;
   readonly db: Firestore;
 
+  /** Why a redirect sign-in failed, for the shell to show. */
+  readonly redirectError = signal<string | null>(null);
+
   constructor() {
     this.app = initializeApp(this.config.firebase);
     this.auth = getAuth(this.app);
@@ -48,6 +53,14 @@ export class FirebaseService {
       );
       this.exposeEmulatorSignIn();
     }
+
+    // A redirect sign-in finishes on the *next* page load, so the result has to
+    // be collected here. `onAuthStateChanged` would report the success on its
+    // own; what this adds is the failure, which otherwise vanishes and leaves a
+    // sign-in button that looks like it did nothing.
+    void getRedirectResult(this.auth).catch((error: unknown) => {
+      this.redirectError.set(error instanceof Error ? error.message : String(error));
+    });
   }
 
   /**
@@ -71,8 +84,32 @@ export class FirebaseService {
       signInWithEmailAndPassword(this.auth, email, password);
   }
 
-  signIn(): Promise<unknown> {
-    return signInWithPopup(this.auth, new GoogleAuthProvider());
+  /**
+   * Sign in with Google, by popup where that works and by redirect where it
+   * does not.
+   *
+   * The desktop shell is the case that forced this. Tauri's WebView2 blocks
+   * `window.open` outright — it returns null rather than a window — so Firebase
+   * raises `auth/popup-blocked` and the button appears to do nothing at all.
+   * Ordinary browser popup blockers produce exactly the same error, so the
+   * fallback earns its place in both.
+   *
+   * Redirect is not simply used everywhere because it costs a full page load
+   * and, on the web, the popup keeps the queue on screen behind it.
+   */
+  async signIn(): Promise<unknown> {
+    const provider = new GoogleAuthProvider();
+
+    if (this.config.authFlow === 'redirect') {
+      return signInWithRedirect(this.auth, provider);
+    }
+
+    try {
+      return await signInWithPopup(this.auth, provider);
+    } catch (error) {
+      if (!isPopupUnavailable(error)) throw error;
+      return signInWithRedirect(this.auth, provider);
+    }
   }
 
   signOut(): Promise<void> {
@@ -82,4 +119,20 @@ export class FirebaseService {
   onUserChanged(handler: (user: User | null) => void): () => void {
     return onAuthStateChanged(this.auth, handler);
   }
+}
+
+/**
+ * Whether the failure means "no popup available" rather than "sign-in refused".
+ *
+ * Only these three are worth retrying by redirect. Retrying a genuine refusal —
+ * a closed popup, a cancelled request — would drag the user into a full page
+ * navigation they just declined.
+ */
+function isPopupUnavailable(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  return (
+    code === 'auth/popup-blocked' ||
+    code === 'auth/operation-not-supported-in-this-environment' ||
+    code === 'auth/web-storage-unsupported'
+  );
 }

@@ -57,6 +57,11 @@ function desktopConfig() {
     // shell from Tauri's custom protocol and then serve it back after a rebuild,
     // which turns "I just rebuilt" into "why is it still the old one".
     `        serviceWorker: false,`,
+    // Tauri's WebView2 blocks `window.open`, so Firebase's popup never opens
+    // and sign-in fails with `auth/popup-blocked`. Measured, not assumed — see
+    // the note in apps/web/src/app/core/firebase.ts. The app would fall back on
+    // its own; asking for redirect up front skips a guaranteed failure.
+    `        authFlow: 'redirect',`,
   ];
 
   if (useEmulators) {

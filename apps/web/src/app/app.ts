@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
+import { FirebaseService } from './core/firebase';
 import { SessionService } from './core/session';
 import { ThemeService } from './core/theme';
 
@@ -14,6 +15,14 @@ import { ThemeService } from './core/theme';
 export class App {
   protected readonly session = inject(SessionService);
   private readonly theme = inject(ThemeService);
+  private readonly firebase = inject(FirebaseService);
+
+  /**
+   * A redirect sign-in that failed. Shown rather than swallowed: the whole
+   * reason redirect exists here is that a silent failure made the button look
+   * dead, and a silent failure of the fallback would be the same bug again.
+   */
+  protected readonly signInError = this.firebase.redirectError;
 
   /** Distinguishes "still checking" from "signed out" — see SessionService. */
   protected readonly checking = computed(() => this.session.user() === undefined);

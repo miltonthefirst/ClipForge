@@ -37,6 +37,17 @@ export interface ClipForgeConfig {
    * rebuild, turning "I just rebuilt" into "why is it still the old one".
    */
   readonly serviceWorker?: boolean;
+  /**
+   * How Google sign-in is presented.
+   *
+   * `popup` everywhere a popup can open, which is every ordinary browser.
+   * `redirect` in the desktop shell, where Tauri's WebView2 blocks
+   * `window.open` outright — it returns null rather than a window, so Firebase
+   * raises `auth/popup-blocked` and the button looks broken. Left unset the app
+   * tries a popup and falls back on its own, so this is an optimisation rather
+   * than a requirement.
+   */
+  readonly authFlow?: 'popup' | 'redirect';
 }
 
 const DEFAULTS: ClipForgeConfig = {
