@@ -212,6 +212,46 @@ npm run --prefix apps/web test:ci
 npm run --prefix apps/web start
 ```
 
+### Brand assets and theming
+
+Every icon is generated from one file, `logo.png`, by `tools/generate-icons.py`:
+
+```bash
+uv run --with pillow python tools/generate-icons.py
+```
+
+It is not a resize. `logo.png` is a full lockup — mark, wordmark, tagline — on an
+opaque dark field, and three things follow. Only the **mark** survives at icon
+sizes, so the rest is discarded. The **plate has to come off**, and since the
+card's face is painted the *same* navy as the backdrop behind it, that navy is
+treated as negative space everywhere it appears: on the dark theme the result is
+identical to the original, and on the light theme the negative space becomes the
+page. And **`maskable` is not `any`** — Android keeps only the middle 80% of a
+maskable icon, so the padded pair is generated separately rather than declaring
+one icon as both, which is what the manifest used to do.
+
+Themes are **light and dark**, with a three-state toggle in the header: follow
+the system (the default), force light, force dark. Every colour is a token in
+`apps/web/src/styles.css` and templates never name a palette colour — they say
+`bg-panel text-ink`, not `bg-slate-900 dark:bg-white`. A third theme would be a
+block of values there and no template change at all.
+
+Each token is one `light-dark()` pair rather than the usual four blocks
+(default, prefers-light, forced-light, forced-dark). Those four have to be kept
+in step by hand, and the bug when they are not — a colour that is right until the
+OS preference disagrees with the in-app toggle — is close to invisible in review.
+`color-scheme` picks the side, which also settles scrollbars and form controls.
+
+The stored choice is applied by an inline script in `index.html` before the first
+paint; deferring it means a white flash before a dark app. That script duplicates
+a few lines of `theme.ts` because the bundle does not exist yet at that point, and
+`e2e/theme.spec.ts` asserts the two copies still agree.
+
+Contrast is checked, not assumed: every text/surface pair clears 4.5:1 in both
+themes. The primary button uses `forge-600` rather than the brand `forge-500`
+because white on `forge-500` is 3.6:1, and it darkens on hover rather than
+lightening so it does not drop below AA exactly while the pointer is on it.
+
 ## Deploying
 
 ClipForge is local-first, so "deploying" means two different things. The **worker

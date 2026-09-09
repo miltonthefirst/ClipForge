@@ -61,6 +61,12 @@ test('choosing a basis records an attestation stamped with the caller', async ({
 
   await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toBeVisible();
 
+  // Polled: the UI reflects the write locally before the server has it, so a
+  // single read here races the round trip.
+  await expect
+    .poll(async () => (await readDoc('clips/clip-1'))?.['rights'] !== undefined)
+    .toBe(true);
+
   const stored = await readDoc('clips/clip-1');
   const rights = stored?.['rights'] as { mapValue: { fields: Record<string, never> } };
   const fields = rights.mapValue.fields as Record<string, { stringValue?: string }>;

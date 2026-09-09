@@ -1,30 +1,32 @@
 <h1 class="text-xl font-semibold">Publish queue</h1>
 
-<p class="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-400">
+<p class="mt-3 rounded-lg border border-line bg-panel/60 px-4 py-3 text-sm text-ink-muted">
   Publishing a clip of someone else's video is a different act from making one privately, and the
   legal basis is yours to establish. Record it once per clip — it is kept with the upload, so
-  <strong class="text-slate-200">who authorised this and why</strong> stays answerable later.
+  <strong class="text-ink">who authorised this and why</strong> stays answerable later.
 </p>
 
 @if (error(); as message) {
-  <p class="mt-4 rounded-lg border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-300">
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
     {{ message }}
   </p>
 }
 
 @if (cards() === null) {
-  <p class="py-16 text-center text-slate-500">Loading approved clips…</p>
+  <p class="py-16 text-center text-ink-subtle">Loading approved clips…</p>
 } @else if (cards()!.length === 0) {
   <div class="py-16 text-center">
-    <p class="text-slate-300">Nothing approved yet.</p>
-    <p class="mt-2 text-sm text-slate-500">
+    <p class="text-ink-muted">Nothing approved yet.</p>
+    <p class="mt-2 text-sm text-ink-subtle">
       Approve a clip on the Review page and it will appear here, ready to publish.
     </p>
   </div>
 } @else {
   <ul class="mt-6 space-y-6">
     @for (card of cards(); track card.clip.id) {
-      <li class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+      <li class="overflow-hidden rounded-xl border border-line bg-panel">
         @if (posterSrc(card); as poster) {
           <img
             class="w-full bg-black object-contain"
@@ -34,16 +36,16 @@
         }
 
         <div class="space-y-4 p-4">
-          <p class="font-medium text-slate-100">{{ card.clip.title ?? 'Untitled clip' }}</p>
+          <p class="font-medium text-ink">{{ card.clip.title ?? 'Untitled clip' }}</p>
 
           @if (published(card); as live) {
             <!-- Already on the platform. The audit trail, in the one place the
                  person who authorised it will actually look. -->
-            <div class="rounded-lg border border-emerald-900 bg-emerald-950/40 p-3 text-sm">
-              <p class="font-medium text-emerald-300">Published</p>
+            <div class="rounded-lg border border-ok-line bg-ok-bg p-3 text-sm">
+              <p class="font-medium text-ok-ink">Published</p>
               @if (live.externalUrl; as url) {
                 <a
-                  class="mt-1 block break-all text-emerald-400 underline"
+                  class="mt-1 block break-all text-ok-ink-soft underline"
                   [href]="url"
                   target="_blank"
                   rel="noopener"
@@ -51,26 +53,28 @@
                 >
               }
               @if (live.rights; as rights) {
-                <p class="mt-2 text-emerald-200/80">
+                <p class="mt-2 text-ok-ink-soft">
                   {{ rights.basis }} · attested by {{ rights.attestedBy }}
                   @if (rights.attestedAt) {
                     on {{ rights.attestedAt }}
                   }
                 </p>
                 @if (rights.note; as note) {
-                  <p class="mt-1 text-emerald-200/60">{{ note }}</p>
+                  <p class="mt-1 text-ok-ink-soft">{{ note }}</p>
                 }
               }
             </div>
           } @else if (pending(card)) {
             <p
-              class="rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300"
+              class="rounded-lg border border-line-strong bg-panel-soft p-3 text-sm text-ink-muted"
             >
               Upload in progress on the worker.
             </p>
           } @else {
             @if (failed(card); as attempt) {
-              <p class="rounded-lg border border-red-900 bg-red-950/40 p-3 text-sm text-red-300">
+              <p
+                class="rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink"
+              >
                 Last attempt failed: {{ attempt.error?.message }}
               </p>
             }
@@ -78,20 +82,20 @@
             @if (attested(card)) {
               <!-- The gate is satisfied. Show what was recorded, so publishing is
                    never a step someone takes without seeing what they attested. -->
-              <div class="rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-sm">
-                <p class="text-slate-300">
+              <div class="rounded-lg border border-line-strong bg-panel-soft p-3 text-sm">
+                <p class="text-ink-muted">
                   Rights recorded: <strong>{{ card.clip.rights?.basis }}</strong>
                 </p>
                 @if (card.clip.rights?.note; as note) {
-                  <p class="mt-1 text-slate-400">{{ note }}</p>
+                  <p class="mt-1 text-ink-muted">{{ note }}</p>
                 }
               </div>
 
               <label class="block text-sm">
-                <span class="text-slate-400">Publish at (optional)</span>
+                <span class="text-ink-muted">Publish at (optional)</span>
                 <input
                   type="datetime-local"
-                  class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
                   [value]="scheduleFor(card.clip.id)"
                   (input)="setSchedule(card.clip.id, $any($event.target).value)"
                 />
@@ -99,14 +103,14 @@
 
               @if (queued() === card.clip.id) {
                 <p
-                  class="rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300"
+                  class="rounded-lg border border-line-strong bg-panel-soft p-3 text-sm text-ink-muted"
                 >
                   Queued. The worker will upload it as unlisted; nothing goes public by default.
                 </p>
               } @else {
                 <button
                   type="button"
-                  class="w-full rounded-lg bg-forge-500 px-4 py-2.5 font-medium text-white hover:bg-forge-600 disabled:opacity-50"
+                  class="w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
                   [disabled]="busy() === card.clip.id"
                   (click)="publish(card)"
                 >
@@ -115,14 +119,14 @@
               }
             } @else {
               @if (refusal(card); as why) {
-                <p class="text-sm text-amber-300">{{ why }}</p>
+                <p class="text-sm text-warn-ink">{{ why }}</p>
               }
 
               <fieldset class="space-y-2">
-                <legend class="text-sm text-slate-400">Why may you publish this?</legend>
+                <legend class="text-sm text-ink-muted">Why may you publish this?</legend>
                 @for (basis of bases; track basis.value) {
                   <label
-                    class="flex cursor-pointer gap-3 rounded-lg border border-slate-800 p-3 hover:border-slate-700"
+                    class="flex cursor-pointer gap-3 rounded-lg border border-line p-3 hover:border-line-strong"
                     [class.border-forge-500]="basisFor(card.clip.id) === basis.value"
                   >
                     <input
@@ -134,25 +138,25 @@
                       (change)="chooseBasis(card.clip.id, basis.value)"
                     />
                     <span class="min-w-0">
-                      <span class="block text-sm text-slate-200">{{ basis.label }}</span>
-                      <span class="block text-xs text-slate-500">{{ basis.hint }}</span>
+                      <span class="block text-sm text-ink">{{ basis.label }}</span>
+                      <span class="block text-xs text-ink-subtle">{{ basis.hint }}</span>
                     </span>
                   </label>
                 }
               </fieldset>
 
               <label class="block text-sm">
-                <span class="text-slate-400">
+                <span class="text-ink-muted">
                   Note
                   @if (needsNote(card.clip.id)) {
-                    <span class="text-amber-400">— required for fair use</span>
+                    <span class="text-warn-ink">— required for fair use</span>
                   } @else {
-                    <span class="text-slate-600">(optional)</span>
+                    <span class="text-ink-subtle">(optional)</span>
                   }
                 </span>
                 <textarea
                   rows="2"
-                  class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
                   [placeholder]="
                     needsNote(card.clip.id)
                       ? 'Why is this fair use? Length, transformation, purpose…'
@@ -165,7 +169,7 @@
 
               <button
                 type="button"
-                class="w-full rounded-lg border border-slate-700 px-4 py-2.5 font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                class="w-full rounded-lg border border-line-strong px-4 py-2.5 font-medium text-ink hover:bg-line disabled:opacity-40"
                 [disabled]="!canAttest(card.clip.id) || busy() === card.clip.id"
                 (click)="attest(card)"
               >

@@ -5,13 +5,44 @@
     <title>ClipForge</title>
     <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#020617" />
     <meta
       name="description"
       content="A local-first AI content agent. Review AI-selected clips from your phone; the video stays on your machine."
     />
-    <link rel="icon" href="favicon.ico" />
+
+    <!-- The browser UI around the page: the address bar on Android, the status
+         bar area on an installed PWA. Matched to --cf-canvas in each theme, so
+         the chrome does not sit at a different brightness from the page. -->
+    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#020617" media="(prefers-color-scheme: dark)" />
+
+    <link rel="icon" href="favicon.ico" sizes="48x48" />
+    <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
     <link rel="manifest" href="manifest.webmanifest" />
+
+    <!--
+      Apply the stored theme before first paint.
+
+      This has to be inline and synchronous: anything deferred runs after the
+      first paint, and the user sees a white flash before a dark app, which is
+      worse than either theme. It duplicates a few lines of theme.ts on purpose —
+      the bundle does not exist yet at this point in the document. The shared
+      contract is the storage key and the two accepted values, and
+      e2e/theme.spec.ts asserts the two copies still agree.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('clipforge.theme');
+          if (stored === 'light' || stored === 'dark') {
+            document.documentElement.setAttribute('data-theme', stored);
+          }
+        } catch (e) {
+          /* Private browsing. Fall through to following the OS. */
+        }
+      })();
+    </script>
 
     <!--
       Runtime configuration. Firebase identifiers are configuration, never
@@ -41,7 +72,7 @@
       /* CLIPFORGE-CONFIG-END */
     </script>
   </head>
-  <body class="min-h-screen bg-slate-950">
+  <body class="min-h-screen">
     <app-root></app-root>
   </body>
 </html>

@@ -53,14 +53,37 @@ test('the manifest is served, so the app is installable once deployed', async ({
     name?: string;
     start_url?: string;
     display?: string;
-    icons?: { sizes?: string }[];
+    icons?: { sizes?: string; purpose?: string; src?: string }[];
   };
   expect(manifest.name).toBeTruthy();
   expect(manifest.display).toBe('standalone');
+
+  const icons = manifest.icons ?? [];
   // Chrome will not offer to install without a 192px and a 512px icon.
-  const sizes = (manifest.icons ?? []).map((icon) => icon.sizes);
-  expect(sizes).toContain('192x192');
-  expect(sizes).toContain('512x512');
+  const anyIcons = icons.filter((icon) => icon.purpose === 'any');
+  expect(anyIcons.map((icon) => icon.sizes)).toEqual(
+    expect.arrayContaining(['192x192', '512x512']),
+  );
+
+  // And a genuinely separate maskable pair. Declaring one icon "any maskable"
+  // without a safe zone — which this manifest used to do — hands Android an
+  // icon it will crop into the artwork.
+  const maskable = icons.filter((icon) => icon.purpose === 'maskable');
+  expect(maskable.map((icon) => icon.sizes)).toEqual(
+    expect.arrayContaining(['192x192', '512x512']),
+  );
+  expect(maskable.every((icon) => icon.src !== anyIcons[0]?.src)).toBe(true);
+});
+
+test('the header fits a 360px phone without overflowing', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await signIn(page);
+
+  const overflow = await page.evaluate(() => {
+    const header = document.querySelector('header > div');
+    return header ? header.scrollWidth - header.clientWidth : -1;
+  });
+  expect(overflow).toBeLessThanOrEqual(0);
 });
 
 test('no service worker registers while the app is pointed at emulators', async ({ page }) => {

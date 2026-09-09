@@ -95,15 +95,15 @@ export class JobsPage implements OnDestroy {
   protected statusTone(job: Job): string {
     switch (job.status) {
       case 'COMPLETED':
-        return 'bg-emerald-500/15 text-emerald-400';
+        return 'bg-ok-bg text-ok-ink-soft';
       case 'FAILED':
-        return 'bg-red-500/15 text-red-400';
+        return 'bg-danger-bg text-danger-ink';
       case 'RUNNING':
-        return 'bg-forge-500/15 text-forge-400';
+        return 'bg-accent-soft text-accent-ink';
       case 'CANCELLED':
-        return 'bg-slate-700/40 text-slate-400';
+        return 'bg-line-strong/40 text-ink-muted';
       default:
-        return 'bg-slate-700/40 text-slate-300';
+        return 'bg-line-strong/40 text-ink-muted';
     }
   }
 }

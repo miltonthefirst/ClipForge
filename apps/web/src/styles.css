@@ -1,17 +1,150 @@
 @import 'tailwindcss';
 
-/* ClipForge design tokens.
-   Defined once here so the PWA (Phase 7) and any future surface share them. */
-@theme {
-  --color-forge-50: #eef6ff;
-  --color-forge-100: #d9ecff;
-  --color-forge-400: #4da3ff;
-  --color-forge-500: #1a85ff;
-  --color-forge-600: #0b6bd8;
-  --color-forge-900: #0a2647;
+/* ─────────────────────────────────────────────────────────────────────────────
+   ClipForge design tokens.
+
+   Two layers, deliberately. `--cf-*` below are the raw values and the only place
+   a colour is written down; the `@theme` block maps them into Tailwind's colour
+   namespace so templates say `bg-panel text-ink` and never
+   `bg-slate-900 dark:bg-white`.
+
+   That indirection is the whole design. Theming lives here, not in the markup,
+   so a third theme is a block of values rather than an edit to every component —
+   and no template can drift out of step with a theme it never mentions.
+
+   `light-dark()` gives each token ONE definition instead of the usual four
+   blocks (default, prefers-light, forced-light, forced-dark). Those four have to
+   be kept in step by hand, and the bug when they are not — a colour that is
+   right until the OS preference disagrees with the in-app toggle — is close to
+   invisible in review. The cost is a modern-browser requirement, which this
+   stack already has.
+
+   Which side `light-dark()` picks is decided by `color-scheme`, so forcing a
+   theme is one line. `color-scheme` also settles what the browser does with
+   scrollbars, form controls and the space beyond the page, which no amount of
+   token swapping would have reached.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces, back to front. */
+  --cf-canvas: light-dark(#f8fafc, #020617);
+  --cf-panel: light-dark(#ffffff, #0f172a);
+  --cf-panel-soft: light-dark(#f1f5f9, #0b1222);
+  --cf-line: light-dark(#e2e8f0, #1e293b);
+  --cf-line-strong: light-dark(#cbd5e1, #334155);
+
+  /* Text, most to least prominent. Every pair clears 4.5:1 on its own surface. */
+  --cf-ink: light-dark(#0f172a, #f1f5f9);
+  --cf-ink-muted: light-dark(#334155, #cbd5e1);
+  --cf-ink-subtle: light-dark(#475569, #94a3b8);
+
+  /* Brand. The mark's blue, and the only colour that is the same in both
+     themes — it is the logo's, and it should not shift underneath it. */
+  --cf-forge-50: #eef6ff;
+  --cf-forge-100: #d9ecff;
+  --cf-forge-400: #4da3ff;
+  --cf-forge-500: #1a85ff;
+  --cf-forge-600: #0b6bd8;
+  /* Hover. Darker rather than lighter: white on forge-500 is 3.6:1, so
+     brightening on hover would drop the label below AA exactly while the
+     pointer is on it. */
+  --cf-forge-700: #0a57ad;
+  --cf-forge-900: #0a2647;
+
+  /* Accent as *text* needs more contrast on white than forge-500 can give
+     (3.6:1), so light borrows the darker step. */
+  --cf-accent-ink: light-dark(#0b6bd8, #4da3ff);
+  --cf-accent-soft: light-dark(#eff6ff, #0a2647);
+
+  /* Status. Named for meaning, not hue, so a redesign does not have to rename
+     every usage to change what "failed" looks like. */
+  --cf-danger-ink: light-dark(#b91c1c, #fca5a5);
+  /* A solid fill rather than text: the failed segment of a progress bar. Lifted
+     on dark, where #dc2626 sits too close to the canvas to register at 1.5px. */
+  --cf-danger-solid: light-dark(#dc2626, #ef4444);
+  --cf-danger-line: light-dark(#fecaca, #7f1d1d);
+  --cf-danger-bg: light-dark(#fef2f2, #450a0a);
+
+  --cf-warn-ink: light-dark(#b45309, #fcd34d);
+
+  --cf-ok-ink: light-dark(#047857, #6ee7b7);
+  --cf-ok-ink-soft: light-dark(#059669, #34d399);
+  --cf-ok-line: light-dark(#a7f3d0, #064e3b);
+  --cf-ok-bg: light-dark(#ecfdf5, #022c22);
+}
+
+/* The in-app toggle. `color-scheme` is all that needs to change: every token
+   above is expressed in terms of it. */
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-canvas: var(--cf-canvas);
+  --color-panel: var(--cf-panel);
+  --color-panel-soft: var(--cf-panel-soft);
+  --color-line: var(--cf-line);
+  --color-line-strong: var(--cf-line-strong);
+
+  --color-ink: var(--cf-ink);
+  --color-ink-muted: var(--cf-ink-muted);
+  --color-ink-subtle: var(--cf-ink-subtle);
+
+  --color-forge-50: var(--cf-forge-50);
+  --color-forge-100: var(--cf-forge-100);
+  --color-forge-400: var(--cf-forge-400);
+  --color-forge-500: var(--cf-forge-500);
+  --color-forge-600: var(--cf-forge-600);
+  --color-forge-700: var(--cf-forge-700);
+  --color-forge-900: var(--cf-forge-900);
+
+  --color-accent-ink: var(--cf-accent-ink);
+  --color-accent-soft: var(--cf-accent-soft);
+
+  --color-danger-ink: var(--cf-danger-ink);
+  --color-danger-solid: var(--cf-danger-solid);
+  --color-danger-line: var(--cf-danger-line);
+  --color-danger-bg: var(--cf-danger-bg);
+
+  --color-warn-ink: var(--cf-warn-ink);
+
+  --color-ok-ink: var(--cf-ok-ink);
+  --color-ok-ink-soft: var(--cf-ok-ink-soft);
+  --color-ok-line: var(--cf-ok-line);
+  --color-ok-bg: var(--cf-ok-bg);
 }
 
 html,
 body {
   height: 100%;
+}
+
+body {
+  background-color: var(--cf-canvas);
+  color: var(--cf-ink);
+}
+
+/* The theme is applied before first paint by an inline script in index.html, so
+   there is no flash of the wrong theme. That script cannot know whether the
+   stylesheet has loaded, hence the transition is added only afterwards —
+   otherwise switching themes on a cold load animates from unstyled. */
+:root[data-theme-ready] body,
+:root[data-theme-ready] body * {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme-ready] body,
+  :root[data-theme-ready] body * {
+    transition: none;
+  }
 }

@@ -131,8 +131,13 @@ test('approving a clip writes the decision and clears it from the queue', async 
   // Gone from the pending queue, because the listener is filtered on review.
   await expect(page.getByText('Nothing waiting for review')).toBeVisible();
 
-  const stored = await readDoc('clips/clip-1');
-  expect(stored?.['review']).toEqual({ stringValue: 'APPROVED' });
+  // Polled, not read once. The Firestore SDK applies a write locally before the
+  // server acknowledges it, so the card disappears from the queue *first* and a
+  // single read here races the round trip — reading the value it was seeded
+  // with, from a document the UI has already moved on from.
+  await expect
+    .poll(async () => (await readDoc('clips/clip-1'))?.['review'])
+    .toEqual({ stringValue: 'APPROVED' });
 });
 
 test('rejecting a clip is recorded just as explicitly as approving', async ({ page }) => {
@@ -144,8 +149,9 @@ test('rejecting a clip is recorded just as explicitly as approving', async ({ pa
   await page.getByRole('button', { name: 'Reject' }).click();
 
   await expect(page.getByText('Nothing waiting for review')).toBeVisible();
-  const stored = await readDoc('clips/clip-1');
-  expect(stored?.['review']).toEqual({ stringValue: 'REJECTED' });
+  await expect
+    .poll(async () => (await readDoc('clips/clip-1'))?.['review'])
+    .toEqual({ stringValue: 'REJECTED' });
 });
 
 test('another user’s clip never appears in this user’s queue', async ({ page }) => {
