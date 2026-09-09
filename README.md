@@ -351,9 +351,19 @@ it on its first write — by which point it would already have advertised itself
 as healthy.
 
 **Keep the key out of the repository.** The Firebase console names downloads
-`<project>-firebase-adminsdk-<id>-<hash>.json`, which is matched by `.gitignore`,
-but a gitignored file inside the working tree is still inside anything that
-backs up, syncs or zips that folder. Somewhere outside is safer.
+`<project>-firebase-adminsdk-<id>-<hash>.json`. `.gitignore` matches that shape,
+but a gitignored file inside the working tree is still inside anything that backs
+up, syncs or zips the folder — so `.gitignore` is the backstop, not the plan.
+
+`~/.clipforge/` is a reasonable home: outside the repo, outside OneDrive's sync
+scope on a default Windows install, and owner-only if you set it that way:
+
+```powershell
+icacls "$env:USERPROFILE\.clipforge" /inheritance:r /grant:r "${env:USERDOMAIN}\${env:USERNAME}:(OI)(CI)(F)"
+```
+
+SYSTEM and Administrators keep access regardless, which is not a weakening — an
+administrator can read the file either way.
 
 Storage rules are deliberately **not** deployable: the Spark tier has no bucket
 at all, so `--only storage` fails by definition. The file stays in the repository,
