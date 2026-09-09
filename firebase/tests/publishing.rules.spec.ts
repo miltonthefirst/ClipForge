@@ -6,7 +6,14 @@ import {
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
 
-import { ALICE, BOB, createTestEnvironment, pendingClip, queuedJob } from './helpers.js';
+import {
+  ALICE,
+  BOB,
+  createTestEnvironment,
+  pendingClip,
+  queuedJob,
+  userProfile,
+} from './helpers.js';
 
 /**
  * Phase 8, exit criterion 2 — the rules half of the rights gate.
@@ -30,6 +37,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await testEnv.clearFirestore();
+  // Approval gating means an account with no profile row can read nothing at
+  // all. Both test users are approved members unless a test says otherwise;
+  // the gate itself is exercised in access.rules.spec.ts.
+  await seed(`users/${ALICE}`, userProfile(ALICE));
+  await seed(`users/${BOB}`, userProfile(BOB));
 });
 
 const aliceDb = () => testEnv.authenticatedContext(ALICE).firestore();

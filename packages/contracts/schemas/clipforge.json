@@ -17,6 +17,7 @@
     "clip": { "$ref": "#/definitions/Clip" },
     "clipPreview": { "$ref": "#/definitions/ClipPreview" },
     "publication": { "$ref": "#/definitions/Publication" },
+    "userProfile": { "$ref": "#/definitions/UserProfile" },
     "workerHeartbeat": { "$ref": "#/definitions/WorkerHeartbeat" },
     "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" }
   },
@@ -435,6 +436,48 @@
         "FAIR_USE_ASSERTED",
         "PUBLIC_DOMAIN"
       ]
+    },
+
+    "UserRole": {
+      "title": "UserRole",
+      "description": "ADMIN can approve other users and change roles. MEMBER can use the app for their own data and nothing else. There is no third level because there is no third thing to protect.",
+      "type": "string",
+      "enum": ["ADMIN", "MEMBER"]
+    },
+
+    "UserStatus": {
+      "title": "UserStatus",
+      "description": "Registration is open; access is not. A new account lands in PENDING and can read nothing until an admin approves it, so an unapproved sign-up is an inert row rather than a foothold. REJECTED and DISABLED are kept apart deliberately: one was never let in, the other was and had it taken away, and an audit that cannot tell them apart is not much of an audit.",
+      "type": "string",
+      "enum": ["PENDING", "APPROVED", "REJECTED", "DISABLED"]
+    },
+
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "A person with an account, at users/{uid}. The document id IS the Firebase Auth uid, which is what lets security rules resolve a caller's status with one get() and no join.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "email", "role", "status", "createdAt"],
+      "properties": {
+        "uid": { "type": "string", "minLength": 1 },
+        "email": { "type": "string", "minLength": 1 },
+        "displayName": { "type": ["string", "null"], "default": null },
+        "photoUrl": { "type": ["string", "null"], "default": null },
+        "role": { "$ref": "#/definitions/UserRole" },
+        "status": { "$ref": "#/definitions/UserStatus" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "decidedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "When an admin last approved, rejected or disabled this account."
+        },
+        "decidedBy": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The uid of the admin who made that decision. Recorded so 'who let this person in?' is answerable later."
+        }
+      }
     },
 
     "RightsAttestation": {

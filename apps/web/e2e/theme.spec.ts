@@ -21,6 +21,25 @@ const DARK_CANVAS = 'rgb(2, 6, 23)';
 // that proves the token resolved — not a wrapper that happens to repeat it.
 const canvasOf = 'body';
 
+/**
+ * Open the account menu and hand back the theme control inside it.
+ *
+ * The toggle lives in the avatar dropdown now: the top bar carries identity and
+ * the account, and navigation moved to the sidebar. Clicking the control does
+ * not close the menu, so repeated cycles need only one open.
+ */
+async function themeToggle(page: import('@playwright/test').Page) {
+  // `menuitem`, not `button`. The element carries role="menuitem" for the
+  // dropdown, and an explicit role replaces the implicit one — so a
+  // getByRole('button') lookup matches nothing at all, however well-labelled it
+  // is. Worth stating: the symptom was an empty locator, not a wrong name.
+  const item = page.getByRole('menuitem', { name: /^Theme:/ });
+  if (!(await item.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: /Account menu/ }).click();
+  }
+  return item;
+}
+
 test.beforeEach(async () => {
   await wipe();
 });
@@ -47,8 +66,9 @@ test.describe('following the system, the other way', () => {
 
   test('an explicit dark choice overrides a light system', async ({ page }) => {
     await signIn(page);
-    await page.getByRole('button', { name: /Theme:/ }).click(); // system -> light
-    await page.getByRole('button', { name: /Theme:/ }).click(); // light  -> dark
+    const toggle = await themeToggle(page);
+    await toggle.click(); // system -> light
+    await toggle.click(); // light  -> dark
 
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect(page.locator(canvasOf)).toHaveCSS('background-color', DARK_CANVAS);
@@ -57,7 +77,7 @@ test.describe('following the system, the other way', () => {
 
 test('the toggle cycles system, light, dark and back', async ({ page }) => {
   await signIn(page);
-  const toggle = page.getByRole('button', { name: /Theme:/ });
+  const toggle = await themeToggle(page);
 
   await expect(toggle).toHaveAttribute('aria-label', /following your system/);
 
@@ -75,7 +95,7 @@ test('the toggle cycles system, light, dark and back', async ({ page }) => {
 
 test('a chosen theme survives a reload, and is applied before first paint', async ({ page }) => {
   await signIn(page);
-  await page.getByRole('button', { name: /Theme:/ }).click(); // -> light
+  await (await themeToggle(page)).click(); // -> light
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 
   // A fresh navigation: the attribute must be set by the inline script in
@@ -90,7 +110,7 @@ test('the stored value is the one index.html and theme.ts both agree on', async 
   // They cannot share code — the inline script runs before the bundle exists —
   // so the key and its accepted values are the contract between them.
   await signIn(page);
-  await page.getByRole('button', { name: /Theme:/ }).click();
+  await (await themeToggle(page)).click();
 
   const stored = await page.evaluate(() => localStorage.getItem('clipforge.theme'));
   expect(stored).toBe('light');
@@ -100,7 +120,7 @@ test('choosing system clears the stored value rather than recording a third one'
   page,
 }) => {
   await signIn(page);
-  const toggle = page.getByRole('button', { name: /Theme:/ });
+  const toggle = await themeToggle(page);
   await toggle.click();
   await toggle.click();
   await toggle.click(); // back to system
@@ -119,7 +139,7 @@ test.describe('the browser chrome follows a forced theme', () => {
     // has to be prepended. Appended, the dark media rule would still win and the
     // status bar would stay dark behind a light page.
     await signIn(page);
-    await page.getByRole('button', { name: /Theme:/ }).click(); // -> light
+    await (await themeToggle(page)).click(); // -> light
 
     const first = await page.evaluate(
       () => document.querySelector('meta[name="theme-color"]')?.getAttribute('content'),
@@ -129,7 +149,7 @@ test.describe('the browser chrome follows a forced theme', () => {
 
   test('returning to system removes the override', async ({ page }) => {
     await signIn(page);
-    const toggle = page.getByRole('button', { name: /Theme:/ });
+    const toggle = await themeToggle(page);
     await toggle.click();
     await toggle.click();
     await toggle.click(); // back to system
@@ -156,7 +176,7 @@ test('a review card is legible in whichever theme is active', async ({ page }) =
   await write('clips/clip-1', clip(uid));
   await write('clips/clip-1/preview/poster', preview());
 
-  const toggle = page.getByRole('button', { name: /Theme:/ });
+  const toggle = await themeToggle(page);
   const card = page.locator('main li').first();
 
   for (const expected of [LIGHT_CANVAS, DARK_CANVAS]) {

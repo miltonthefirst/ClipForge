@@ -28,18 +28,46 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // ── Access is approval, not merely authentication ────────────────────────
+    //
+    // Registration is open: anyone with the URL can create an account. What a
+    // new account can *see* is nothing at all until an admin approves it, so a
+    // stray sign-up is an inert row rather than a foothold.
+    //
+    // This costs one document read per rule evaluation. At this project's scale
+    // that is a rounding error against the free tier's daily allowance, and the
+    // alternative — custom claims on the token — would put approval on a delay
+    // measured in token lifetimes and route it through the worker. Approval
+    // should take effect on the next request, not the next hour.
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApproved() {
+      return signedIn()
+             && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+             && profile().status == 'APPROVED';
+    }
+
+    function isAdmin() {
+      return isApproved() && profile().role == 'ADMIN';
+    }
+
+    // Ownership AND approval. Every rule below uses these rather than comparing
+    // uids directly, so revoking an account closes every door at once instead of
+    // whichever ones someone remembered to check.
     function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
+      return isApproved() && request.auth.uid == uid;
     }
 
     // The document being written must be stamped with the caller's own uid.
     // Without this, a signed-in user could create documents owned by someone else.
     function ownsIncoming() {
-      return signedIn() && request.resource.data.uid == request.auth.uid;
+      return isApproved() && request.resource.data.uid == request.auth.uid;
     }
 
     function ownsExisting() {
-      return signedIn() && resource.data.uid == request.auth.uid;
+      return isApproved() && resource.data.uid == request.auth.uid;
     }
 
     // Which fields an update actually touched.
@@ -47,9 +75,43 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
 
-    // ── User settings ────────────────────────────────────────────────────────
+    // ── Accounts ─────────────────────────────────────────────────────────────
+    //
+    // The one collection that cannot gate on approval, because it is where
+    // approval is recorded. A signed-in user may always read their own row —
+    // otherwise a pending account could not be told it is pending.
     match /users/{uid} {
-      allow read, write: if isOwner(uid);
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+
+      // Register yourself, as yourself, with no say in your own access. Role
+      // and status are dictated here rather than trusted from the client: a
+      // sign-up that could choose 'ADMIN'/'APPROVED' would make the whole gate
+      // decorative.
+      allow create: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.uid == uid
+                    && request.resource.data.role == 'MEMBER'
+                    && request.resource.data.status == 'PENDING'
+                    && request.resource.data.decidedAt == null
+                    && request.resource.data.decidedBy == null;
+
+      // Your own profile: the cosmetic fields only.
+      allow update: if signedIn()
+                    && request.auth.uid == uid
+                    && changed().hasOnly(['displayName', 'photoUrl']);
+
+      // An admin decides access. They may not change their own, which stops the
+      // last admin from locking everyone out — including themselves — with one
+      // mistaken tap.
+      allow update: if isAdmin()
+                    && request.auth.uid != uid
+                    && changed().hasOnly(['role', 'status', 'decidedAt', 'decidedBy'])
+                    && request.resource.data.status in ['PENDING', 'APPROVED', 'REJECTED', 'DISABLED']
+                    && request.resource.data.role in ['ADMIN', 'MEMBER']
+                    && request.resource.data.decidedBy == request.auth.uid;
+
+      allow delete: if false;
     }
 
     // ── Workers ──────────────────────────────────────────────────────────────
@@ -131,7 +193,7 @@ service cloud.firestore {
       // Append-only, written by the worker. Readable by the job's owner so a
       // failure can be diagnosed from the phone rather than from worker logs.
       match /events/{eventId} {
-        allow read: if signedIn()
+        allow read: if isApproved()
                     && get(/databases/$(database)/documents/jobs/$(jobId)).data.uid == request.auth.uid;
         allow write: if false;
       }
@@ -146,7 +208,7 @@ service cloud.firestore {
       // Transcripts are expensive to produce and are cached by content hash.
       // Nothing about them is user-editable.
       match /transcripts/{modelVersion} {
-        allow read: if signedIn()
+        allow read: if isApproved()
                     && get(/databases/$(database)/documents/sources/$(sourceId)).data.uid == request.auth.uid;
         allow write: if false;
       }
@@ -179,19 +241,19 @@ service cloud.firestore {
       // readable — but it is produced by the render stage, never by a client.
       // See docs/adr/0009-spark-tier-local-artefacts.md.
       match /preview/{previewId} {
-        allow read: if signedIn()
+        allow read: if isApproved()
                     && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
         allow write: if false;
       }
 
       match /publications/{pubId} {
-        allow read: if signedIn()
+        allow read: if isApproved()
                     && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
         allow write: if false;
       }
 
       match /metrics/{day} {
-        allow read: if signedIn()
+        allow read: if isApproved()
                     && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
         allow write: if false;
       }

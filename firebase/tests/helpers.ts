@@ -114,6 +114,28 @@ export function candidate(uid: string, overrides: Record<string, unknown> = {}) 
   };
 }
 
+/**
+ * An approved member's profile.
+ *
+ * Every other fixture here is inert without one: since approval gating landed,
+ * a signed-in user with no `users/{uid}` row can read nothing at all, which is
+ * exactly the point of it.
+ */
+export function userProfile(uid: string, overrides: Record<string, unknown> = {}) {
+  return {
+    uid,
+    email: `${uid}@example.com`,
+    displayName: null,
+    photoUrl: null,
+    role: 'MEMBER',
+    status: 'APPROVED',
+    createdAt: TIMESTAMP,
+    decidedAt: TIMESTAMP,
+    decidedBy: 'admin-uid',
+    ...overrides,
+  };
+}
+
 export function heartbeat(uid: string, overrides: Record<string, unknown> = {}) {
   return {
     workerId: 'worker-1',

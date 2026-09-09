@@ -24,5 +24,17 @@ export const routes: Routes = [
     title: 'Jobs · ClipForge',
     loadComponent: () => import('./features/jobs/jobs-page').then((m) => m.JobsPage),
   },
+  {
+    path: 'settings',
+    title: 'Settings · ClipForge',
+    loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),
+  },
+  {
+    // Admin-only in the security rules as well as here. The route guard is a
+    // courtesy — the listener is what actually refuses a member.
+    path: 'admin/users',
+    title: 'People · ClipForge',
+    loadComponent: () => import('./features/admin/users-page').then((m) => m.UsersPage),
+  },
   { path: '**', redirectTo: 'review' },
 ];

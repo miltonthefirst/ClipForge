@@ -89,6 +89,14 @@ export type PublicationState = 'PENDING' | 'UPLOADING' | 'PUBLISHED' | 'FAILED' 
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
+/**
+ * ADMIN can approve other users and change roles. MEMBER can use the app for their own data and nothing else. There is no third level because there is no third thing to protect.
+ */
+export type UserRole = 'ADMIN' | 'MEMBER';
+/**
+ * Registration is open; access is not. A new account lands in PENDING and can read nothing until an admin approves it, so an unapproved sign-up is an inert row rather than a foothold. REJECTED and DISABLED are kept apart deliberately: one was never let in, the other was and had it taken away, and an audit that cannot tell them apart is not much of an audit.
+ */
+export type UserStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'DISABLED';
 export type WorkerStatus = 'ONLINE' | 'BUSY' | 'OFFLINE';
 
 /**
@@ -106,6 +114,7 @@ export interface ClipForgeContracts {
   clip?: Clip;
   clipPreview?: ClipPreview;
   publication?: Publication;
+  userProfile?: UserProfile;
   workerHeartbeat?: WorkerHeartbeat;
   llmClipResponse?: LlmClipResponse;
 }
@@ -435,6 +444,26 @@ export interface Publication {
   publishAt?: string | null;
   createdAt: string;
   publishedAt?: string | null;
+}
+/**
+ * A person with an account, at users/{uid}. The document id IS the Firebase Auth uid, which is what lets security rules resolve a caller's status with one get() and no join.
+ */
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName?: string | null;
+  photoUrl?: string | null;
+  role: UserRole;
+  status: UserStatus;
+  createdAt: string;
+  /**
+   * When an admin last approved, rejected or disabled this account.
+   */
+  decidedAt?: string | null;
+  /**
+   * The uid of the admin who made that decision. Recorded so 'who let this person in?' is answerable later.
+   */
+  decidedBy?: string | null;
 }
 /**
  * Liveness and capability advertisement at workers/{workerId}.

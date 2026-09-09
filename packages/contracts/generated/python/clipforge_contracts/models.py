@@ -400,6 +400,52 @@ class RightsBasis(StrEnum):
     PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
 
 
+class UserRole(StrEnum):
+    """
+    ADMIN can approve other users and change roles. MEMBER can use the app for their own data and nothing else. There is no third level because there is no third thing to protect.
+    """
+
+    ADMIN = "ADMIN"
+    MEMBER = "MEMBER"
+
+
+class UserStatus(StrEnum):
+    """
+    Registration is open; access is not. A new account lands in PENDING and can read nothing until an admin approves it, so an unapproved sign-up is an inert row rather than a foothold. REJECTED and DISABLED are kept apart deliberately: one was never let in, the other was and had it taken away, and an audit that cannot tell them apart is not much of an audit.
+    """
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    DISABLED = "DISABLED"
+
+
+class UserProfile(BaseModel):
+    """
+    A person with an account, at users/{uid}. The document id IS the Firebase Auth uid, which is what lets security rules resolve a caller's status with one get() and no join.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    uid: str = Field(..., min_length=1)
+    email: str = Field(..., min_length=1)
+    display_name: str | None = Field(None, alias="displayName")
+    photo_url: str | None = Field(None, alias="photoUrl")
+    role: UserRole
+    status: UserStatus
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
+    """
+    When an admin last approved, rejected or disabled this account.
+    """
+    decided_by: str | None = Field(None, alias="decidedBy")
+    """
+    The uid of the admin who made that decision. Recorded so 'who let this person in?' is answerable later.
+    """
+
+
 class RightsAttestation(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -686,5 +732,6 @@ class ClipForgeContracts(BaseModel):
     clip: Clip | None = None
     clip_preview: ClipPreview | None = Field(None, alias="clipPreview")
     publication: Publication | None = None
+    user_profile: UserProfile | None = Field(None, alias="userProfile")
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")

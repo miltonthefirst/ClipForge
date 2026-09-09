@@ -119,6 +119,22 @@ export async function signIn(page: Page): Promise<string> {
   }
   const account = (await response.json()) as { localId: string };
 
+  // Approval gating: a signed-in account with no `users/{uid}` row can read
+  // nothing, so without this every test would land on the waiting screen. Written
+  // as the worker would — the client is not allowed to approve itself, which is
+  // the whole point of the gate.
+  await write(`users/${account.localId}`, {
+    uid: account.localId,
+    email: EMAIL,
+    displayName: 'E2E User',
+    photoUrl: null,
+    role: 'ADMIN',
+    status: 'APPROVED',
+    createdAt: NOW,
+    decidedAt: NOW,
+    decidedBy: account.localId,
+  });
+
   await page.goto('/review');
   await page.waitForFunction(
     () => '__clipforgeSignIn' in (window as unknown as Record<string, unknown>),

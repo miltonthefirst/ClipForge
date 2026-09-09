@@ -1,0 +1,117 @@
+<h1 class="text-xl font-semibold">People</h1>
+<p class="mt-3 rounded-lg border border-line bg-panel/60 px-4 py-3 text-sm text-ink-muted">
+  Anyone can request an account. Nobody can see anything until you approve them — security rules
+  refuse every collection to an account that is not <strong class="text-ink">APPROVED</strong>, so a
+  pending sign-up is an inert row rather than a way in.
+</p>
+
+@if (error(); as message) {
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    {{ message }}
+  </p>
+}
+
+@if (users() === null) {
+  <p class="py-16 text-center text-ink-subtle">Loading people…</p>
+} @else {
+  @if (pending().length) {
+    <h2 class="mt-8 text-sm font-semibold uppercase tracking-wide text-ink-subtle">
+      Waiting for approval ({{ pending().length }})
+    </h2>
+    <ul class="mt-3 space-y-3">
+      @for (person of pending(); track person.uid) {
+        <li class="rounded-xl border border-warn-ink/40 bg-panel p-4">
+          <p class="font-medium text-ink">{{ label(person) }}</p>
+          <p class="text-sm text-ink-subtle">{{ person.email }}</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+              [disabled]="busy() === person.uid"
+              (click)="decide(person, { status: 'APPROVED' })"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-line-strong px-4 py-2 text-sm font-medium text-ink-muted hover:bg-line disabled:opacity-50"
+              [disabled]="busy() === person.uid"
+              (click)="decide(person, { status: 'REJECTED' })"
+            >
+              Reject
+            </button>
+          </div>
+        </li>
+      }
+    </ul>
+  } @else {
+    <p class="mt-8 rounded-xl border border-line bg-panel p-4 text-sm text-ink-muted">
+      Nobody is waiting for approval.
+    </p>
+  }
+
+  <h2 class="mt-8 text-sm font-semibold uppercase tracking-wide text-ink-subtle">
+    Everyone else ({{ decided().length }})
+  </h2>
+  <ul class="mt-3 space-y-2">
+    @for (person of decided(); track person.uid) {
+      <li class="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel p-4">
+        <div class="min-w-0 flex-1">
+          <p class="truncate font-medium text-ink">
+            {{ label(person) }}
+            @if (person.uid === myUid()) {
+              <span class="ml-1 text-xs text-ink-subtle">(you)</span>
+            }
+          </p>
+          <p class="truncate text-sm text-ink-subtle">{{ person.email }}</p>
+        </div>
+
+        <span
+          class="rounded px-2 py-1 text-xs"
+          [class.bg-ok-bg]="person.status === 'APPROVED'"
+          [class.text-ok-ink]="person.status === 'APPROVED'"
+          [class.bg-danger-bg]="person.status !== 'APPROVED'"
+          [class.text-danger-ink]="person.status !== 'APPROVED'"
+          >{{ person.status }}</span
+        >
+        <span class="rounded bg-accent-soft px-2 py-1 text-xs text-accent-ink">{{
+          person.role
+        }}</span>
+
+        @if (person.uid !== myUid()) {
+          <div class="flex gap-2">
+            @if (person.status === 'APPROVED') {
+              <button
+                type="button"
+                class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+                [disabled]="busy() === person.uid"
+                (click)="decide(person, { status: 'DISABLED' })"
+              >
+                Disable
+              </button>
+            } @else {
+              <button
+                type="button"
+                class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+                [disabled]="busy() === person.uid"
+                (click)="decide(person, { status: 'APPROVED' })"
+              >
+                Approve
+              </button>
+            }
+            <button
+              type="button"
+              class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+              [disabled]="busy() === person.uid"
+              (click)="decide(person, { role: person.role === 'ADMIN' ? 'MEMBER' : 'ADMIN' })"
+            >
+              {{ person.role === 'ADMIN' ? 'Make member' : 'Make admin' }}
+            </button>
+          </div>
+        }
+      </li>
+    }
+  </ul>
+}

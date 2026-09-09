@@ -25,6 +25,7 @@ import {
   pendingClip,
   queuedJob,
   source,
+  userProfile,
 } from './helpers.js';
 
 let testEnv: RulesTestEnvironment;
@@ -39,6 +40,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await testEnv.clearFirestore();
+  // Approval gating means an account with no profile row can read nothing at
+  // all. Both test users are approved members unless a test says otherwise;
+  // the gate itself is exercised in access.rules.spec.ts.
+  await seed(`users/${ALICE}`, userProfile(ALICE));
+  await seed(`users/${BOB}`, userProfile(BOB));
 });
 
 const aliceDb = () => testEnv.authenticatedContext(ALICE).firestore();

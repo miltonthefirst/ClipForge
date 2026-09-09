@@ -7,6 +7,9 @@ import type {
   Publication,
   ReviewState,
   RightsBasis,
+  UserProfile,
+  UserRole,
+  UserStatus,
 } from '@clipforge/contracts';
 import {
   collection,
@@ -236,6 +239,49 @@ export class ClipForgeStore {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
     return snapshot.docs.map((d) => d.data() as Publication);
+  }
+
+  /**
+   * Every account, for the admin People page.
+   *
+   * Unbounded on purpose and safe to be: `users` holds one document per person
+   * with an account, and a deployment where that is a costly read is a
+   * deployment with problems this query is not one of. `list` is admin-only in
+   * the rules, so a member's call fails rather than returning a filtered set.
+   */
+  watchUsers(
+    onData: (users: UserProfile[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'users'), orderBy('createdAt', 'desc'), limit(200)),
+      (snapshot) => onData(snapshot.docs.map((d) => d.data() as UserProfile)),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Approve, reject or disable an account, or change its role.
+   *
+   * `decidedBy` is stamped from the caller's own uid rather than accepted as an
+   * argument, and the rules require the two to match — an audit trail whose
+   * author could be supplied by whoever wrote it answers nothing.
+   */
+  async decideUser(
+    adminUid: string,
+    uid: string,
+    changes: { status?: UserStatus; role?: UserRole },
+  ): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'users', uid), {
+      ...changes,
+      decidedAt: new Date().toISOString(),
+      decidedBy: adminUid,
+    });
+  }
+
+  /** The parts of your own profile you own. Rules allow these two and no more. */
+  async updateOwnProfile(uid: string, changes: { displayName?: string }): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'users', uid), changes);
   }
 
   /** Cancel a job. The only job transition the rules let a client drive. */

@@ -341,5 +341,171 @@ def quota() -> None:
     typer.echo(f"  about {ledger.uploads_remaining} uploads remaining today")
 
 
+user_app = typer.Typer(help="Accounts: who may use this ClipForge, and at what level.")
+app.add_typer(user_app, name="user")
+
+
+def _user_context() -> tuple[object, object, object]:
+    """Settings plus the two halves of an account: Firestore and Auth."""
+    from clipforge.store.firestore import firestore_client
+    from clipforge.store.users import UserAdmin, UserStore
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+    client = firestore_client(settings)
+    return settings, UserStore(client, settings), UserAdmin(settings)
+
+
+@user_app.command("list")
+def user_list() -> None:
+    """Show every account and where it stands.
+
+    Reads Auth and Firestore together on purpose: an account can exist in one
+    and not the other, and that gap is exactly what goes wrong. Someone who
+    registered but has no profile row cannot be approved, and a profile with no
+    Auth record is a leftover.
+    """
+    from clipforge.store.users import UserNotFoundError  # noqa: F401 - imported for symmetry
+
+    _, store, admin = _user_context()
+    profiles = {p.uid: p for p in store.all()}  # type: ignore[attr-defined]
+    accounts = admin.list_accounts()  # type: ignore[attr-defined]
+
+    if not accounts:
+        typer.echo("no accounts yet. Register in the app first.")
+        raise typer.Exit(code=0)
+
+    typer.echo(f"{'email':38} {'role':7} {'status':9} {'providers':22} uid")
+    for account in accounts:
+        profile = profiles.pop(account.uid, None)
+        role = profile.role.value if profile else "-"
+        status = profile.status.value if profile else "NO PROFILE"
+        typer.echo(
+            f"{account.email:38} {role:7} {status:9} {account.describe_providers():22} {account.uid}"
+        )
+
+    for orphan in profiles.values():
+        typer.echo(
+            f"{orphan.email:38} {orphan.role.value:7} {orphan.status.value:9} "
+            f"{'(no auth record)':22} {orphan.uid}"
+        )
+
+
+@user_app.command("grant-admin")
+def user_grant_admin(
+    email: str = typer.Argument(..., help="The account to make an approved admin."),
+) -> None:
+    """Make an account an approved admin.
+
+    The bootstrap: the first admin cannot be approved through the UI, because
+    approving is the thing only an admin can do. Every account after this one
+    goes through the app.
+    """
+    from clipforge_contracts import UserRole, UserStatus
+
+    from clipforge.store.users import UserNotFoundError, new_profile
+
+    _, store, admin = _user_context()
+    try:
+        account = admin.by_email(email)  # type: ignore[attr-defined]
+    except UserNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    existing = store.get(account.uid)  # type: ignore[attr-defined]
+    if existing is None:
+        profile = new_profile(
+            account, role=UserRole.ADMIN, status=UserStatus.APPROVED, decided_by=account.uid
+        )
+    else:
+        from datetime import UTC, datetime
+
+        profile = existing.model_copy(
+            update={
+                "role": UserRole.ADMIN,
+                "status": UserStatus.APPROVED,
+                "decided_at": datetime.now(UTC),
+                "decided_by": account.uid,
+            }
+        )
+
+    store.save(profile)  # type: ignore[attr-defined]
+    typer.echo(f"{account.email} is now an approved ADMIN ({account.uid})")
+
+
+@user_app.command("approve")
+def user_approve(
+    email: str = typer.Argument(..., help="The account to approve."),
+    by: str = typer.Option(
+        "", help="Email of the admin making the decision; defaults to the first admin."
+    ),
+) -> None:
+    """Approve a pending account from the machine, rather than the UI."""
+    from datetime import UTC, datetime
+
+    from clipforge_contracts import UserStatus
+
+    from clipforge.store.users import UserNotFoundError, new_profile
+
+    _, store, admin = _user_context()
+    try:
+        account = admin.by_email(email)  # type: ignore[attr-defined]
+        decider = admin.by_email(by).uid if by else None  # type: ignore[attr-defined]
+    except UserNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    if decider is None:
+        admins = store.admins()  # type: ignore[attr-defined]
+        decider = admins[0].uid if admins else account.uid
+
+    existing = store.get(account.uid)  # type: ignore[attr-defined]
+    profile = (
+        new_profile(account, status=UserStatus.APPROVED, decided_by=decider)
+        if existing is None
+        else existing.model_copy(
+            update={
+                "status": UserStatus.APPROVED,
+                "decided_at": datetime.now(UTC),
+                "decided_by": decider,
+            }
+        )
+    )
+    store.save(profile)  # type: ignore[attr-defined]
+    typer.echo(f"{account.email} approved")
+
+
+@user_app.command("set-password")
+def user_set_password(
+    email: str = typer.Argument(..., help="The account to give a password."),
+) -> None:
+    """Set a password on an existing account, prompting for it.
+
+    An account created by Google sign-in has no password, and Google will hold a
+    fresh sign-in on a new device for verification. Adding a password to the
+    *same* uid sidesteps that without creating a second account, so nothing that
+    already references the uid needs migrating.
+
+    Prompted rather than passed as an argument: a password on the command line
+    is a password in the shell history.
+    """
+    from clipforge.store.users import UserNotFoundError
+
+    _, _store, admin = _user_context()
+    try:
+        account = admin.by_email(email)  # type: ignore[attr-defined]
+    except UserNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    password = typer.prompt("New password", hide_input=True, confirmation_prompt=True)
+    if len(password) < 8:
+        typer.echo("Firebase requires at least 6 characters; use at least 8.", err=True)
+        raise typer.Exit(code=1)
+
+    admin.set_password(account.uid, password)  # type: ignore[attr-defined]
+    typer.echo(f"password set for {account.email}. Sign in with email and password.")
+
+
 if __name__ == "__main__":
     app()

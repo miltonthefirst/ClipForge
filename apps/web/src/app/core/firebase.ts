@@ -2,14 +2,17 @@ import { Injectable, inject, InjectionToken, signal } from '@angular/core';
 import { initializeApp, type FirebaseApp } from 'firebase/app';
 import {
   connectAuthEmulator,
+  createUserWithEmailAndPassword,
   getAuth,
   getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signInWithRedirect,
   signOut,
+  updateProfile,
   type Auth,
   type User,
 } from 'firebase/auth';
@@ -110,6 +113,37 @@ export class FirebaseService {
       if (!isPopupUnavailable(error)) throw error;
       return signInWithRedirect(this.auth, provider);
     }
+  }
+
+  /**
+   * Sign in with an email and password.
+   *
+   * The path that matters on this machine. Google holds a sign-in on a fresh
+   * device for verification — up to 48 hours — which is tolerable on a phone
+   * and useless on the desktop shell sitting next to the worker.
+   */
+  signInWithPassword(email: string, password: string): Promise<unknown> {
+    return signInWithEmailAndPassword(this.auth, email, password);
+  }
+
+  /**
+   * Register a new account.
+   *
+   * Creating the Auth user grants nothing by itself: the profile written
+   * alongside it is PENDING, and security rules refuse every other collection
+   * until an admin approves it. Registration being open is deliberate; access
+   * being open is not.
+   */
+  async register(email: string, password: string, displayName: string): Promise<User> {
+    const created = await createUserWithEmailAndPassword(this.auth, email, password);
+    if (displayName.trim()) {
+      await updateProfile(created.user, { displayName: displayName.trim() });
+    }
+    return created.user;
+  }
+
+  resetPassword(email: string): Promise<void> {
+    return sendPasswordResetEmail(this.auth, email);
   }
 
   signOut(): Promise<void> {
