@@ -5,6 +5,13 @@
 *serviceAccount*.json
 *service-account*.json
 firebase/**/serviceAccount*.json
+# The Firebase console names downloaded Admin SDK keys
+# "<project>-firebase-adminsdk-<id>-<hash>.json", which matched none of the
+# patterns above — so one arrived at the repo root untracked and unignored, a
+# single `git add -A` away from being published. Matched three ways now.
+*firebase-adminsdk*
+*-adminsdk-*.json
+*adminsdk*.json
 apps/worker/.clipforge/
 # Wherever the worker is started from — the token store is a relative path by
 # default, so a run from the repo root puts it here instead.

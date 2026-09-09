@@ -328,16 +328,32 @@ Note also that headers match the **request** path, not the rewritten one. `/revi
 is served from `index.html`, but a rule targeting `/index.html` does not apply to
 it — which is why the catch-all exists.
 
-### Point the worker at the real project
+### Run the worker against the real project
 
-```dotenv
-CLIPFORGE_USE_EMULATORS=false
-CLIPFORGE_GOOGLE_APPLICATION_CREDENTIALS=C:/keys/clipforge-service-account.json
+Point `CLIPFORGE_GOOGLE_APPLICATION_CREDENTIALS` at the service account key, then:
+
+```powershell
+pwsh -File tools/worker.ps1          # the local Emulator Suite
+pwsh -File tools/worker.ps1 -Live    # the real Firebase project
+pwsh -File tools/worker.ps1 -Live -Once
 ```
 
-Then `clipforge-worker run`. The worker refuses to start if credentials are
-missing rather than discovering it on its first write, by which point it would
-already have advertised itself as healthy.
+**`.env` deliberately stays on `CLIPFORGE_USE_EMULATORS=true`, and a unit test
+asserts it.** That looks odd once the project is genuinely deployed, and it is
+still right: `.env` is read by *every* worker command, so flipping it would aim
+`submit`, `status` and the rest at production as well — and the first sign of
+that is real data in a real project. Going live is an argument, not a config
+edit. Real environment variables take precedence over `.env`, so `-Live`
+overrides exactly the one setting that matters and leaves the file alone.
+
+The worker refuses to start if credentials are missing, rather than discovering
+it on its first write — by which point it would already have advertised itself
+as healthy.
+
+**Keep the key out of the repository.** The Firebase console names downloads
+`<project>-firebase-adminsdk-<id>-<hash>.json`, which is matched by `.gitignore`,
+but a gitignored file inside the working tree is still inside anything that
+backs up, syncs or zips that folder. Somewhere outside is safer.
 
 Storage rules are deliberately **not** deployable: the Spark tier has no bucket
 at all, so `--only storage` fails by definition. The file stays in the repository,
