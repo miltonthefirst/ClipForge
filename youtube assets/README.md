@@ -89,7 +89,7 @@ Up to 14 in Customisation → Basic info; the first ones surface on the banner.
 
 | Label | URL |
 | --- | --- |
-| Website | `https://getclipforge.web.app` |
+| Website | `https://clipforge.bytepic.dev` |
 | Source code | `https://github.com/miltonthefirst/ClipForge` |
 | Bytepic | `https://bytepic.dev` |
 

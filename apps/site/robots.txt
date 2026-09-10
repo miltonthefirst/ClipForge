@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://getclipforge.web.app/sitemap.xml
+Sitemap: https://clipforge.bytepic.dev/sitemap.xml

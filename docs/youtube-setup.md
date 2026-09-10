@@ -75,10 +75,10 @@ authorised domains rather than merely storing them. They point at
 | Field | Value |
 | --- | --- |
 | App logo | `apps/site/img/consent-logo-120.png` — square, 120 px, 7 KB |
-| Application home page | `https://getclipforge.web.app/` |
-| Application privacy policy link | `https://getclipforge.web.app/privacy` |
-| Application terms of service link | `https://getclipforge.web.app/terms` |
-| Authorised domains | `bytepic-clipforge.firebaseapp.com` **and** `getclipforge.web.app` |
+| Application home page | `https://clipforge.bytepic.dev/` |
+| Application privacy policy link | `https://clipforge.bytepic.dev/privacy` |
+| Application terms of service link | `https://clipforge.bytepic.dev/terms` |
+| Authorised domains | `bytepic-clipforge.firebaseapp.com` **and** `bytepic.dev` |
 | Developer contact | Your own address — Google notifies you here, and it is not shown publicly |
 
 > **The logo is optional, and not free.** Uploading one puts the app in the

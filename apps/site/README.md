@@ -1,8 +1,14 @@
 # The public site
 
-Three static pages at **<https://getclipforge.web.app>**: the landing page, the
+Three static pages at **<https://clipforge.bytepic.dev>**: the landing page, the
 privacy policy and the terms. No build step, no framework, no JavaScript — what
 is in this folder is what is served.
+
+The Firebase Hosting site is still named `getclipforge`, so the same pages also
+answer on `getclipforge.web.app`. That is an alias, not a second site: every
+canonical tag, `og:url` and sitemap entry names the custom domain, because
+`web.app` is Google's registrable domain rather than ours — which is also why
+the OAuth consent screen would not verify against it.
 
 ## Why it exists at all
 

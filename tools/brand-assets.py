@@ -209,7 +209,7 @@ def banner():
         ("segoeuib.ttf", "Local-first AI content agent", 64, (255, 255, 255), 0),
         ("segoeuil.ttf", "Long-form video in. Vertical clips out.", 44, (0x9E, 0xA6, 0xC8), 26),
         ("segoeuil.ttf", "Transcribed, cut and encoded on your own GPU.", 44, (0x9E, 0xA6, 0xC8), 6),
-        ("segoeui.ttf", "getclipforge.web.app", 36, (0x4F, 0xB0, 0xFF), 30),
+        ("segoeui.ttf", "clipforge.bytepic.dev", 36, (0x4F, 0xB0, 0xFF), 30),
     ]
     fonts = [(fit(FONTS / p, t, s, room), t, c, gap) for p, t, s, c, gap in lines]
     total = sum(f.getbbox(t)[3] - f.getbbox(t)[1] + gap for f, t, _, gap in fonts)
@@ -275,7 +275,7 @@ def og_card():
            font=fit(FONTS / "segoeuil.ttf",
                     "Transcribed, analysed, cut and encoded on your own GPU.", 40, 1030),
            fill=(0x9E, 0xA6, 0xC8))
-    d.text((88, 536), "getclipforge.web.app",
+    d.text((88, 536), "clipforge.bytepic.dev",
            font=ImageFont.truetype(str(FONTS / "segoeui.ttf"), 32), fill=(0x4F, 0xB0, 0xFF))
     save(bg, IMG / "og-card.png")
 

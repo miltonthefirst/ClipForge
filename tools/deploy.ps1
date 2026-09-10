@@ -22,7 +22,7 @@
     the bucket is missing.
 
     `hosting` is the PWA, at bytepic-clipforge.web.app. `site` is the public
-    marketing and legal site in apps/site, at getclipforge.web.app — the one
+    marketing and legal site in apps/site, at clipforge.bytepic.dev — the one
     whose /privacy and /terms URLs the Google OAuth consent screen points at.
     They are separate Firebase Hosting sites and separate targets on purpose:
     `--only hosting` against a two-site config would deploy both, and the site
