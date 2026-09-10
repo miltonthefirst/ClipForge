@@ -46,6 +46,28 @@ const env = readEnv();
 
 const localServerOrigin = env['CLIPFORGE_WEB_LOCAL_SERVER_ORIGIN'] || 'http://127.0.0.1:8765';
 
+/**
+ * Wrap the configuration fields in the assignment that sets them.
+ *
+ * The opening and the closing live here together on purpose. They used to be
+ * written out at each call site, and when the assignment grew into an
+ * `Object.assign` one of the two closings kept its old `};` — an unbalanced
+ * paren that made the whole block a syntax error. Nothing failed at build time;
+ * the browser simply skipped the script, `window.__clipforge` never existed, and
+ * the app ran on its emulator defaults. A live sign-in then reported itself as
+ * "No network", which is not a clue anyone can follow.
+ *
+ * Merged rather than assigned, for the same reason as index.html: anything set
+ * before this runs has to survive.
+ */
+function merge(fields) {
+  return [
+    '      window.__clipforge = Object.assign({}, window.__clipforge, {',
+    ...fields,
+    '      });',
+  ].join('\n');
+}
+
 function desktopConfig() {
   // The one genuinely different thing about the desktop build: it runs on the
   // machine that rendered the clips, so playback branch 2 resolves and the
@@ -65,7 +87,7 @@ function desktopConfig() {
   ];
 
   if (useEmulators) {
-    return ['      window.__clipforge = {', ...shared, '      };'].join('\n');
+    return merge(shared);
   }
 
   const projectId = env['CLIPFORGE_FIREBASE_PROJECT_ID'];
@@ -94,10 +116,7 @@ function desktopConfig() {
     process.exit(1);
   }
 
-  return [
-    // Merged rather than assigned, for the same reason as index.html: anything
-    // set before this runs has to survive.
-    '      window.__clipforge = Object.assign({}, window.__clipforge, {',
+  return merge([
     '        useEmulators: false,',
     '        firebase: {',
     `          projectId: '${projectId}',`,
@@ -107,8 +126,7 @@ function desktopConfig() {
     `          storageBucket: '${storageBucket}',`,
     '        },',
     ...shared,
-    '      };',
-  ].join('\n');
+  ]);
 }
 
 if (!existsSync(webDist)) {
@@ -136,9 +154,22 @@ if (!pattern.test(html)) {
   process.exit(1);
 }
 
+const config = desktopConfig();
+
+// Parse it before it ships. A syntax error here costs nothing at build time and
+// everything at run time: the browser skips the whole script, so the app finds no
+// configuration at all, falls back to the Emulator Suite, and reports a live
+// sign-in as "No network" against an emulator that was never running.
+try {
+  new Function(config);
+} catch (error) {
+  console.error(`\nGenerated an invalid configuration block:\n\n${config}\n\n${error}\n`);
+  process.exit(1);
+}
+
 const replaced = html.replace(
   pattern,
-  `/* CLIPFORGE-CONFIG-START */\n${desktopConfig()}\n      /* CLIPFORGE-CONFIG-END */`,
+  `/* CLIPFORGE-CONFIG-START */\n${config}\n      /* CLIPFORGE-CONFIG-END */`,
 );
 await writeFile(indexPath, replaced, 'utf8');
 

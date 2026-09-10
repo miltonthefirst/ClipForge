@@ -2,12 +2,14 @@ import {
   ChangeDetectionStrategy,
   Component,
   OnDestroy,
+  computed,
   effect,
   inject,
   signal,
 } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import type { Candidate, Clip, ClipPreview, SubScores } from '@clipforge/contracts';
+import { RouterLink } from '@angular/router';
+import type { Candidate, Clip, ClipPreview } from '@clipforge/contracts';
 
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { SessionService } from '../../core/session';
@@ -21,19 +23,9 @@ export interface ReviewCard {
   readonly candidate: Candidate | null;
 }
 
-/** The rubric's ceilings, mirrored from the contract's own bounds. */
-const SUB_SCORE_MAXIMA: readonly (readonly [keyof SubScores, string, number])[] = [
-  ['hook', 'Hook', 25],
-  ['curiosity', 'Curiosity', 20],
-  ['standalone', 'Standalone', 20],
-  ['emotion', 'Emotion', 15],
-  ['pacing', 'Pacing', 10],
-  ['shareability', 'Shareability', 10],
-];
-
 @Component({
   selector: 'app-review-page',
-  imports: [DecimalPipe],
+  imports: [DecimalPipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './review-page.html',
 })
@@ -53,6 +45,17 @@ export class ReviewPage implements OnDestroy {
    * does not.
    */
   protected readonly localAvailable = signal(false);
+
+  /**
+   * Whether any clip in the queue can only be played on the worker.
+   *
+   * Gates the "open this on that machine" notice. Once clips are uploaded most
+   * of the queue plays anywhere, and a banner describing a constraint that no
+   * longer applies is worse than no banner — it teaches people to ignore it.
+   */
+  protected readonly anyLocalOnly = computed(() =>
+    (this.cards() ?? []).some((card) => card.source.kind === 'poster'),
+  );
 
   constructor() {
     void this.playback.probeLocalServer().then((ok) => {
@@ -98,22 +101,6 @@ export class ReviewPage implements OnDestroy {
 
   protected posterSrc(card: ReviewCard): string | null {
     return card.preview ? `data:image/jpeg;base64,${card.preview.posterBase64}` : null;
-  }
-
-  protected filmstripSrc(card: ReviewCard): string | null {
-    return card.preview?.filmstripBase64
-      ? `data:image/jpeg;base64,${card.preview.filmstripBase64}`
-      : null;
-  }
-
-  protected subScores(card: ReviewCard): { label: string; value: number; pct: number }[] {
-    const scores = card.candidate?.subScores;
-    if (!scores) return [];
-    return SUB_SCORE_MAXIMA.map(([key, label, max]) => ({
-      label,
-      value: scores[key],
-      pct: Math.round((scores[key] / max) * 100),
-    }));
   }
 
   protected async decide(clip: Clip, review: 'APPROVED' | 'REJECTED'): Promise<void> {

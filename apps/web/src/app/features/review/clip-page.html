@@ -1,0 +1,414 @@
+<a
+  routerLink="/review"
+  class="inline-flex items-center gap-1 text-sm text-ink-subtle hover:text-ink"
+>
+  <svg
+    class="h-4 w-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path d="m15 18-6-6 6-6" />
+  </svg>
+  Review queue
+</a>
+
+@if (clip() === undefined) {
+  <p class="py-16 text-center text-ink-subtle">Loading…</p>
+} @else if (clip() === null) {
+  <p class="py-16 text-center text-ink-subtle">No such clip.</p>
+} @else if (clip(); as clip) {
+  <div class="mt-3 grid gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+    <!-- ── The clip itself ─────────────────────────────────────────────────
+         A vertical clip is 1080×1920, so left to fill its column it renders
+         about 1800px tall and runs off the screen — which is exactly what it
+         used to do. Capped against the viewport and centred, so the whole frame
+         is visible without scrolling whatever the window is. -->
+    <div class="lg:sticky lg:top-20 lg:self-start">
+      <div class="overflow-hidden rounded-xl border border-line bg-black">
+        @if (source().kind !== 'poster') {
+          <video
+            class="mx-auto block max-h-[70vh] w-auto max-w-full"
+            [src]="source().kind === 'poster' ? '' : $any(source()).url"
+            [poster]="posterSrc() ?? ''"
+            controls
+            playsinline
+            preload="metadata"
+          ></video>
+        } @else if (posterSrc(); as poster) {
+          <img
+            class="mx-auto block max-h-[70vh] w-auto max-w-full"
+            [src]="poster"
+            [alt]="'Poster frame for ' + (clip.title ?? 'clip')"
+          />
+        }
+      </div>
+
+      @if (source().kind === 'poster') {
+        <p class="mt-2 rounded-lg border border-line bg-panel/60 px-3 py-2 text-xs text-ink-muted">
+          No cloud copy of this one — it plays on the machine that rendered it. You can still review
+          it from the poster, the hook and the score.
+        </p>
+      } @else if (source().kind === 'local') {
+        <p class="mt-2 text-xs text-ink-subtle">Playing from the worker on this machine.</p>
+      }
+
+      @if (filmstripSrc(); as strip) {
+        <img
+          class="mt-3 w-full rounded-lg border border-line bg-black"
+          [src]="strip"
+          alt="Four frames from across the clip"
+        />
+      }
+
+      <p class="mt-3 text-xs text-ink-subtle">
+        {{ clip.durationSec | number: '1.0-0' }}s · {{ clip.widthPx }}×{{ clip.heightPx }} ·
+        {{ clip.renderProfile }}
+      </p>
+    </div>
+
+    <!-- ── Everything you might do to it ───────────────────────────────────── -->
+    <div class="min-w-0 space-y-6">
+      <div class="flex flex-wrap items-start gap-3">
+        <div class="min-w-0 flex-1">
+          <p class="text-xs uppercase tracking-wide text-ink-subtle">Clip</p>
+          <h1 class="mt-1 text-xl font-semibold">{{ clip.title ?? 'Untitled clip' }}</h1>
+        </div>
+        @if (candidate(); as candidate) {
+          <span
+            class="shrink-0 rounded-md bg-accent-soft px-3 py-1.5 text-lg font-semibold tabular-nums text-accent-ink"
+            title="Predicted score, out of 100"
+            >{{ candidate.total }}</span
+          >
+        }
+      </div>
+
+      @if (error(); as message) {
+        <p
+          class="rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+        >
+          {{ message }}
+        </p>
+      }
+      @if (saved(); as what) {
+        <p class="rounded-lg border border-ok-line bg-ok-bg px-4 py-3 text-sm text-ok-ink">
+          {{ what }}.
+        </p>
+      }
+
+      <!-- ── Copy ──────────────────────────────────────────────────────────── -->
+      <section class="space-y-3">
+        <label class="block">
+          <span class="text-sm font-medium text-ink">Title</span>
+          <input
+            class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+            type="text"
+            maxlength="100"
+            [ngModel]="title()"
+            (ngModelChange)="draftTitle.set($event)"
+            name="title"
+          />
+          <span class="mt-1 block text-xs text-ink-subtle"
+            >{{ title().length }}/100 — YouTube's limit, enforced here rather than truncated on the
+            way out.</span
+          >
+        </label>
+
+        <label class="block">
+          <span class="text-sm font-medium text-ink">Description</span>
+          <textarea
+            class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+            rows="4"
+            maxlength="4900"
+            [ngModel]="description()"
+            (ngModelChange)="draftDescription.set($event)"
+            name="description"
+          ></textarea>
+        </label>
+
+        <label class="block">
+          <span class="text-sm font-medium text-ink">Your notes</span>
+          <textarea
+            class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+            rows="3"
+            maxlength="2000"
+            placeholder="Why this works, or why it doesn't."
+            [ngModel]="note()"
+            (ngModelChange)="draftNote.set($event)"
+            name="reviewNote"
+          ></textarea>
+          <span class="mt-1 block text-xs text-ink-subtle"
+            >Never published. This is for you, three weeks from now.</span
+          >
+        </label>
+
+        @if (dirty()) {
+          <button
+            type="button"
+            class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="save()"
+          >
+            Save changes
+          </button>
+        }
+      </section>
+
+      <!-- ── Decision ──────────────────────────────────────────────────────── -->
+      <section class="rounded-xl border border-line bg-panel p-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="text-sm font-medium">Decision</span>
+          <span
+            class="rounded-md px-2 py-0.5 text-xs font-medium"
+            [class]="
+              clip.review === 'APPROVED'
+                ? 'bg-ok-bg text-ok-ink-soft'
+                : clip.review === 'REJECTED'
+                  ? 'bg-danger-bg text-danger-ink'
+                  : 'bg-line-strong/40 text-ink-muted'
+            "
+            >{{ clip.review }}</span
+          >
+        </div>
+        <div class="mt-3 flex gap-2">
+          <button
+            type="button"
+            class="flex-1 rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="decide('APPROVED')"
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            class="flex-1 rounded-lg border border-line-strong px-4 py-2.5 font-medium text-ink-muted hover:bg-line disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="decide('REJECTED')"
+          >
+            Reject
+          </button>
+        </div>
+        <p class="mt-2 text-xs text-ink-subtle">
+          Deciding saves your edits too, and releases the cloud copy — the clip has been reviewed,
+          so that copy has no job left.
+        </p>
+      </section>
+
+      <!-- ── Why the model picked it ───────────────────────────────────────── -->
+      @if (candidate(); as candidate) {
+        <section class="space-y-3">
+          <h2 class="text-sm font-semibold">Why it was picked</h2>
+          @if (candidate.hook) {
+            <p class="text-sm font-medium text-ink">“{{ candidate.hook }}”</p>
+          }
+          @if (candidate.reason) {
+            <p class="text-sm text-ink-muted">{{ candidate.reason }}</p>
+          }
+
+          @if (subScores().length) {
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+              @for (row of subScores(); track row.label) {
+                <div>
+                  <div class="flex justify-between text-ink-muted">
+                    <dt>{{ row.label }}</dt>
+                    <dd class="tabular-nums">{{ row.value }}/{{ row.max }}</dd>
+                  </div>
+                  <div class="mt-1 h-1 rounded-full bg-line">
+                    <div class="h-1 rounded-full bg-forge-600" [style.width.%]="row.pct"></div>
+                  </div>
+                </div>
+              }
+            </dl>
+          }
+
+          @if (candidate.transcriptExcerpt) {
+            <p class="rounded-lg bg-panel-soft p-3 text-sm leading-relaxed text-ink-muted">
+              {{ candidate.transcriptExcerpt }}
+            </p>
+          }
+        </section>
+      }
+
+      <!-- ── Publishing ────────────────────────────────────────────────────
+           Only once approved. Offering an upload button beside a clip nobody
+           has said yes to invites exactly the mistake the rights gate exists
+           to prevent. -->
+      @if (clip.review === 'APPROVED') {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold">Publish</h2>
+
+          @if (published(); as publication) {
+            <p class="mt-2 text-sm text-ok-ink">
+              Published
+              @if (publication.externalUrl) {
+                ·
+                <a class="underline" [href]="publication.externalUrl" target="_blank" rel="noopener"
+                  >view on YouTube</a
+                >
+              }
+            </p>
+          } @else {
+            @if (!attested()) {
+              <!-- The rights gate. Publishing a clip of someone else's video is
+                   a different act from making one privately, and the basis is
+                   the operator's to establish. -->
+              <p class="mt-2 text-sm text-ink-muted">
+                Record why this may be published. The worker checks this too — it uses the Admin SDK
+                and bypasses the security rules, so neither check is redundant.
+              </p>
+              <div class="mt-3 space-y-2">
+                @for (basis of bases; track basis.value) {
+                  <label class="flex items-start gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="basis"
+                      class="mt-1"
+                      [value]="basis.value"
+                      [checked]="draftBasis() === basis.value"
+                      (change)="draftBasis.set(basis.value)"
+                    />
+                    <span>
+                      <span class="font-medium text-ink">{{ basis.label }}</span>
+                      <span class="block text-xs text-ink-subtle">{{ basis.hint }}</span>
+                    </span>
+                  </label>
+                }
+              </div>
+
+              @if (needsRightsNote()) {
+                <label class="mt-3 block">
+                  <span class="text-sm text-ink-muted">Why fair use applies here</span>
+                  <textarea
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
+                    rows="2"
+                    [ngModel]="draftRightsNote()"
+                    (ngModelChange)="draftRightsNote.set($event)"
+                    name="rightsNote"
+                  ></textarea>
+                </label>
+              }
+
+              <button
+                type="button"
+                class="mt-3 rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+                [disabled]="busy() || !canAttest()"
+                (click)="attest()"
+              >
+                Record rights
+              </button>
+            } @else {
+              <p class="mt-1 text-xs text-ink-subtle">Rights recorded: {{ clip.rights?.basis }}</p>
+
+              <button
+                type="button"
+                class="mt-3 text-sm text-ink-subtle hover:text-ink"
+                [attr.aria-expanded]="showPublishOptions()"
+                (click)="showPublishOptions.set(!showPublishOptions())"
+              >
+                {{ showPublishOptions() ? 'Hide' : 'Change' }} what this upload says
+              </button>
+
+              @if (showPublishOptions()) {
+                <div class="mt-3 space-y-3 border-t border-line pt-3 text-sm">
+                  @if (channels().length > 1) {
+                    <label class="block">
+                      <span class="text-ink-muted">Channel</span>
+                      <select
+                        class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
+                        [ngModel]="draftChannel() ?? ''"
+                        (ngModelChange)="draftChannel.set($event || null)"
+                        name="channel"
+                      >
+                        <option value="">Default channel</option>
+                        @for (channel of channels(); track channel.id) {
+                          <option [value]="channel.id">{{ channel.label }}</option>
+                        }
+                      </select>
+                    </label>
+                  }
+
+                  <label class="block">
+                    <span class="text-ink-muted">Privacy</span>
+                    <select
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
+                      [ngModel]="draftPrivacy() ?? ''"
+                      (ngModelChange)="draftPrivacy.set($event || null)"
+                      name="privacy"
+                    >
+                      <option value="">Channel default</option>
+                      @for (privacy of privacies; track privacy) {
+                        <option [value]="privacy">{{ privacy }}</option>
+                      }
+                    </select>
+                  </label>
+
+                  <label class="block">
+                    <span class="text-ink-muted">Category</span>
+                    <select
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
+                      [ngModel]="draftCategory() ?? ''"
+                      (ngModelChange)="draftCategory.set($event || null)"
+                      name="category"
+                    >
+                      <option value="">Channel default</option>
+                      @for (category of categories; track category.id) {
+                        <option [value]="category.id">{{ category.label }}</option>
+                      }
+                    </select>
+                  </label>
+
+                  <label class="block">
+                    <span class="text-ink-muted">Tags</span>
+                    <input
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+                      type="text"
+                      placeholder="comma, separated, tags"
+                      [ngModel]="tagsValue()"
+                      (ngModelChange)="draftTags.set($event)"
+                      name="tags"
+                    />
+                    <span class="mt-1 block text-xs text-ink-subtle"
+                      >Leave untouched to use the channel's. YouTube takes the first 20.</span
+                    >
+                  </label>
+
+                  <label class="block">
+                    <span class="text-ink-muted">Publish at (optional)</span>
+                    <input
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+                      type="datetime-local"
+                      [ngModel]="draftSchedule()"
+                      (ngModelChange)="draftSchedule.set($event)"
+                      name="schedule"
+                    />
+                    <span class="mt-1 block text-xs text-ink-subtle"
+                      >Becomes the job's <code>notBefore</code>, which the scheduler already
+                      consults — no second timer anywhere.</span
+                    >
+                  </label>
+                </div>
+              }
+
+              <button
+                type="button"
+                class="mt-4 w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+                [disabled]="busy()"
+                (click)="publish()"
+              >
+                {{ draftSchedule() ? 'Schedule upload' : 'Publish to YouTube' }}
+              </button>
+              <p class="mt-2 text-xs text-ink-subtle">
+                Queues a job. The credentials live on the worker and never reach this app, so the
+                upload happens there.
+              </p>
+            }
+          }
+        </section>
+      }
+    </div>
+  </div>
+}

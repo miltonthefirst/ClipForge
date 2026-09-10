@@ -465,6 +465,10 @@ class Clip(BaseModel):
     description: str | None = None
     review: ReviewState
     reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
+    review_note: str | None = Field(None, alias="reviewNote", max_length=2000)
+    """
+    What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
+    """
     rights: RightsAttestation | None = None
     created_at: AwareDatetime = Field(..., alias="createdAt")
 

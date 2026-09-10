@@ -416,6 +416,10 @@ export interface Clip {
   description?: string | null;
   review: ReviewState;
   reviewedAt?: string | null;
+  /**
+   * What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
+   */
+  reviewNote?: string | null;
   rights?: RightsAttestation | null;
   createdAt: string;
 }

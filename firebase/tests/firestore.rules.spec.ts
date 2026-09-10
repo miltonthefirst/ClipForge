@@ -350,6 +350,19 @@ describe('clip review', () => {
     await assertFails(updateDoc(doc(bobDb(), 'clips/clip-1'), { review: 'APPROVED', uid: BOB }));
   });
 
+  it("lets a reviewer record why they decided, alongside the decision", async () => {
+    // The note never leaves the system — it answers "why did I reject this?"
+    // weeks later, and is the human half of the Phase 9 calibration evidence.
+    await assertSucceeds(
+      updateDoc(doc(aliceDb(), 'clips/clip-1'), {
+        review: 'REJECTED',
+        reviewedAt: '2026-09-10T12:00:00.000Z',
+        reviewNote: 'Hook lands but the payoff is off-camera.',
+        title: 'A retitled clip',
+      }),
+    );
+  });
+
   it('denies creating a clip from the client', async () => {
     await assertFails(setDoc(doc(aliceDb(), 'clips/forged'), pendingClip(ALICE, { id: 'forged' })));
   });

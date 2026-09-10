@@ -325,8 +325,9 @@ service cloud.firestore {
       // is not an exception to "the client may not write pipeline state": the
       // render itself is `localPath`, which stays untouchable.
       allow update: if isApproved()
-                    && changed().hasOnly(['review', 'reviewedAt', 'rights', 'title',
-                                          'description', 'storagePath', 'playbackExpiresAt'])
+                    && changed().hasOnly(['review', 'reviewedAt', 'reviewNote', 'rights',
+                                          'title', 'description', 'storagePath',
+                                          'playbackExpiresAt'])
                     && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED']
                     && (!('storagePath' in changed())
                         || request.resource.data.storagePath == null)

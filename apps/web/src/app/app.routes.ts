@@ -15,6 +15,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/review/review-page').then((m) => m.ReviewPage),
   },
   {
+    path: 'review/:id',
+    title: 'Clip · ClipForge',
+    loadComponent: () => import('./features/review/clip-page').then((m) => m.ClipPage),
+  },
+  {
     path: 'publish',
     title: 'Publish · ClipForge',
     loadComponent: () => import('./features/publish/publish-page').then((m) => m.PublishPage),

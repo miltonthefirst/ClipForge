@@ -182,6 +182,39 @@ export class ClipForgeStore {
     );
   }
 
+  /**
+   * One clip, live.
+   *
+   * Separate from the queue listener for the same reason `watchJob` is separate
+   * from `watchJobs`: the detail page has to work when opened directly, and a
+   * clip that has already been reviewed is not in the queue at all.
+   */
+  watchClip(
+    clipId: string,
+    onData: (clip: Clip | null) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      doc(this.firebase.db, 'clips', clipId),
+      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Clip) : null),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Change a clip's copy and the reviewer's note, without deciding anything.
+   *
+   * `title` and `description` are publishable copy; `reviewNote` never leaves
+   * the system. They travel together because they are edited together, on one
+   * screen, in one thought.
+   */
+  async editClip(
+    clipId: string,
+    edits: { title: string | null; description: string | null; reviewNote: string | null },
+  ): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'clips', clipId), { ...edits });
+  }
+
   /** The review queue: every clip awaiting a decision, whoever submitted it. */
   watchReviewQueue(
     onData: (clips: Clip[]) => void,
@@ -279,8 +312,20 @@ export class ClipForgeStore {
    * leave a document claiming there is no copy while the bytes sit in the
    * bucket until the lifecycle rule collects them.
    */
-  async review(clipId: string, review: ReviewState, storagePath?: string | null): Promise<void> {
-    const changes: Record<string, unknown> = { review, reviewedAt: new Date().toISOString() };
+  async review(
+    clipId: string,
+    review: ReviewState,
+    storagePath?: string | null,
+    edits?: { title: string | null; description: string | null; reviewNote: string | null },
+  ): Promise<void> {
+    // Edits ride along with the decision. Reviewing from the detail page means
+    // the title someone just retyped and the verdict are one intention, and a
+    // separate save they might not press is where that edit goes missing.
+    const changes: Record<string, unknown> = {
+      ...(edits ?? {}),
+      review,
+      reviewedAt: new Date().toISOString(),
+    };
 
     if (storagePath) {
       const { deleteObject, ref } = await import('firebase/storage');
