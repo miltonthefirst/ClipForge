@@ -37,10 +37,12 @@ from pathlib import Path
 from typing import Any
 
 from clipforge_contracts import (
+    Channel,
     Clip,
     Lane,
     Publication,
     PublicationState,
+    PublishOptions,
     PublishPlatform,
     PublishPrivacy,
     StageError,
@@ -48,9 +50,16 @@ from clipforge_contracts import (
 )
 
 from clipforge.observability import get_logger
+from clipforge.publish.metadata import (
+    FALLBACK_CATEGORY,
+    FALLBACK_TITLE,
+    PublishMetadata,
+    resolve_metadata,
+)
 from clipforge.publish.rights import require_publishable
 from clipforge.publish.youtube import YouTubeClient, YouTubeError
 from clipforge.stages.base import StageContext, StageOutcome
+from clipforge.store.channels import ChannelStore
 from clipforge.store.firestore import ClipStore, PublicationStore
 
 log = get_logger(__name__)
@@ -89,6 +98,7 @@ class PublishStage:
         clips: ClipStore,
         publications: PublicationStore,
         client_factory: Any,
+        channels: ChannelStore | None = None,
     ) -> None:
         self._clips = clips
         self._publications = publications
@@ -96,6 +106,10 @@ class PublishStage:
         # on a machine that has never authorised YouTube. A worker that only
         # runs CLIP jobs must start cleanly with no credentials at all.
         self._client_factory = client_factory
+        # Optional, because a worker with no Firestore reachable can still
+        # publish: the channel document supplies *preferences*, and the absence
+        # of preferences is a default, not a failure.
+        self._channels = channels
 
     def run(self, context: StageContext) -> StageOutcome:
         clip = self._require_clip(context)
@@ -143,16 +157,22 @@ class PublishStage:
         checkpoint: dict[str, Any],
     ) -> StageOutcome:
         source_file = Path(clip.local_path)
+        # Read off the publication record rather than re-resolved here. The
+        # record was written before the first attempt, so a retry sends exactly
+        # what the first attempt sent — even if the channel's defaults were
+        # edited in between, and even if the resumable session it is resuming
+        # was reserved with the old values.
         privacy = publication.privacy or PublishPrivacy.UNLISTED
 
         try:
             session_url = checkpoint.get("uploadSessionUrl")
             if not session_url:
                 session_url = client.start_resumable_upload(
-                    title=publication.title or clip.title or "Clip",
-                    description=publication.description or clip.description or "",
+                    title=publication.title or FALLBACK_TITLE,
+                    description=publication.description or "",
                     tags=list(publication.tags or []),
                     privacy=privacy.value,
+                    category_id=publication.category_id or FALLBACK_CATEGORY,
                 )
                 # Checkpointed before the bytes move. The session URL is what a
                 # resume needs, and it is a job-scoped value — it lives on the
@@ -224,6 +244,12 @@ class PublishStage:
             checkpoint["publicationId"] = existing.id
             return existing
 
+        # Resolved once, here, and only on the path that creates the record:
+        # three layers of preference collapse into one answer
+        # (clipforge/publish/metadata.py), and that answer is what the audit
+        # trail holds.
+        metadata = self._metadata(context, clip)
+
         publication = Publication(
             id=checkpoint.get("publicationId") or uuid.uuid4().hex,
             clip_id=clip.id,
@@ -232,10 +258,12 @@ class PublishStage:
             state=PublicationState.PENDING,
             external_id=None,
             external_url=None,
-            privacy=self._privacy(context),
-            title=clip.title,
-            description=clip.description,
-            tags=[],
+            channel_id=metadata.channel_id,
+            privacy=metadata.privacy,
+            title=metadata.title,
+            description=metadata.description,
+            tags=metadata.tags,
+            category_id=metadata.category_id,
             # Copied, not referenced. If the operator later edits the clip's
             # attestation, this record must still say what justified *this*
             # upload — that is the difference between an audit log and a pointer.
@@ -302,8 +330,46 @@ class PublishStage:
             )
         return clip
 
-    def _privacy(self, context: StageContext) -> PublishPrivacy:
-        return PublishPrivacy(context.settings.youtube_default_privacy)
+    def _metadata(self, context: StageContext, clip: Clip) -> PublishMetadata:
+        """What this upload will say, from the three layers that can say it."""
+        options = context.job.publish_options
+        return resolve_metadata(
+            clip=clip,
+            options=options,
+            channel=self._channel(options),
+            default_privacy=context.settings.youtube_default_privacy,
+        )
+
+    def _channel(self, options: PublishOptions | None) -> Channel | None:
+        """The channel this publish is for, or None to use the install defaults.
+
+        A named channel that does not exist is a hard failure rather than a
+        fallback. Publishing to a different destination than the one the
+        operator picked is worse than not publishing: an unlisted upload can be
+        deleted, and a video on the wrong channel has already been the wrong
+        video on the wrong channel.
+        """
+        wanted = options.channel_id if options is not None else None
+        if self._channels is None:
+            if wanted:
+                # Only reachable on a worker running without Firestore, which
+                # cannot have been handed a job from Firestore either. Said out
+                # loud rather than swallowed, because the symptom otherwise is a
+                # publish that quietly used the wrong defaults.
+                log.warning("publish.channel_unverifiable", channel=wanted)
+            return None
+
+        if wanted:
+            channel = self._channels.get(wanted)
+            if channel is None:
+                raise PublishStageError(
+                    f"this publish names channel {wanted!r}, which no longer exists. "
+                    "Pick a channel on the publish screen and try again.",
+                    retryable=False,
+                    code="CHANNEL_MISSING",
+                )
+            return channel
+        return self._channels.default()
 
     def _record_failure(self, publication: Publication, exc: YouTubeError) -> None:
         """Record why an attempt failed, on the attempt itself.

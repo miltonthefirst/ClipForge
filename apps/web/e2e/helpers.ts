@@ -75,6 +75,47 @@ export async function readDoc(path: string): Promise<Record<string, unknown> | n
 }
 
 /**
+ * Every document in a collection, as the emulator stores it.
+ *
+ * Needed because the app assigns its own document ids — a publish job's id
+ * comes from `doc(collection(...))`, so a test that wanted to read one back by
+ * path could not know the path. Reading the collection is how a test asserts on
+ * what the app wrote rather than on what it hoped the app wrote.
+ */
+export async function listDocs(collection: string): Promise<Record<string, unknown>[]> {
+  const response = await fetch(`${BASE}/${collection}`, {
+    headers: { Authorization: 'Bearer owner' },
+  });
+  if (!response.ok) return [];
+  const body = (await response.json()) as {
+    documents?: { fields?: Record<string, unknown> }[];
+  };
+  return (body.documents ?? []).map((document) => document.fields ?? {});
+}
+
+/** Unwrap one Firestore REST value into something a test can compare. */
+export function plain(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const tagged = value as Record<string, unknown>;
+  if ('nullValue' in tagged) return null;
+  if ('stringValue' in tagged) return tagged['stringValue'];
+  if ('booleanValue' in tagged) return tagged['booleanValue'];
+  if ('integerValue' in tagged) return Number(tagged['integerValue']);
+  if ('doubleValue' in tagged) return tagged['doubleValue'];
+  if ('arrayValue' in tagged) {
+    const inner = tagged['arrayValue'] as { values?: unknown[] };
+    return (inner.values ?? []).map(plain);
+  }
+  if ('mapValue' in tagged) {
+    const inner = tagged['mapValue'] as { fields?: Record<string, unknown> };
+    return Object.fromEntries(
+      Object.entries(inner.fields ?? {}).map(([key, held]) => [key, plain(held)]),
+    );
+  }
+  return value;
+}
+
+/**
  * A port nothing listens on, so the "no playable URL" path is deterministic.
  * Port 1 is reserved and never bindable in practice.
  */

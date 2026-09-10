@@ -101,6 +101,164 @@
                 />
               </label>
 
+              <!-- What goes out with this upload.
+
+                   Collapsed by default: the common case is publishing with the
+                   channel's settings, and a screen that demands six decisions
+                   before one tap is a screen nobody uses from a phone. The
+                   summary line keeps the defaults visible without opening it,
+                   because "unlisted" is a fact worth seeing before pressing
+                   Publish rather than after. -->
+              <div class="rounded-lg border border-line">
+                <button
+                  type="button"
+                  class="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm"
+                  [attr.aria-expanded]="isOpen(card.clip.id)"
+                  (click)="toggle(card.clip.id)"
+                >
+                  <span class="min-w-0">
+                    <span class="block text-ink">Options</span>
+                    <span class="block truncate text-xs text-ink-subtle">
+                      {{ privacyFor(card.clip.id) }} ·
+                      {{ categoryLabel(categoryFor(card.clip.id)) }}
+                      @if (channelFor(card.clip.id); as channel) {
+                        · {{ channel.label }}
+                      }
+                      @if (overridden(card.clip.id)) {
+                        · edited for this upload
+                      }
+                    </span>
+                  </span>
+                  <span class="shrink-0 text-xs text-ink-subtle">
+                    {{ isOpen(card.clip.id) ? 'Hide' : 'Change' }}
+                  </span>
+                </button>
+
+                @if (isOpen(card.clip.id)) {
+                  <div class="space-y-3 border-t border-line p-3">
+                    @if (channels().length > 1) {
+                      <!-- `for`/`id` rather than a wrapping label, and that is
+                           not a style choice. A label that WRAPS a select takes
+                           its text content from every descendant, options
+                           included, so this field's accessible name would be
+                           "Channel YouTube Cooking …" — announced in full by a
+                           screen reader, and unmatchable by name in a test. -->
+                      <div class="text-sm">
+                        <label class="block text-ink-muted" [attr.for]="'channel-' + card.clip.id"
+                          >Channel</label
+                        >
+                        <select
+                          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                          [id]="'channel-' + card.clip.id"
+                          [value]="channelIdFor(card.clip.id)"
+                          (change)="setChannel(card.clip.id, $any($event.target).value)"
+                        >
+                          @for (channel of channels(); track channel.id) {
+                            <option [value]="channel.id">{{ channel.label }}</option>
+                          }
+                        </select>
+                      </div>
+                    }
+
+                    <!-- Hint text sits OUTSIDE the label and is attached with
+                         aria-describedby. Inside it, the hint becomes part of
+                         the field's accessible name, and a screen reader
+                         announces twenty words where it should announce two. -->
+                    <div class="text-sm">
+                      <label class="block">
+                        <span class="text-ink-muted">
+                          Title <span class="text-ink-subtle">(optional)</span>
+                        </span>
+                        <input
+                          type="text"
+                          maxlength="100"
+                          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                          [placeholder]="card.clip.title ?? 'Clip'"
+                          [value]="titleFor(card.clip.id)"
+                          [attr.aria-describedby]="'title-hint-' + card.clip.id"
+                          (input)="setTitle(card.clip.id, $any($event.target).value)"
+                        />
+                      </label>
+                      <p [id]="'title-hint-' + card.clip.id" class="mt-1 text-xs text-ink-subtle">
+                        Leave it empty to use the clip's own title. YouTube allows 100 characters.
+                      </p>
+                    </div>
+
+                    <label class="block text-sm">
+                      <span class="text-ink-muted">
+                        Description <span class="text-ink-subtle">(optional)</span>
+                      </span>
+                      <textarea
+                        rows="3"
+                        class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                        [placeholder]="
+                          card.clip.description ?? 'Leave empty to use the channel default'
+                        "
+                        [value]="descriptionFor(card.clip.id)"
+                        (input)="setDescription(card.clip.id, $any($event.target).value)"
+                      ></textarea>
+                    </label>
+
+                    <fieldset class="space-y-2">
+                      <legend class="text-sm text-ink-muted">Who can watch it</legend>
+                      @for (choice of privacies; track choice.value) {
+                        <label
+                          class="flex cursor-pointer gap-3 rounded-lg border border-line p-2.5 hover:border-line-strong"
+                          [class.border-forge-500]="privacyFor(card.clip.id) === choice.value"
+                        >
+                          <input
+                            type="radio"
+                            class="mt-1"
+                            [name]="'privacy-' + card.clip.id"
+                            [value]="choice.value"
+                            [checked]="privacyFor(card.clip.id) === choice.value"
+                            (change)="setPrivacy(card.clip.id, choice.value)"
+                          />
+                          <span class="min-w-0">
+                            <span class="block text-sm text-ink">{{ choice.label }}</span>
+                            <span class="block text-xs text-ink-subtle">{{ choice.hint }}</span>
+                          </span>
+                        </label>
+                      }
+                    </fieldset>
+
+                    <div class="text-sm">
+                      <label class="block text-ink-muted" [attr.for]="'category-' + card.clip.id"
+                        >Category</label
+                      >
+                      <select
+                        class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                        [id]="'category-' + card.clip.id"
+                        [value]="categoryFor(card.clip.id)"
+                        (change)="setCategory(card.clip.id, $any($event.target).value)"
+                      >
+                        @for (category of categories; track category.id) {
+                          <option [value]="category.id">{{ category.label }}</option>
+                        }
+                      </select>
+                    </div>
+
+                    <div class="text-sm">
+                      <label class="block">
+                        <span class="text-ink-muted">Tags</span>
+                        <input
+                          type="text"
+                          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                          placeholder="comma, separated"
+                          [value]="tagsFor(card.clip.id)"
+                          [attr.aria-describedby]="'tags-hint-' + card.clip.id"
+                          (input)="setTags(card.clip.id, $any($event.target).value)"
+                        />
+                      </label>
+                      <p [id]="'tags-hint-' + card.clip.id" class="mt-1 text-xs text-ink-subtle">
+                        Prefilled from the channel. Clear it to publish this one with no tags.
+                        YouTube uses the first 20.
+                      </p>
+                    </div>
+                  </div>
+                }
+              </div>
+
               @if (queued() === card.clip.id) {
                 <p
                   class="rounded-lg border border-line-strong bg-panel-soft p-3 text-sm text-ink-muted"
@@ -114,7 +272,10 @@
                   [disabled]="busy() === card.clip.id"
                   (click)="publish(card)"
                 >
-                  Publish to YouTube (unlisted)
+                  <!-- The privacy is named on the button, not only inside the
+                       panel. 'public' is the one choice that cannot be undone,
+                       so it belongs on the control that performs it. -->
+                  Publish to YouTube ({{ privacyFor(card.clip.id) }})
                 </button>
               }
             } @else {

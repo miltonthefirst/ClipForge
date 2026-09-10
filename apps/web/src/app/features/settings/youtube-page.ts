@@ -7,26 +7,13 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import type { Channel } from '@clipforge/contracts';
 
 import { LocalApiService, type YouTubeStatus } from '../../core/local-api';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
-
-/** The categories worth offering. YouTube has more; these are the ones used. */
-export const CATEGORIES: readonly { readonly id: string; readonly label: string }[] = [
-  { id: '22', label: 'People & Blogs' },
-  { id: '27', label: 'Education' },
-  { id: '28', label: 'Science & Technology' },
-  { id: '24', label: 'Entertainment' },
-  { id: '23', label: 'Comedy' },
-  { id: '26', label: 'Howto & Style' },
-  { id: '20', label: 'Gaming' },
-  { id: '10', label: 'Music' },
-  { id: '25', label: 'News & Politics' },
-  { id: '17', label: 'Sport' },
-  { id: '1', label: 'Film & Animation' },
-];
+import { CATEGORIES } from '../../core/youtube';
 
 /**
  * Connecting a YouTube channel, and deciding what a publish does by default.
@@ -42,6 +29,7 @@ export const CATEGORIES: readonly { readonly id: string; readonly label: string 
  */
 @Component({
   selector: 'app-youtube-page',
+  imports: [RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './youtube-page.html',
 })

@@ -80,6 +80,10 @@ def run(
             clips=ClipStore(client, settings),
             publications=PublicationStore(client, settings),
             blobs=build_blob_store(settings),
+            # Read by the PUBLISH stage for a channel's standing defaults. The
+            # same store the local API writes them through, so what the settings
+            # page saved is what the next publish uses.
+            channels=ChannelStore(client, settings),
         ),
     )
     worker.install_signal_handlers()

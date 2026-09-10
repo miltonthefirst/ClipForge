@@ -154,6 +154,41 @@ service cloud.firestore {
              && hasAttestation(clip);
     }
 
+    // What the operator chose for one specific upload: title, description,
+    // privacy, category, tags, and which channel. Every field is optional and
+    // null means "use the channel's default", so this validates *shape*, not
+    // presence.
+    //
+    // Worth validating at all because these values leave the system. A title is
+    // published under the operator's own name and a privacy of 'public' is not
+    // recoverable, so a client that could write an unrecognised field here
+    // would be a client that could smuggle one past the worker's resolver. The
+    // caps are YouTube's own limits, enforced early: an oversized title fails
+    // here, before an encode and a review, instead of at the upload.
+    //
+    // `tags` is capped for a different reason — the resolver only sends the
+    // first twenty, so a longer list is document size that will never be used.
+    function publishOptionsOk() {
+      let options = request.resource.data.get('publishOptions', null);
+      return options == null
+             || (
+                  options.keys().hasOnly(
+                    ['channelId', 'title', 'description', 'privacy', 'categoryId', 'tags'])
+                  && (options.get('channelId', null) == null
+                      || options.channelId is string)
+                  && (options.get('title', null) == null
+                      || (options.title is string && options.title.size() <= 100))
+                  && (options.get('description', null) == null
+                      || (options.description is string && options.description.size() <= 4900))
+                  && (options.get('privacy', null) == null
+                      || options.privacy in ['private', 'unlisted', 'public'])
+                  && (options.get('categoryId', null) == null
+                      || options.categoryId is string)
+                  && (options.get('tags', null) == null
+                      || (options.tags is list && options.tags.size() <= 20))
+                );
+    }
+
     // ── Jobs ─────────────────────────────────────────────────────────────────
     match /jobs/{jobId} {
       allow read: if ownsExisting();
@@ -171,6 +206,7 @@ service cloud.firestore {
                     && request.resource.data.workerId == null
                     && request.resource.data.leaseExpiresAt == null
                     && request.resource.data.attempts == 0
+                    && publishOptionsOk()
                     && (
                          request.resource.data.type != 'PUBLISH'
                          || (

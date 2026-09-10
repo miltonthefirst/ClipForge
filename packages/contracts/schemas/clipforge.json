@@ -524,12 +524,29 @@
       "additionalProperties": false,
       "properties": {
         "channelId": { "type": ["string", "null"], "default": null },
+        "title": {
+          "type": ["string", "null"],
+          "maxLength": 100,
+          "default": null,
+          "description": "Replaces the clip's title for this upload only. Capped at YouTube's own limit here rather than truncated silently on the way out, so what the operator typed is what the audit record shows."
+        },
+        "description": {
+          "type": ["string", "null"],
+          "maxLength": 4900,
+          "default": null,
+          "description": "Replaces the clip's description for this upload only."
+        },
         "privacy": {
           "anyOf": [{ "$ref": "#/definitions/PublishPrivacy" }, { "type": "null" }],
           "default": null
         },
         "categoryId": { "type": ["string", "null"], "default": null },
-        "tags": { "type": "array", "items": { "type": "string" }, "default": [] }
+        "tags": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "default": null,
+          "description": "Null and empty are different answers here, and both are ones an operator can mean. Null is 'I did not touch the tags', which falls through to the channel's; an empty list is 'no tags on this one', which does not. Every other field in this block is nullable for the same reason, and an array whose absent value was [] could not express the second."
+        }
       }
     },
 
@@ -744,6 +761,11 @@
         "title": { "type": ["string", "null"], "default": null },
         "description": { "type": ["string", "null"], "default": null },
         "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "categoryId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing."
+        },
         "rights": {
           "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
           "default": null,

@@ -32,6 +32,7 @@ from clipforge.stages.publish import PublishStage
 from clipforge.stages.render import RenderStage
 from clipforge.stages.transcribe import TranscribeStage
 from clipforge.store.blobs import BlobStore
+from clipforge.store.channels import ChannelStore
 from clipforge.store.firestore import CandidateStore, ClipStore, PublicationStore, SourceStore
 from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
@@ -220,6 +221,7 @@ def build_publish_registry(
     settings: Settings,
     clips: ClipStore,
     publications: PublicationStore,
+    channels: ChannelStore | None = None,
 ) -> StageRegistry:
     """The one-stage registry for PUBLISH jobs.
 
@@ -242,7 +244,12 @@ def build_publish_registry(
 
     registry = StageRegistry()
     registry.register(
-        PublishStage(clips=clips, publications=publications, client_factory=client_factory)
+        PublishStage(
+            clips=clips,
+            publications=publications,
+            client_factory=client_factory,
+            channels=channels,
+        )
     )
     return registry
 
@@ -258,6 +265,7 @@ def build_registry_factory(
     clips: ClipStore,
     publications: PublicationStore,
     blobs: BlobStore,
+    channels: ChannelStore | None = None,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -276,7 +284,9 @@ def build_registry_factory(
         blobs=blobs,
     )
 
-    publish = build_publish_registry(settings=settings, clips=clips, publications=publications)
+    publish = build_publish_registry(
+        settings=settings, clips=clips, publications=publications, channels=channels
+    )
 
     def factory(job_type: JobType) -> StageRegistry:
         if job_type is JobType.ECHO:

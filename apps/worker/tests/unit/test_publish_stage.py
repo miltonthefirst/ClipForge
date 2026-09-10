@@ -26,6 +26,8 @@ from clipforge.publish.youtube import UPLOAD_QUOTA_UNITS, QuotaLedger, UploadRes
 from clipforge.stages.base import StageContext
 from clipforge.stages.publish import PublishStage, PublishStageError
 from clipforge_contracts import (
+    Channel,
+    ChannelConnection,
     Clip,
     ClipLocation,
     Job,
@@ -34,6 +36,10 @@ from clipforge_contracts import (
     Lane,
     Publication,
     PublicationState,
+    PublishDefaults,
+    PublishOptions,
+    PublishPlatform,
+    PublishPrivacy,
     ReviewState,
     RightsAttestation,
     RightsBasis,
@@ -86,6 +92,20 @@ class FakePublicationStore:
             ):
                 return publication
         return None
+
+
+class FakeChannelStore:
+    def __init__(self, *channels: Channel) -> None:
+        self._channels = {channel.id: channel for channel in channels}
+
+    def get(self, channel_id: str) -> Channel | None:
+        return self._channels.get(channel_id)
+
+    def default(self) -> Channel | None:
+        if not self._channels:
+            return None
+        channels = list(self._channels.values())
+        return next((c for c in channels if c.is_default), channels[0])
 
 
 class FakeYouTube:
@@ -166,7 +186,12 @@ def make_clip(
     )
 
 
-def make_job(*, clip_id: str | None = "clip-1", not_before: datetime | None = None) -> Job:
+def make_job(
+    *,
+    clip_id: str | None = "clip-1",
+    not_before: datetime | None = None,
+    options: PublishOptions | None = None,
+) -> Job:
     return Job(
         id="job-pub-1",
         uid="user-1",
@@ -174,6 +199,7 @@ def make_job(*, clip_id: str | None = "clip-1", not_before: datetime | None = No
         status=JobStatus.RUNNING,
         clip_id=clip_id,
         not_before=not_before,
+        publish_options=options,
         stages=[Stage(name=StageName.PUBLISH, lane=Lane.CPU, status=StageStatus.RUNNING)],
         attempts=1,
         max_attempts=3,
@@ -202,12 +228,36 @@ def make_context(
 
 
 def build(
-    clip: Clip | None, platform: FakeYouTube, publications: FakePublicationStore
+    clip: Clip | None,
+    platform: FakeYouTube,
+    publications: FakePublicationStore,
+    channels: FakeChannelStore | None = None,
 ) -> PublishStage:
     return PublishStage(
         clips=FakeClipStore(clip),  # type: ignore[arg-type]
         publications=publications,  # type: ignore[arg-type]
         client_factory=lambda: platform,
+        channels=channels,  # type: ignore[arg-type]
+    )
+
+
+def make_channel(channel_id: str = "youtube-primary", **defaults: object) -> Channel:
+    base: dict[str, object] = {
+        "privacy": PublishPrivacy.UNLISTED,
+        "category_id": "22",
+        "tags": [],
+        "title_suffix": None,
+        "description_template": None,
+    }
+    return Channel(
+        id=channel_id,
+        uid="worker-1",
+        platform=PublishPlatform.YOUTUBE,
+        label="YouTube",
+        is_default=True,
+        connection=ChannelConnection.CONNECTED,
+        defaults=PublishDefaults.model_validate(base | defaults),
+        created_at=NOW,
     )
 
 
@@ -463,3 +513,142 @@ def test_a_scheduled_publish_time_is_recorded_on_the_audit_record(tmp_path: Path
         make_context(make_job(not_before=later))
     )
     assert next(iter(publications.docs.values())).publish_at == later
+
+
+# ── Per-publish overrides ────────────────────────────────────────────────────
+
+
+def test_per_publish_options_reach_the_platform(tmp_path: Path) -> None:
+    """What the operator chose on the publish screen is what goes out."""
+    platform = FakeYouTube()
+    job = make_job(
+        options=PublishOptions(
+            title="A different hook for this one",
+            description="and different words",
+            privacy=PublishPrivacy.PUBLIC,
+            category_id="27",
+            tags=["angular", "signals"],
+        )
+    )
+
+    build(make_clip(tmp_path), platform, FakePublicationStore()).run(make_context(job))
+
+    assert platform.metadata["title"] == "A different hook for this one"
+    assert platform.metadata["description"] == "and different words"
+    assert platform.metadata["privacy"] == "public"
+    assert platform.metadata["category_id"] == "27"
+    assert platform.metadata["tags"] == ["angular", "signals"]
+
+
+def test_the_channel_defaults_apply_when_the_publish_says_nothing(tmp_path: Path) -> None:
+    platform = FakeYouTube()
+    channels = FakeChannelStore(
+        make_channel(
+            privacy=PublishPrivacy.PRIVATE,
+            category_id="28",
+            tags=["standing"],
+            title_suffix="#shorts",
+            description_template="Filmed by me.",
+        )
+    )
+
+    build(make_clip(tmp_path), platform, FakePublicationStore(), channels).run(
+        make_context(make_job())
+    )
+
+    assert platform.metadata["privacy"] == "private"
+    assert platform.metadata["category_id"] == "28"
+    assert platform.metadata["tags"] == ["standing"]
+    assert platform.metadata["title"] == "A hook worth watching #shorts"
+    assert platform.metadata["description"] == "why it matters\n\nFilmed by me."
+
+
+def test_what_went_out_is_recorded_on_the_publication(tmp_path: Path) -> None:
+    """The audit record answers "what did we send", not "what was asked for".
+
+    A record that only held the request would be unable to say which channel a
+    video went to when none was named, or what category it was filed under.
+    """
+    publications = FakePublicationStore()
+    channels = FakeChannelStore(make_channel(title_suffix="#shorts"))
+
+    build(make_clip(tmp_path), FakeYouTube(), publications, channels).run(
+        make_context(make_job(options=PublishOptions(privacy=PublishPrivacy.PUBLIC)))
+    )
+
+    published = next(iter(publications.docs.values()))
+    assert published.channel_id == "youtube-primary"
+    assert published.privacy is PublishPrivacy.PUBLIC
+    assert published.title == "A hook worth watching #shorts"
+    assert published.category_id == "22"
+
+
+def test_a_publish_naming_a_channel_that_is_gone_fails_rather_than_guessing(
+    tmp_path: Path,
+) -> None:
+    """Publishing to the wrong channel is worse than not publishing.
+
+    An unlisted upload can be deleted; a video that went to the wrong channel
+    has already been the wrong video in the wrong place. So a named channel that
+    no longer exists is a hard failure, and not a retryable one — nothing about
+    waiting brings the channel back.
+    """
+    publications = FakePublicationStore()
+    channels = FakeChannelStore(make_channel())
+
+    with pytest.raises(PublishStageError) as caught:
+        build(make_clip(tmp_path), FakeYouTube(), publications, channels).run(
+            make_context(make_job(options=PublishOptions(channel_id="youtube-deleted")))
+        )
+
+    assert caught.value.code == "CHANNEL_MISSING"
+    assert caught.value.retryable is False
+    # Nothing recorded: a refusal is not an attempt.
+    assert publications.docs == {}
+
+
+def test_a_retry_sends_what_the_first_attempt_sent(tmp_path: Path) -> None:
+    """Defaults edited mid-flight must not change an upload already in progress.
+
+    The resumable session was reserved with the first attempt's metadata, so
+    re-resolving on retry would mean the record, the session and the video could
+    all disagree. The publication record is written before the first attempt for
+    exactly this reason, and it is what the retry reads.
+    """
+    clip = make_clip(tmp_path)
+    publications = FakePublicationStore()
+    job = make_job()
+    channels = FakeChannelStore(make_channel(title_suffix="#first"))
+
+    interrupted = FakeYouTube(
+        fail_upload_with=YouTubeError("connection reset", retryable=True, code="UPLOAD_INCOMPLETE")
+    )
+    with pytest.raises(PublishStageError):
+        build(clip, interrupted, publications, channels).run(make_context(job))
+
+    # The operator changes the channel's suffix between the two attempts.
+    edited = FakeChannelStore(make_channel(title_suffix="#second"))
+    resumed = FakeYouTube()
+    checkpoint = {"publicationId": next(iter(publications.docs)), **_checkpoint_after(interrupted)}
+    build(clip, resumed, publications, edited).run(make_context(job, checkpoint=checkpoint))
+
+    published = next(iter(publications.docs.values()))
+    assert published.title == "A hook worth watching #first"
+    assert len(resumed.videos) == 1
+
+
+def test_a_channel_named_on_a_worker_without_firestore_is_still_recorded(
+    tmp_path: Path,
+) -> None:
+    """Degradation, stated rather than silent.
+
+    A worker with no channel store cannot verify the choice, and it says so in
+    the log — but the choice still reaches the audit record, because "which
+    channel did the operator pick" is knowable without Firestore.
+    """
+    publications = FakePublicationStore()
+    build(make_clip(tmp_path), FakeYouTube(), publications).run(
+        make_context(make_job(options=PublishOptions(channel_id="youtube-cooking")))
+    )
+
+    assert next(iter(publications.docs.values())).channel_id == "youtube-cooking"

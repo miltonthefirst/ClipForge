@@ -154,6 +154,118 @@ describe('the rights gate on publish jobs', () => {
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
+  it('accepts a publish job carrying per-upload overrides', async () => {
+    // The whole point of the options block: title, description, privacy,
+    // category, tags and destination, chosen for this one upload.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+
+    await assertSucceeds(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-pub-1'),
+        publishJob(ALICE, {
+          publishOptions: {
+            channelId: 'youtube-primary',
+            title: 'A hook worth watching',
+            description: 'why it matters',
+            privacy: 'public',
+            categoryId: '27',
+            tags: ['angular', 'signals'],
+          },
+        }),
+      ),
+    );
+  });
+
+  it('accepts an options block that overrides nothing', async () => {
+    // The shape the UI writes when the operator never opens the panel. All-null
+    // must be as acceptable as absent, or the common case would be the refused
+    // one.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+
+    await assertSucceeds(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-pub-1'),
+        publishJob(ALICE, {
+          publishOptions: {
+            channelId: null,
+            title: null,
+            description: null,
+            privacy: null,
+            categoryId: null,
+            tags: null,
+          },
+        }),
+      ),
+    );
+  });
+
+  it('refuses a privacy setting that is not one of the three', async () => {
+    // 'public' is not recoverable, so the set of things that field may say is
+    // worth pinning down in the one place the client cannot edit.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-pub-1'),
+        publishJob(ALICE, { publishOptions: { privacy: 'everyone' } }),
+      ),
+    );
+  });
+
+  it('refuses a title longer than YouTube would accept', async () => {
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-pub-1'),
+        publishJob(ALICE, { publishOptions: { title: 'x'.repeat(101) } }),
+      ),
+    );
+  });
+
+  it('refuses an unrecognised field in the options block', async () => {
+    // A field nobody validates is a field the worker's resolver has never seen.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-pub-1'),
+        publishJob(ALICE, { publishOptions: { madeForKids: true } }),
+      ),
+    );
+  });
+
+  it('refuses a tag list long enough to be document bloat', async () => {
+    // Only the first twenty are ever sent, so a longer list is storage that
+    // will never be read.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-pub-1'),
+        publishJob(ALICE, {
+          publishOptions: { tags: Array.from({ length: 21 }, (_, i) => `t${i}`) },
+        }),
+      ),
+    );
+  });
+
+  it('applies the options check to every job type, not only PUBLISH', async () => {
+    // A CLIP job has no business carrying publish options, and a rule that only
+    // looked at PUBLISH jobs would let one through unvalidated — where it would
+    // sit until someone wrote code that read it.
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-1'),
+        queuedJob(ALICE, {
+          type: 'CLIP',
+          submission: 'https://youtu.be/x',
+          publishOptions: { privacy: 'everyone' },
+        }),
+      ),
+    );
+  });
+
   it('still lets an ordinary CLIP job through without any clip or attestation', async () => {
     // The gate must apply to PUBLISH jobs only. Ingestion is private use and
     // needs no rights basis — that distinction is the whole design.

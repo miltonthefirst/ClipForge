@@ -181,9 +181,20 @@ export interface Job {
  */
 export interface PublishOptions {
   channelId?: string | null;
+  /**
+   * Replaces the clip's title for this upload only. Capped at YouTube's own limit here rather than truncated silently on the way out, so what the operator typed is what the audit record shows.
+   */
+  title?: string | null;
+  /**
+   * Replaces the clip's description for this upload only.
+   */
+  description?: string | null;
   privacy?: PublishPrivacy | null;
   categoryId?: string | null;
-  tags?: string[];
+  /**
+   * Null and empty are different answers here, and both are ones an operator can mean. Null is 'I did not touch the tags', which falls through to the channel's; an empty list is 'no tags on this one', which does not. Every other field in this block is nullable for the same reason, and an array whose absent value was [] could not express the second.
+   */
+  tags?: string[] | null;
 }
 /**
  * One idempotent, checkpointed step of a job.
@@ -450,6 +461,10 @@ export interface Publication {
   title?: string | null;
   description?: string | null;
   tags?: string[];
+  /**
+   * Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing.
+   */
+  categoryId?: string | null;
   /**
    * Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
    */

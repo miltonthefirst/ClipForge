@@ -944,6 +944,14 @@ needed: `channels/{channelId}` is a collection, a `Publication` records the
 That was not speculative generality — it is the difference between adding a
 channel later and migrating every publication record to work out where it went.
 
+Since then the *resolution* half landed too, with the per-publish overrides:
+`clipforge/publish/metadata.py` collapses per-publish, per-channel and per-install
+preferences into one answer, the publish screen reads every channel rather than a
+hardcoded id, and the picker renders as soon as a second channel document exists.
+What remains for this phase is genuinely per-channel **credentials** and quota —
+the parts that need a second token file and a second authorisation, not a second
+code path.
+
 **In scope**
 
 - Several `Channel` documents, each with its own label, defaults and connection
@@ -951,7 +959,9 @@ channel later and migrating every publication record to work out where it went.
 - **Per-channel credentials on the worker.** Today's single token file becomes
   one per channel (`youtube-token-{channelId}.enc`). The client can be shared or
   separate; separate is cleaner and costs a second OAuth client.
-- Channel picker on the publish page, defaulting to `isDefault`.
+- ~~Channel picker on the publish page, defaulting to `isDefault`.~~ **Done**
+  — built with the per-publish overrides, and it appears only when there is
+  more than one channel, so it costs a single-channel install nothing.
 - Per-channel publish defaults, so a cooking channel and a tech channel get
   different tags and categories without editing either every time.
 - Channel-aware review: filter the queue by intended channel, since a clip is
@@ -1096,6 +1106,7 @@ Recorded here rather than retrofitted into a phase it did not belong to:
 | The desktop shell | Tauri wrapping the same Angular build, so clips can actually be *watched* — the one thing a phone cannot do |
 | Accounts and approval | Email/password sign-in, and access gated on an admin approving the account rather than merely authenticating it |
 | The local control API | Loopback-only, token-authenticated, so a YouTube client secret can be typed into the app and still never leave the machine ([ADR-0011](adr/0011-local-control-api.md)) |
+| Per-publish overrides | Title, description, privacy, category, tags and channel, chosen for one upload. Three layers of preference resolve in one place (`publish/metadata.py`), and the publication record holds what was actually sent |
 
 Two of those were corrections rather than additions, and both are worth keeping visible: the service
 worker had been signed off without existing, and FCM still has not been built.
@@ -1104,11 +1115,11 @@ Current test coverage, all runnable from a clean clone with no GPU and no networ
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 342 | nothing |
+| Worker unit | 427 | nothing |
 | Worker integration | 74 | Firestore emulator |
-| Security rules | 86 | Auth + Firestore + Storage emulators |
+| Security rules | 93 | Auth + Firestore + Storage emulators |
 | Web unit | 32 | nothing |
-| Playwright E2E | 36 | Auth + Firestore emulators, stubbed worker |
+| Playwright E2E | 47 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 12 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

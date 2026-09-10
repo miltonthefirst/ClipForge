@@ -143,13 +143,72 @@ Not secret, so these live in Firestore and are editable from anywhere.
 | Privacy | `unlisted` | Publishing to the world by accident is not recoverable the way an unlisted upload is — the link may already be scraped |
 | Category | `22` (People & Blogs) | See the table below |
 | Tags | none | Up to 20; YouTube ignores the rest |
-| Title suffix | none | Appended to every title. Titles are still truncated at 100 characters, which YouTube enforces outright |
+| Title suffix | none | Appended to every title. YouTube enforces 100 characters outright, so the suffix reserves its room and the title is what gives way — see below |
 | Description template | none | Appended to every description — a standing credit, licence note or link block |
 
 Common category ids: `1` Film & Animation · `10` Music · `17` Sport ·
 `20` Gaming · `22` People & Blogs · `23` Comedy · `24` Entertainment ·
 `25` News & Politics · `26` Howto & Style · `27` Education ·
 `28` Science & Technology
+
+---
+
+## Changing one upload without changing the channel
+
+**Publish → Options**, on the card for the clip. Title, description, privacy,
+category, tags and — once there is more than one — which channel. It applies to
+that upload and nothing else; the channel's own settings are untouched.
+
+The panel is collapsed by default and the summary line above it states what is
+about to happen (`unlisted · People & Blogs · YouTube`), so publishing with the
+channel's settings stays one tap and *what those settings are* is still visible
+without opening anything. The privacy is repeated on the button itself, because
+`public` is the one choice that cannot be taken back.
+
+### Which value wins
+
+Three layers, most specific first:
+
+| Layer | Where it lives | Applies to |
+| --- | --- | --- |
+| This upload | `jobs/{jobId}.publishOptions`, written when you press Publish | One clip |
+| The channel | `channels/{channelId}.defaults` — Settings → YouTube | Every publish to that channel |
+| The install | The clip's own title and description; `CLIPFORGE_YOUTUBE_DEFAULT_PRIVACY` | Everything else |
+
+Resolved by `apps/worker/clipforge/publish/metadata.py`, which is the only place
+that decides. Two consequences worth knowing:
+
+- **Only what you changed is recorded.** Fields you did not touch stay empty on
+  the job, so correcting a channel default later still affects every publish
+  that did not override it — including one you scheduled for next week.
+- **Once an upload starts, its metadata is fixed.** The publication record is
+  written before the first byte moves, and a retry sends what that record says.
+  Editing the channel's defaults mid-upload cannot change a video that is
+  already going out under the old ones.
+
+### Tags, and the one field where empty means something
+
+The tag box is **prefilled from the channel**. Leaving it alone publishes the
+channel's tags; clearing it publishes with **no** tags. That distinction needs
+the prefill to exist at all — an always-empty box could not tell "I did not
+touch this" apart from "I want none of them", and `PublishOptions.tags`
+therefore carries `null` for the first and `[]` for the second.
+
+### The title suffix and the 100-character limit
+
+A channel's `titleSuffix` is reserved *before* the title is trimmed, so a long
+hook loses its own words rather than its series marker — `(title + suffix)[:100]`
+would cut the suffix off exactly the titles working hardest. The trim prefers a
+word boundary when one is close to the cut. If the suffix is already at the end
+of the title you typed, it is not added twice.
+
+### What gets recorded
+
+`clips/{clipId}/publications/{pubId}` holds the **resolved** values — title,
+description, tags, privacy, category and channel — not the request. "What did we
+actually send" is the question that record exists to answer, and a field that
+only sometimes reflected the upload would answer nothing. It is readable from
+the phone.
 
 ---
 

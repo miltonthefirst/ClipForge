@@ -6,6 +6,7 @@ import type {
   ClipPreview,
   Job,
   Publication,
+  PublishOptions,
   ReviewState,
   RightsBasis,
   UserProfile,
@@ -199,11 +200,18 @@ export class ClipForgeStore {
    * `publishAt` becomes the job's `notBefore`, which is the same field the
    * scheduler already consults before claiming anything — so a scheduled publish
    * needs no second timer anywhere.
+   *
+   * `options` is what the operator chose for this upload and nothing else. Null
+   * fields inside it mean "use the channel's default", which is not the same as
+   * an empty one — `tags: []` says "no tags on this one" and `tags: null` says
+   * "I did not touch the tags". The worker's resolver honours that distinction
+   * (apps/worker/clipforge/publish/metadata.py), so the UI must preserve it.
    */
   async requestPublish(
     uid: string,
     clipId: string,
     publishAt: Date | null = null,
+    options: PublishOptions | null = null,
   ): Promise<string> {
     const reference = doc(collection(this.firebase.db, 'jobs'));
     const now = new Date().toISOString();
@@ -215,6 +223,7 @@ export class ClipForgeStore {
       submission: null,
       sourceId: null,
       clipId,
+      publishOptions: options,
       notBefore: publishAt ? publishAt.toISOString() : null,
       stages: [{ name: 'PUBLISH', lane: 'CPU', status: 'PENDING' }],
       workerId: null,
@@ -240,6 +249,25 @@ export class ClipForgeStore {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
     return snapshot.docs.map((d) => d.data() as Publication);
+  }
+
+  /**
+   * Every publishing channel, for the destination picker.
+   *
+   * Unbounded and safe to be, for the same reason `watchUsers` is: a channel is
+   * a destination somebody set up by hand, and an install with enough of them
+   * for this query to cost anything has a different problem. Bounded anyway, so
+   * "safe today" does not quietly become "unbounded listen" later.
+   */
+  watchChannels(
+    onData: (channels: Channel[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'channels'), limit(50)),
+      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Channel)),
+      (error) => onError?.(error),
+    );
   }
 
   /**
