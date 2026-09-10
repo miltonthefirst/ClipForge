@@ -70,7 +70,7 @@ const DEFAULTS: ClipForgeConfig = {
   firestoreEmulator: { host: '127.0.0.1', port: 8080 },
   storageEmulator: { host: '127.0.0.1', port: 9199 },
   authEmulator: 'http://127.0.0.1:9099',
-  localServerOrigin: 'http://127.0.0.1:8765',
+  localServerOrigin: 'http://127.0.0.1:8770',
 };
 
 declare global {

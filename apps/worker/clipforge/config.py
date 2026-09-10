@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # not an authenticated surface.
     local_server_enabled: bool = True
     local_server_host: str = "127.0.0.1"
-    local_server_port: int = Field(default=8765, ge=1024, le=65535)
+    local_server_port: int = Field(default=8770, ge=1024, le=65535)
 
     # ── Identity and scheduling ──────────────────────────────────────────────
     worker_id: str = ""

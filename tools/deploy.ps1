@@ -139,7 +139,7 @@ if ($deployHosting) {
     # and still a working configuration.
     $storageBucket = $config['CLIPFORGE_FIREBASE_STORAGE_BUCKET']
     $localOrigin = $config['CLIPFORGE_WEB_LOCAL_SERVER_ORIGIN']
-    if ([string]::IsNullOrWhiteSpace($localOrigin)) { $localOrigin = 'http://127.0.0.1:8765' }
+    if ([string]::IsNullOrWhiteSpace($localOrigin)) { $localOrigin = 'http://127.0.0.1:8770' }
 
     $missing = @()
     if ([string]::IsNullOrWhiteSpace($apiKey)) { $missing += 'CLIPFORGE_WEB_API_KEY' }

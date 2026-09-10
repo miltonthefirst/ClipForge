@@ -24,6 +24,7 @@ the *resolved* path.
 from __future__ import annotations
 
 import http.server
+import json
 import socketserver
 import threading
 from pathlib import Path
@@ -50,6 +51,12 @@ CONTENT_TYPES = {
 }
 
 
+# What the PWA asks for to confirm this is ClipForge and not whatever else
+# happens to hold the port. See `_Handler._identify`.
+IDENTITY_PATH = "/__clipforge"
+IDENTITY_SERVICE = "clipforge-local-file-server"
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     root: Path
 
@@ -59,10 +66,42 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         log.debug("localserver.request", request=fmt % args)
 
     def do_HEAD(self) -> None:
+        if self._identify(body=False):
+            return
         self._serve(body=False)
 
     def do_GET(self) -> None:
+        if self._identify(body=True):
+            return
         self._serve(body=True)
+
+    def _identify(self, *, body: bool) -> bool:
+        """Answer "are you ClipForge's file server?" — and nothing else.
+
+        This exists because the PWA's probe could not previously tell this
+        server from any other. It asked whether *something* was listening on the
+        port, and something usually is: an unrelated app on 8765 answered, the
+        app concluded clips were playable here, and every clip then pointed at a
+        stranger's 404. The video element showed a poster, no error, and no way
+        to guess why.
+
+        A path rather than a header, so the answer survives the `no-cors` fetch
+        the probe used to make and the ordinary one it makes now. Deliberately
+        carries no information beyond identity and the workspace it serves.
+        """
+        if urlparse(self.path).path != IDENTITY_PATH:
+            return False
+
+        payload = json.dumps({"service": IDENTITY_SERVICE, "root": str(self.root)}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if body:
+            self.wfile.write(payload)
+        return True
 
     def _resolve(self) -> Path | None:
         """Map a request path to a file inside the workspace, or refuse."""

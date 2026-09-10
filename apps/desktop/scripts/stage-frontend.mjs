@@ -44,7 +44,7 @@ function readEnv() {
 
 const env = readEnv();
 
-const localServerOrigin = env['CLIPFORGE_WEB_LOCAL_SERVER_ORIGIN'] || 'http://127.0.0.1:8765';
+const localServerOrigin = env['CLIPFORGE_WEB_LOCAL_SERVER_ORIGIN'] || 'http://127.0.0.1:8770';
 
 /**
  * Wrap the configuration fields in the assignment that sets them.

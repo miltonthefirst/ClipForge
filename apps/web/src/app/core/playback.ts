@@ -4,6 +4,14 @@ import { getDownloadURL, ref } from 'firebase/storage';
 
 import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
 
+/**
+ * How the worker's file server identifies itself. Mirrors
+ * `clipforge/localserver.py` — the two must agree, and there is a test on each
+ * side that says so.
+ */
+const IDENTITY_PATH = '/__clipforge';
+const IDENTITY_SERVICE = 'clipforge-local-file-server';
+
 /** Where a clip can be played from, and why. */
 export type PlaybackSource =
   | { readonly kind: 'remote'; readonly url: string }
@@ -45,22 +53,31 @@ export class PlaybackService {
   /**
    * Probe the worker's file server once per session.
    *
-   * Cached because it is asked per clip and the answer cannot change while the
-   * page is open in any way the user would notice — and a failed fetch per card
-   * would be both slow and noisy in the console.
+   * Asks *who is there*, not merely whether anything is. The previous version
+   * did a `no-cors` HEAD against `/` and treated any answer — including an
+   * opaque one — as proof: it could not distinguish ClipForge's file server
+   * from any other process holding the port. When an unrelated app took 8765,
+   * every clip pointed at a stranger's 404, the video element sat there showing
+   * its poster, and nothing anywhere said why.
+   *
+   * So the identity path is fetched and the response read. `no-cors` is gone
+   * with it — the file server sends `Access-Control-Allow-Origin: *`, so a
+   * readable answer was always available and only the question was wrong.
+   *
+   * Cached because it is asked per clip and cannot change while the page is
+   * open in a way the user would notice.
    */
   async probeLocalServer(fetchImpl: typeof fetch = fetch): Promise<boolean> {
     if (this.localReachable !== null) return this.localReachable;
     try {
-      // A HEAD against a path that will 404 is enough: we are testing whether
-      // anything is listening, not whether a particular file exists.
-      await fetchImpl(`${this.config.localServerOrigin}/`, {
-        method: 'HEAD',
-        mode: 'no-cors',
+      const response = await fetchImpl(`${this.config.localServerOrigin}${IDENTITY_PATH}`, {
         signal: AbortSignal.timeout(1500),
       });
-      this.localReachable = true;
+      const body = (await response.json()) as { service?: string };
+      this.localReachable = response.ok && body.service === IDENTITY_SERVICE;
     } catch {
+      // Not listening, not ClipForge, or not answering JSON. All the same
+      // answer: do not build local URLs.
       this.localReachable = false;
     }
     return this.localReachable;

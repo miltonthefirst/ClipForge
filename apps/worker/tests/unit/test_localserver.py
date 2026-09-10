@@ -8,13 +8,14 @@ handful of extensions — and each of those is asserted rather than assumed.
 
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from clipforge.localserver import LocalFileServer
+from clipforge.localserver import IDENTITY_PATH, IDENTITY_SERVICE, LocalFileServer
 
 
 @pytest.fixture
@@ -154,3 +155,47 @@ def test_stopping_is_idempotent(workspace: Path) -> None:
     server.start()
     server.stop()
     server.stop()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Identity
+#
+# The PWA has to be able to tell this server from whatever else holds the port.
+# It could not, once: an unrelated app owned 8765, ClipForge's server failed to
+# bind, and every clip pointed at that app's 404 behind an untouched poster.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_the_server_identifies_itself(server: LocalFileServer, workspace: Path) -> None:
+    status, body, _ = fetch(server, "__clipforge")
+
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["service"] == IDENTITY_SERVICE
+    assert payload["root"] == str(workspace.resolve())
+
+
+@pytest.mark.unit
+def test_identity_is_not_confused_with_a_file(server: LocalFileServer) -> None:
+    """It is answered before the path is resolved, so no clip can shadow it."""
+    status, _, headers = fetch(server, "__clipforge")
+
+    assert status == 200
+    assert headers.get("Content-Type") == "application/json"
+
+
+@pytest.mark.unit
+def test_the_identity_string_matches_the_one_the_pwa_looks_for() -> None:
+    """Both halves of a handshake, and nothing but this test relating them.
+
+    `playback.ts` compares against a literal. If either side is renamed alone,
+    every clip silently falls back to the cloud copy or the poster — working,
+    slower, and for no visible reason anyone could find.
+    """
+    playback = (
+        Path(__file__).resolve().parents[3] / "web" / "src" / "app" / "core" / "playback.ts"
+    ).read_text(encoding="utf-8")
+
+    assert f"const IDENTITY_PATH = '{IDENTITY_PATH}'" in playback
+    assert f"const IDENTITY_SERVICE = '{IDENTITY_SERVICE}'" in playback
