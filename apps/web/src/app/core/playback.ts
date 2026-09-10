@@ -1,12 +1,14 @@
 import { Injectable, inject } from '@angular/core';
 import type { Clip } from '@clipforge/contracts';
+import { getDownloadURL, ref } from 'firebase/storage';
 
-import { CLIPFORGE_CONFIG } from './firebase';
+import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
 
 /** Where a clip can be played from, and why. */
 export type PlaybackSource =
   | { readonly kind: 'remote'; readonly url: string }
   | { readonly kind: 'local'; readonly url: string }
+  | { readonly kind: 'bucket'; readonly url: string }
   | { readonly kind: 'poster' };
 
 /**
@@ -15,20 +17,29 @@ export type PlaybackSource =
  * One documented precedence, answering one question — "what can THIS browser
  * play?" — so the review UI has no branching of its own:
  *
- *   1. `playbackUrl`, if set. Works from anywhere. Populated by Cloud Storage
- *      when Blaze is enabled, and equally by a tunnel: the field is "a URL a
- *      browser can fetch", not "a Firebase thing".
- *   2. The worker's local file server, if reachable. Full video review when the
- *      PWA is opened on the machine. Browsers exempt `localhost` from
- *      mixed-content blocking, so this works even over HTTPS.
- *   3. Poster frame only. What a phone gets today.
+ *   1. `playbackUrl`, if set. A URL any browser can fetch, from wherever it
+ *      came: a tunnel, a CDN. The field is "a URL", not "a Firebase thing".
+ *   2. The worker's local file server, if reachable. Preferred over the bucket
+ *      on purpose — on the machine that rendered the clip it is faster, and it
+ *      costs no egress, which the bucket does on every play.
+ *   3. The bucket copy, if one exists and has not expired. This is what a phone
+ *      gets, and the reason the bucket exists at all.
+ *   4. Poster frame only.
  *
- * Enabling Blaze later lights up branch 1 and changes nothing else.
- * See docs/adr/0009-spark-tier-local-artefacts.md.
+ * ## Why expiry is read rather than discovered
+ *
+ * Bucket copies are deleted by a Cloud Storage lifecycle rule, which tells
+ * nobody. Asking for a download URL for a collected object fails at the moment
+ * someone presses play — the worst possible time to find out. `playbackExpiresAt`
+ * is stamped at upload, so the deadline is known before the attempt, and an
+ * expired clip falls through to the poster the same way one that was never
+ * uploaded does. The failure is still caught, because a lifecycle rule and a
+ * clock will not agree to the second.
  */
 @Injectable({ providedIn: 'root' })
 export class PlaybackService {
   private readonly config = inject(CLIPFORGE_CONFIG);
+  private readonly firebase = inject(FirebaseService);
   private localReachable: boolean | null = null;
 
   /**
@@ -55,17 +66,39 @@ export class PlaybackService {
     return this.localReachable;
   }
 
+  /** Whether the bucket still holds a playable copy of this clip. */
+  bucketCopyLive(clip: Clip, now: number = Date.now()): boolean {
+    if (!clip.storagePath) return false;
+    if (!clip.playbackExpiresAt) return true;
+    return Date.parse(clip.playbackExpiresAt) > now;
+  }
+
   /** Resolve one clip against the precedence above. */
-  resolve(clip: Clip, localAvailable: boolean): PlaybackSource {
+  async resolve(clip: Clip, localAvailable: boolean): Promise<PlaybackSource> {
     if (clip.playbackUrl) {
       return { kind: 'remote', url: clip.playbackUrl };
     }
+
     if (localAvailable) {
       const key = this.workspaceKey(clip);
       if (key) {
         return { kind: 'local', url: `${this.config.localServerOrigin}/${key}` };
       }
     }
+
+    if (this.bucketCopyLive(clip)) {
+      try {
+        // Resolved here rather than stored on the document. `getDownloadURL`
+        // runs storage.rules on the request, so access is decided when the
+        // video is fetched; a URL written into Firestore would be a bearer
+        // token in a database row, valid to anyone who ever read it.
+        const url = await getDownloadURL(ref(this.firebase.storage, clip.storagePath!));
+        return { kind: 'bucket', url };
+      } catch {
+        // Collected early, or never uploaded. The poster is still true.
+      }
+    }
+
     return { kind: 'poster' };
   }
 

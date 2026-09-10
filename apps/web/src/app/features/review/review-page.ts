@@ -85,7 +85,7 @@ export class ReviewPage implements OnDestroy {
       await Promise.all(
         clips.map(async (clip) => ({
           clip,
-          source: this.playback.resolve(clip, local),
+          source: await this.playback.resolve(clip, local),
           // Fetched per card rather than with the list: the poster is ~50 KB of
           // base64, and the queue listener re-delivers its whole result set on
           // every reconnect.
@@ -119,7 +119,7 @@ export class ReviewPage implements OnDestroy {
   protected async decide(clip: Clip, review: 'APPROVED' | 'REJECTED'): Promise<void> {
     this.busy.set(clip.id);
     try {
-      await this.store.review(clip.id, review);
+      await this.store.review(clip.id, review, clip.storagePath);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {

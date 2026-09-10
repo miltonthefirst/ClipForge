@@ -316,9 +316,22 @@ service cloud.firestore {
       // that allowed a blanket update would let a client relabel storagePath or
       // rewrite an attestation. It also pins `uid`, so reviewing a clip never
       // reassigns who made it.
+      //
+      // `storagePath` and `playbackExpiresAt` are writable, and only to null.
+      // They describe a *cache* — a short-lived bucket copy that exists so a
+      // phone can watch the clip — and the client is what deletes that object
+      // when a decision makes it pointless. Letting it clear the pointer in the
+      // same breath keeps the document honest about what is in the bucket. It
+      // is not an exception to "the client may not write pipeline state": the
+      // render itself is `localPath`, which stays untouchable.
       allow update: if isApproved()
-                    && changed().hasOnly(['review', 'reviewedAt', 'rights', 'title', 'description'])
-                    && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED'];
+                    && changed().hasOnly(['review', 'reviewedAt', 'rights', 'title',
+                                          'description', 'storagePath', 'playbackExpiresAt'])
+                    && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED']
+                    && (!('storagePath' in changed())
+                        || request.resource.data.storagePath == null)
+                    && (!('playbackExpiresAt' in changed())
+                        || request.resource.data.playbackExpiresAt == null);
 
       // The poster frame and filmstrip. On the free tier this is the only part
       // of a clip a phone can see at all, so it is read-often and must stay

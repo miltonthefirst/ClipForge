@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 from clipforge.config import Settings
 from clipforge.media.workspace import EvictionCandidate, Workspace
-from clipforge.store.blobs import LocalBlobStore, UnsafeBlobKeyError, build_blob_store
+from clipforge.store.blobs import (
+    FirebaseBlobStore,
+    LocalBlobStore,
+    UnsafeBlobKeyError,
+    build_blob_store,
+)
+from pydantic import ValidationError
 
 T0 = datetime(2026, 9, 8, 12, 0, 0, tzinfo=UTC)
 MB = 1024 * 1024
@@ -221,18 +227,28 @@ def test_a_key_that_escapes_the_workspace_is_refused(tmp_path: Path, key: str) -
 
 
 @pytest.mark.unit
-def test_a_local_blob_gets_a_playback_url_when_the_server_is_running(tmp_path: Path) -> None:
-    """This is playback branch 2: the PWA opened on this machine can play it."""
-    store = LocalBlobStore(tmp_path, public_origin="http://127.0.0.1:8765")
-    ref = store.put("clips/clip-1.mp4", write(tmp_path / "produced.mp4", 1))
-    assert ref.playback_url == "http://127.0.0.1:8765/clips/clip-1.mp4"
+def test_a_local_blob_never_claims_a_remotely_fetchable_url(tmp_path: Path) -> None:
+    """`playbackUrl` means "a URL any browser can fetch", and the worker's own
+    file server is not that: it answers on 127.0.0.1, which on a phone is the
+    phone. Filling this field with a loopback address marked every clip REMOTE
+    and made the PWA try it first, so a phone got a dead video element instead
+    of the poster it should have fallen back to.
 
-
-@pytest.mark.unit
-def test_a_local_blob_has_no_playback_url_when_the_server_is_off(tmp_path: Path) -> None:
+    The PWA composes the local address itself when it detects the server is
+    reachable — playback branch 2, which needs nothing stored here."""
     store = LocalBlobStore(tmp_path)
     ref = store.put("clips/clip-1.mp4", write(tmp_path / "produced.mp4", 1))
     assert ref.playback_url is None
+    assert ref.storage_path is None
+    assert ref.expires_at is None
+
+
+@pytest.mark.unit
+def test_a_local_blob_still_reports_where_it_landed(tmp_path: Path) -> None:
+    store = LocalBlobStore(tmp_path)
+    ref = store.put("clips/clip-1.mp4", write(tmp_path / "produced.mp4", 1))
+    assert ref.local_path == tmp_path / "clips" / "clip-1.mp4"
+    assert ref.local_path.is_file()
 
 
 @pytest.mark.unit
@@ -241,12 +257,114 @@ def test_the_local_store_is_what_the_free_tier_selects(tmp_path: Path) -> None:
     assert isinstance(store, LocalBlobStore)
 
 
+class FakeStorageClient:
+    """Enough of `google.cloud.storage.Client` to see what the adapter does.
+
+    A fake rather than a mock so the assertions read as "what was uploaded" and
+    "what was deleted", which is what these tests are actually about.
+    """
+
+    def __init__(self, *, fail_uploads: bool = False) -> None:
+        self.uploaded: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
+        self.fail_uploads = fail_uploads
+
+    def bucket(self, name: str) -> FakeStorageClient._Bucket:
+        return FakeStorageClient._Bucket(self)
+
+    class _Bucket:
+        def __init__(self, client: FakeStorageClient) -> None:
+            self._client = client
+
+        def blob(self, key: str) -> FakeStorageClient._Blob:
+            return FakeStorageClient._Blob(self._client, key)
+
+    class _Blob:
+        def __init__(self, client: FakeStorageClient, key: str) -> None:
+            self._client = client
+            self._key = key
+
+        def upload_from_filename(
+            self, path: str, content_type: str | None = None, timeout: float | None = None
+        ) -> None:
+            del content_type, timeout
+            if self._client.fail_uploads:
+                raise TimeoutError("the write operation timed out")
+            self._client.uploaded.append((self._key, path))
+
+        def delete(self) -> None:
+            self._client.deleted.append(self._key)
+
+
 @pytest.mark.unit
-def test_the_firebase_store_says_exactly_what_is_missing(tmp_path: Path) -> None:
-    """Deliberately absent rather than stubbed: a stub that silently did nothing
-    would be worse than an error naming the one piece of work the upgrade needs."""
+def test_the_firebase_store_is_selected_when_a_bucket_is_configured(tmp_path: Path) -> None:
     settings = Settings(
         workspace_dir=tmp_path, blob_store="firebase", firebase_storage_bucket="b.appspot.com"
     )
-    with pytest.raises(NotImplementedError, match="Blaze"):
-        build_blob_store(settings)
+    assert isinstance(build_blob_store(settings), FirebaseBlobStore)
+
+
+@pytest.mark.unit
+def test_the_firebase_store_refuses_a_configuration_with_no_bucket(tmp_path: Path) -> None:
+    """Caught at startup rather than at the first upload, which would be after a
+    render has already cost minutes of encoding."""
+    with pytest.raises(ValidationError, match="FIREBASE_STORAGE_BUCKET"):
+        Settings(workspace_dir=tmp_path, blob_store="firebase", firebase_storage_bucket="")
+
+
+@pytest.mark.unit
+def test_the_firebase_store_keeps_a_local_copy_and_records_the_bucket_one(
+    tmp_path: Path,
+) -> None:
+    """The bucket copy is a convenience with a deadline; the local copy is the
+    artefact. A clip is published from the local file and survives on it once
+    the lifecycle rule has collected the object."""
+    client = FakeStorageClient()
+    store = FirebaseBlobStore(
+        LocalBlobStore(tmp_path), bucket="b.appspot.com", retention_days=5, client=client
+    )
+    ref = store.put("clips/clip-1.mp4", write(tmp_path / "produced.mp4", 1))
+
+    assert ref.local_path.is_file(), "the local copy is what gets published"
+    assert ref.storage_path == "clips/clip-1.mp4"
+    assert ref.playback_url is None, "the URL is resolved at play time, not stored"
+    assert ref.expires_at is not None
+    # Five days from now, give or take however long the upload took.
+    remaining = ref.expires_at - datetime.now(UTC)
+    assert timedelta(days=5) - timedelta(minutes=1) <= remaining <= timedelta(days=5)
+    assert client.uploaded == [("clips/clip-1.mp4", str(ref.local_path))]
+
+
+@pytest.mark.unit
+def test_a_failed_upload_costs_the_bucket_copy_and_nothing_else(tmp_path: Path) -> None:
+    """The bucket copy is the part that is allowed to be missing.
+
+    Learned the hard way: the first version let the exception out, and a 32 MB
+    clip timing out on a slow uplink failed the RENDER stage non-retryably —
+    throwing away a job that had already spent ten minutes in ANALYZE. The clip
+    was on disk the whole time.
+    """
+    client = FakeStorageClient(fail_uploads=True)
+    store = FirebaseBlobStore(
+        LocalBlobStore(tmp_path), bucket="b.appspot.com", retention_days=5, client=client
+    )
+
+    ref = store.put("clips/clip-1.mp4", write(tmp_path / "produced.mp4", 1))
+
+    assert ref.local_path.is_file(), "the render survives a failed upload"
+    assert ref.storage_path is None, "and does not claim a bucket copy it does not have"
+    assert ref.expires_at is None
+    assert client.uploaded == []
+
+
+@pytest.mark.unit
+def test_forgetting_a_firebase_blob_keeps_the_local_file(tmp_path: Path) -> None:
+    client = FakeStorageClient()
+    store = FirebaseBlobStore(
+        LocalBlobStore(tmp_path), bucket="b.appspot.com", retention_days=5, client=client
+    )
+    ref = store.put("clips/clip-1.mp4", write(tmp_path / "produced.mp4", 1))
+
+    store.forget("clips/clip-1.mp4")
+    assert client.deleted == ["clips/clip-1.mp4"]
+    assert ref.local_path.is_file(), "the artefact survives losing its bucket copy"

@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Cloud Storage Object Lifecycle Management for the ClipForge bucket.",
+    "",
+    "This is the retention mechanism. There is no cron job and no Cloud Function,",
+    "because neither would be better: Google evaluates these rules server-side,",
+    "for free, whether or not the worker is running. A scheduled task on the",
+    "worker would stop expiring clips during exactly the week the machine is off",
+    "and the bucket is growing unattended.",
+    "",
+    "Age is measured from object creation, which for a clip is its upload — so",
+    "'5 days after upload' is expressed directly rather than approximated.",
+    "",
+    "Deletion here is silent: nothing tells Firestore that an object has gone.",
+    "That is handled without a reconciliation pass by Clip.playbackExpiresAt,",
+    "which the worker stamps at upload from CLIPFORGE_CLIP_RETENTION_DAYS. The",
+    "two numbers must agree, so tools/storage-lifecycle.ps1 reads that setting",
+    "and rewrites the age below before applying this file.",
+    "",
+    "Apply with:  pwsh -File tools/storage-lifecycle.ps1",
+    "Inspect with: gcloud storage buckets describe gs://BUCKET --format='value(lifecycle)'"
+  ],
+  "lifecycle": {
+    "rule": [
+      {
+        "action": { "type": "Delete" },
+        "condition": {
+          "age": 5,
+          "matchesPrefix": ["clips/"]
+        }
+      }
+    ]
+  }
+}

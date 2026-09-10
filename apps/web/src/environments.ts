@@ -17,10 +17,17 @@ export interface ClipForgeConfig {
     readonly apiKey: string;
     readonly authDomain: string;
     readonly appId: string;
+    /**
+     * The Cloud Storage bucket clips are uploaded to, when there is one. Absent
+     * without Blaze, and absent is a working configuration: playback falls
+     * through to the worker's file server and then to the poster.
+     */
+    readonly storageBucket?: string;
   };
   /** When true, connect to the local Emulator Suite instead of a real project. */
   readonly useEmulators: boolean;
   readonly firestoreEmulator: { readonly host: string; readonly port: number };
+  readonly storageEmulator: { readonly host: string; readonly port: number };
   readonly authEmulator: string;
   /**
    * Where the worker serves its workspace. Playback branch 2: a clip with no
@@ -61,6 +68,7 @@ const DEFAULTS: ClipForgeConfig = {
   },
   useEmulators: true,
   firestoreEmulator: { host: '127.0.0.1', port: 8080 },
+  storageEmulator: { host: '127.0.0.1', port: 9199 },
   authEmulator: 'http://127.0.0.1:9099',
   localServerOrigin: 'http://127.0.0.1:8765',
 };

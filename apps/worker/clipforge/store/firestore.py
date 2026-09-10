@@ -22,7 +22,7 @@ has its own Firebase project — see docs/adr/0004-dedicated-firebase-project.md
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
@@ -337,18 +337,30 @@ class JobStore:
                 raise
             return None
 
-    def reap(self, *, now: datetime | None = None) -> list[Job]:
+    def reap(
+        self, *, now: datetime | None = None, skip: Collection[str] = ()
+    ) -> list[Job]:
         """Reclaim every job whose worker stopped heartbeating.
 
         This is the reaper. It is bound to a periodic worker task rather than a
         Cloud Function — the logic is a pure function either way, so the binding
         is a deployment choice, and the worker task costs nothing.
         See docs/adr/0006-lease-based-job-claiming.md.
+
+        ``skip`` is how a worker refuses to reap its own work. An expired lease
+        normally means "the owner is gone", but the owner can also be *right
+        here* and merely unable to renew — a stalled network is enough. Without
+        this the worker reclaims a job it is actively running, and does the
+        whole thing twice: observed as a re-render and re-upload of two clips
+        that were already finished. A caller can only vouch for its own jobs, so
+        this is a parameter rather than a rule.
         """
         now = now or datetime.now(UTC)
         reaped: list[Job] = []
 
         for job in self.expired(now):
+            if job.id in skip:
+                continue
             job_ref = self._db.collection(JOBS).document(job.id)
 
             @firestore.transactional

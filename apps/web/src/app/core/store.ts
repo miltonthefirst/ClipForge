@@ -262,12 +262,44 @@ export class ClipForgeStore {
     return reference.id;
   }
 
-  /** Approve or reject a clip. The one state transition the user owns. */
-  async review(clipId: string, review: ReviewState): Promise<void> {
-    await updateDoc(doc(this.firebase.db, 'clips', clipId), {
-      review,
-      reviewedAt: new Date().toISOString(),
-    });
+  /**
+   * Approve or reject a clip, and release its bucket copy.
+   *
+   * The copy exists so the clip can be reviewed away from the machine. Once it
+   * has been reviewed, that job is done — keeping it would mean paying to store
+   * a video whose only purpose has been served, and waiting up to the retention
+   * window for a lifecycle rule to notice.
+   *
+   * Deleting the object is safe in a way it would not be for the local file:
+   * `localPath` still points at the render on the worker, which is the copy
+   * that gets published. This removes a cache, not an artefact.
+   *
+   * The object goes first. If that fails the Firestore write is skipped, so the
+   * clip keeps a `storagePath` that still resolves — the alternative order can
+   * leave a document claiming there is no copy while the bytes sit in the
+   * bucket until the lifecycle rule collects them.
+   */
+  async review(clipId: string, review: ReviewState, storagePath?: string | null): Promise<void> {
+    const changes: Record<string, unknown> = { review, reviewedAt: new Date().toISOString() };
+
+    if (storagePath) {
+      const { deleteObject, ref } = await import('firebase/storage');
+      try {
+        await deleteObject(ref(this.firebase.storage, storagePath));
+        changes['storagePath'] = null;
+        changes['playbackExpiresAt'] = null;
+      } catch (error) {
+        // Already collected is the common case and not a failure: the document
+        // should stop pointing at it either way. Anything else leaves the
+        // pointer alone rather than lying about what is in the bucket.
+        if ((error as { code?: string } | null)?.code === 'storage/object-not-found') {
+          changes['storagePath'] = null;
+          changes['playbackExpiresAt'] = null;
+        }
+      }
+    }
+
+    await updateDoc(doc(this.firebase.db, 'clips', clipId), changes);
   }
 
   /** Approved clips, the publish queue's input. */

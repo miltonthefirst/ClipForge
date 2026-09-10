@@ -52,6 +52,21 @@ class Settings(BaseSettings):
     # See docs/adr/0009-spark-tier-local-artefacts.md.
     blob_store: Literal["local", "firebase"] = "local"
 
+    # How long a clip stays in the bucket. Enforced by a Cloud Storage lifecycle
+    # rule, NOT by anything here — see firebase/storage.lifecycle.json. This
+    # value exists so the worker can record `Clip.playbackExpiresAt` at upload
+    # and the UI can stop offering a video the bucket has since collected. The
+    # two must agree; tools/storage-lifecycle.ps1 reads this one when it applies
+    # the rule, so there is one number rather than two.
+    clip_retention_days: int = Field(default=5, ge=1, le=365)
+
+    # Per-request timeout for a clip upload. Generous on purpose: clips are tens
+    # of megabytes and the uplink is whatever the machine has. The library's
+    # 60-second default assumes a fast connection, and when it is wrong the
+    # upload dies mid-file. Nothing is lost when it does — the clip is already
+    # on disk — but re-uploading costs the bandwidth again.
+    upload_timeout_seconds: float = Field(default=600.0, ge=30.0)
+
     # The worker serves its workspace read-only so the PWA can play clips when
     # opened on this machine. Keep the host at 127.0.0.1: this is a convenience,
     # not an authenticated surface.
@@ -174,8 +189,9 @@ class Settings(BaseSettings):
         """
         if self.blob_store == "firebase" and not self.firebase_storage_bucket:
             raise ValueError(
-                "CLIPFORGE_BLOB_STORE=firebase requires CLIPFORGE_FIREBASE_STORAGE_BUCKET. "
-                "On the Spark free tier there is no bucket: use CLIPFORGE_BLOB_STORE=local."
+                "CLIPFORGE_BLOB_STORE=firebase requires CLIPFORGE_FIREBASE_STORAGE_BUCKET, "
+                "the bucket name from the Firebase console (Storage → Files), which looks "
+                "like `your-project.firebasestorage.app`."
             )
         return self
 

@@ -451,6 +451,10 @@ class Clip(BaseModel):
     """
     Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL.
     """
+    playback_expires_at: AwareDatetime | None = Field(None, alias="playbackExpiresAt")
+    """
+    When the bucket copy stops being playable. Written at upload as upload time plus the retention window, and honoured by the UI without asking the bucket: the object is removed by a Cloud Storage lifecycle rule, which reports to nobody, so a clip whose expiry has passed is treated as local-only rather than discovered to be missing when someone presses play. Null when there is no bucket copy.
+    """
     thumbnail_path: str | None = Field(None, alias="thumbnailPath")
     duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
     width_px: int | None = Field(None, alias="widthPx", ge=1)

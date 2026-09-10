@@ -184,10 +184,19 @@ class RenderStage:
                 candidate_id=candidate.id,
                 source_id=candidate.source_id,
                 job_id=context.job.id,
-                location=ClipLocation.REMOTE if ref.playback_url else ClipLocation.LOCAL,
+                # REMOTE means "reachable from somewhere that is not this
+                # machine" — a bucket object, or a URL from some other store.
+                # The worker's own file server does not count: it answers on
+                # 127.0.0.1, which is the phone when a phone asks.
+                location=(
+                    ClipLocation.REMOTE
+                    if (ref.storage_path or ref.playback_url)
+                    else ClipLocation.LOCAL
+                ),
                 local_path=str(ref.local_path),
                 playback_url=ref.playback_url,
-                storage_path=None,
+                storage_path=ref.storage_path,
+                playback_expires_at=ref.expires_at,
                 duration_sec=round(result.duration_sec, 3),
                 width_px=result.width,
                 height_px=result.height,

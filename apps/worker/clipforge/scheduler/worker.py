@@ -254,20 +254,56 @@ class Worker:
         self._threads.append(thread)
 
     def _heartbeat_loop(self) -> None:
+        """Renew the lease on everything this worker is running.
+
+        Every renewal is individually guarded, and that is the whole point of
+        the shape of this loop. A renewal is a Firestore transaction, and
+        Firestore is reachable over a network that is allowed to have a bad
+        minute — a 503 or a deadline here is normal, not exceptional.
+
+        An unguarded `renew()` raising killed this thread outright, and a dead
+        heartbeat thread never comes back: every lease then lapses, and the
+        reaper in this very worker reclaims jobs it is still running. Observed
+        exactly once and expensively — a transient `UNAVAILABLE` during a slow
+        clip upload cost a full re-render and re-upload of work that was already
+        finished. The lease is what protects correctness, so the loop that
+        renews it has to be the most robust thing here.
+        """
         while not self._stop.wait(self._settings.heartbeat_seconds):
             with self._active_lock:
                 active = list(self._active)
 
-            for job_id in active:
-                if self._jobs.renew(job_id) is None:
-                    log.warning("lease.lost_during_heartbeat", job_id=job_id)
-
+            self.renew_active(active)
             self._announce(WorkerStatus.BUSY if active else WorkerStatus.ONLINE, active)
+
+    def renew_active(self, active: list[str]) -> None:
+        """One round of lease renewals, each guarded independently.
+
+        Extracted from the loop so the guarantee can be tested without threads
+        or clocks — the guarantee being that this returns, whatever Firestore
+        does.
+        """
+        for job_id in active:
+            try:
+                if self._jobs.renew(job_id) is None:
+                    # Genuinely lost: someone else owns this now. The runner
+                    # notices on its next checkpoint and abandons the job.
+                    log.warning("lease.lost_during_heartbeat", job_id=job_id)
+            except Exception as exc:  # noqa: BLE001 - the network may fail any way it likes
+                # Not lost, just unconfirmed. The lease still has most of its
+                # life left — `heartbeat_seconds` is a fraction of
+                # `lease_seconds` precisely so a missed beat is survivable — so
+                # the right response is to try again on the next tick.
+                log.warning("lease.renew_failed", job_id=job_id, error=str(exc))
 
     def _reaper_loop(self) -> None:
         while not self._stop.wait(self._settings.reaper_interval_seconds):
             try:
-                reaped = self._jobs.reap()
+                # Never our own. An expired lease usually means the owner is
+                # gone; it can also mean the owner is this process and Firestore
+                # was briefly unreachable, and reclaiming then means doing the
+                # work twice.
+                reaped = self._jobs.reap(skip=self.active_job_ids())
             except Exception:
                 log.exception("reaper.failed")
                 continue

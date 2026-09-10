@@ -20,6 +20,9 @@ dependencies = [
     "structlog>=24.4",
     "firebase-admin>=6.6",
     "google-cloud-firestore>=2.19",
+    # Direct rather than leaned on transitively through firebase-admin: the
+    # Blaze blob adapter imports it by name, so it is ours to pin.
+    "google-cloud-storage>=2.19",
     "tenacity>=9.0",
     "typer>=0.15",
     "rich>=13.9",
@@ -138,7 +141,7 @@ files = ["clipforge", "tests"]
 
 # Third-party packages without bundled type stubs.
 [[tool.mypy.overrides]]
-module = ["faster_whisper.*", "pynvml.*", "yt_dlp.*", "firebase_admin.*"]
+module = ["faster_whisper.*", "pynvml.*", "yt_dlp.*", "firebase_admin.*", "google.cloud.storage.*"]
 ignore_missing_imports = true
 
 # ─────────────────────────────────────────────────────────────────────────────

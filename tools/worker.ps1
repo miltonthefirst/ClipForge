@@ -82,8 +82,22 @@ and point that variable at it. Keep the file out of version control.
     # emulator-pointed for every other command run from this repository.
     $env:CLIPFORGE_USE_EMULATORS = 'false'
 
+    # The bucket comes with the project. `.env` keeps CLIPFORGE_BLOB_STORE=local
+    # and a unit test asserts it, because routine development must not upload to
+    # — or be billed for — a real bucket. Uploading is what -Live buys.
+    $bucket = $config['CLIPFORGE_FIREBASE_STORAGE_BUCKET']
+    if (-not [string]::IsNullOrWhiteSpace($bucket)) {
+        $env:CLIPFORGE_BLOB_STORE = 'firebase'
+    }
+
     Write-Host "  target    $projectId (LIVE)" -ForegroundColor Yellow
     Write-Host "  key       $credentials"
+    if ([string]::IsNullOrWhiteSpace($bucket)) {
+        Write-Host '  clips     stay on this machine (no CLIPFORGE_FIREBASE_STORAGE_BUCKET set)'
+    }
+    else {
+        Write-Host "  clips     uploaded to $bucket for review"
+    }
 }
 else {
     $env:CLIPFORGE_USE_EMULATORS = 'true'

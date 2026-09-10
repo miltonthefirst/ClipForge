@@ -614,6 +614,14 @@ pub fn worker_start(
         "Cannot find `uv`, which runs the worker. Install it and try again.".to_string()
     })?;
 
+    // Uploading clips is part of going live, not a separate switch. `.env` pins
+    // CLIPFORGE_BLOB_STORE=local so routine development cannot be billed for a
+    // real bucket, exactly as it pins the emulator flag — so a live worker has
+    // to be told, and one pointed at the emulator must not be.
+    let bucket = (!emulators)
+        .then(|| repo.as_path())
+        .and_then(|repo| env_value(repo, "CLIPFORGE_FIREBASE_STORAGE_BUCKET"));
+
     let mut command = Command::new(&uv);
     command
         .arg("run")
@@ -635,6 +643,10 @@ pub fn worker_start(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if bucket.is_some() {
+        command.env("CLIPFORGE_BLOB_STORE", "firebase");
+    }
 
     #[cfg(windows)]
     {
@@ -666,6 +678,10 @@ pub fn worker_start(
             "the live Firebase project"
         }
     ));
+    inner.push_log(match &bucket {
+        Some(name) => format!("clips: uploaded to {name} for review"),
+        None => "clips: stay on this machine".to_string(),
+    });
 
     for pipe in [
         child.stdout.take().map(PipeKind::Out),

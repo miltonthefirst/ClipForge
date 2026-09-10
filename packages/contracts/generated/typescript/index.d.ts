@@ -402,6 +402,10 @@ export interface Clip {
    * Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL.
    */
   storagePath?: string | null;
+  /**
+   * When the bucket copy stops being playable. Written at upload as upload time plus the retention window, and honoured by the UI without asking the bucket: the object is removed by a Cloud Storage lifecycle rule, which reports to nobody, so a clip whose expiry has passed is treated as local-only rather than discovered to be missing when someone presses play. Null when there is no bucket copy.
+   */
+  playbackExpiresAt?: string | null;
   thumbnailPath?: string | null;
   durationSec?: number | null;
   widthPx?: number | null;

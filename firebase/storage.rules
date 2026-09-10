@@ -3,45 +3,62 @@ rules_version = '2';
 // ClipForge Cloud Storage security rules.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// NOT CURRENTLY DEPLOYED.
+// Only rendered clips live here, and only briefly.
 //
-// ClipForge runs on the Spark free tier, and since February 2026 Cloud Storage
-// for Firebase requires Blaze outright — on Spark there is no bucket at all.
-// Rendered clips therefore stay on the worker.
+// Source video never leaves the worker (docs/PLAN.md decision D3) — a 60-minute
+// 1080p source is 1-3 GB, and uploading it would invert the local-first thesis
+// and cost real money. Clips are 5-20 MB, and even those are temporary: a
+// lifecycle rule on the bucket (firebase/storage.lifecycle.json) deletes them
+// after a few days, and the app removes one as soon as its clip is reviewed.
 //
-// This file is kept, and kept *tested* against the emulator (which does not care
-// about billing), so that enabling Blaze is a deploy rather than a design
-// exercise. See docs/adr/0009-spark-tier-local-artefacts.md.
+// The bucket is a *review convenience*, not storage. The copy that matters —
+// the one that gets published, and the one that survives — is on the worker.
+// See docs/adr/0009-spark-tier-local-artefacts.md.
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Only rendered artefacts live here: clips and their thumbnails. Source video
-// never leaves the worker (docs/PLAN.md decision D3) — a 60-minute 1080p source
-// is 1-3 GB, and uploading it would invert the local-first thesis and cost real
-// money. Clips are 5-20 MB.
-//
-// As with Firestore, the worker writes through the Admin SDK and bypasses these
-// rules. So every path here is READ-ONLY to the client: the PWA plays clips, it
-// never produces them.
 
 service firebase.storage {
   match /b/{bucket}/o {
 
-    function isOwner(uid) {
-      return request.auth != null && request.auth.uid == uid;
+    // ── Approval, not ownership ──────────────────────────────────────────────
+    //
+    // The same model as firestore.rules: ClipForge is one shared workspace, so
+    // an approved member reaches the whole library. Reading the Firestore
+    // profile from a Storage rule is the only way to ask, and it is worth the
+    // read — the alternative is a uid in the object path deciding access, which
+    // is what these rules used to do and is exactly the split the app spent a
+    // release removing.
+    function isApproved() {
+      return request.auth != null
+             && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+             && firestore.get(/databases/(default)/documents/users/$(request.auth.uid))
+                  .data.status == 'APPROVED';
     }
 
-    // Rendered vertical clips, and the poster frames the review queue shows.
-    match /users/{uid}/clips/{clipId} {
-      allow read: if isOwner(uid);
-      allow write: if false;
+    // ── Clips ────────────────────────────────────────────────────────────────
+    //
+    // The path mirrors the blob key the render stage already writes, so the
+    // local workspace and the bucket have one layout between them rather than
+    // two that must be kept in step. `{uid}` is who submitted the job — it
+    // organises the bucket and appears in no access decision.
+    //
+    // Uploads are the worker's, through the Admin SDK, which bypasses these
+    // rules entirely. So there is no `create` or `update` here for anyone: the
+    // PWA plays clips and deletes them, it never produces them.
+    //
+    // Delete is granted, and it is the one write a client gets. It is safe in a
+    // way writing would not be, because deleting the bucket copy destroys
+    // nothing: `Clip.localPath` still points at the file on the worker, which
+    // is the copy the pipeline actually depends on. The worst a bad delete can
+    // do is end a phone review early.
+    match /clips/{uid}/{clipId} {
+      allow read: if isApproved();
+      allow delete: if isApproved();
+      allow create, update: if false;
     }
 
-    match /users/{uid}/thumbnails/{clipId} {
-      allow read: if isOwner(uid);
-      allow write: if false;
-    }
-
-    // Default deny.
+    // Default deny. Anything not named above — source video above all — has no
+    // business in this bucket, and an accidental upload should fail loudly
+    // rather than quietly cost money.
     match /{allPaths=**} {
       allow read, write: if false;
     }

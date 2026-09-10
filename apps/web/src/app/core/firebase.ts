@@ -17,6 +17,7 @@ import {
   type User,
 } from 'firebase/auth';
 import { connectFirestoreEmulator, getFirestore, type Firestore } from 'firebase/firestore';
+import { connectStorageEmulator, getStorage, type FirebaseStorage } from 'firebase/storage';
 
 import { loadConfig, type ClipForgeConfig } from '../../environments';
 
@@ -38,6 +39,14 @@ export class FirebaseService {
   readonly app: FirebaseApp;
   readonly auth: Auth;
   readonly db: Firestore;
+  /**
+   * Cloud Storage, for playing a clip on a device that is not the worker.
+   *
+   * Constructed unconditionally even where no bucket is configured: it makes no
+   * network call until something asks for an object, and a clip with no
+   * `storagePath` never does. See `playback.ts` for the precedence.
+   */
+  readonly storage: FirebaseStorage;
 
   /** Why a redirect sign-in failed, for the shell to show. */
   readonly redirectError = signal<string | null>(null);
@@ -46,6 +55,7 @@ export class FirebaseService {
     this.app = initializeApp(this.config.firebase);
     this.auth = getAuth(this.app);
     this.db = getFirestore(this.app);
+    this.storage = getStorage(this.app);
 
     if (this.config.useEmulators) {
       connectAuthEmulator(this.auth, this.config.authEmulator, { disableWarnings: true });
@@ -53,6 +63,11 @@ export class FirebaseService {
         this.db,
         this.config.firestoreEmulator.host,
         this.config.firestoreEmulator.port,
+      );
+      connectStorageEmulator(
+        this.storage,
+        this.config.storageEmulator.host,
+        this.config.storageEmulator.port,
       );
       this.exposeEmulatorSignIn();
     }

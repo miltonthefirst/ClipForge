@@ -208,6 +208,30 @@ def test_the_reaper_leaves_a_healthy_job_alone(jobs: JobStore) -> None:
     assert stored.attempts == 0
 
 
+def test_the_reaper_leaves_the_callers_own_job_alone(jobs: JobStore) -> None:
+    """An expired lease does not always mean the owner is gone.
+
+    It can also mean the owner is this process and Firestore was briefly
+    unreachable — a stalled network is enough to miss every renewal in the
+    window. Reclaiming then makes the worker steal a job it is still running,
+    and the work is done twice: a re-render and a re-upload of clips that were
+    already finished.
+    """
+    jobs.create(make_job())
+    jobs.try_claim("job-1", now=T0)
+
+    late = T0 + timedelta(seconds=600)
+    assert jobs.reap(now=late, skip=["job-1"]) == []
+
+    stored = jobs.get("job-1")
+    assert stored is not None
+    assert stored.status is JobStatus.RUNNING, "still ours"
+    assert stored.attempts == 0, "and not charged an attempt"
+
+    # Without the guard, the very same call reclaims it.
+    assert [job.id for job in jobs.reap(now=late)] == ["job-1"]
+
+
 def test_a_renewed_lease_survives_the_reaper(jobs: JobStore) -> None:
     """The heartbeat's entire purpose, end to end."""
     jobs.create(make_job())

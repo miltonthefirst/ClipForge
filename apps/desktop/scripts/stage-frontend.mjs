@@ -72,6 +72,9 @@ function desktopConfig() {
   const apiKey = env['CLIPFORGE_WEB_API_KEY'];
   const authDomain = env['CLIPFORGE_WEB_AUTH_DOMAIN'];
   const appId = env['CLIPFORGE_WEB_APP_ID'];
+  // Optional: without a bucket the desktop app plays clips from the worker's
+  // file server, which is the machine it is running on anyway.
+  const storageBucket = env['CLIPFORGE_FIREBASE_STORAGE_BUCKET'] ?? '';
 
   const missing = Object.entries({
     CLIPFORGE_FIREBASE_PROJECT_ID: projectId,
@@ -101,6 +104,7 @@ function desktopConfig() {
     `          apiKey: '${apiKey}',`,
     `          authDomain: '${authDomain}',`,
     `          appId: '${appId}',`,
+    `          storageBucket: '${storageBucket}',`,
     '        },',
     ...shared,
     '      };',

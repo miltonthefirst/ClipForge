@@ -364,6 +364,72 @@ def publish(
 
 
 @app.command()
+def retention(
+    apply: bool = typer.Option(
+        default=False, help="Write the rule to the bucket. Without this, only report."
+    ),
+) -> None:
+    """Show or apply the bucket's clip-retention rule.
+
+    Clips are uploaded so a phone can review them and are meant to disappear
+    shortly afterwards. The deletion is a Cloud Storage lifecycle rule rather
+    than a scheduled job here, and that is deliberate: a task on the worker
+    would only expire clips while the worker was running, which is precisely
+    when an unattended bucket is not the thing to worry about. Google evaluates
+    lifecycle rules server-side, for free, whether this machine is on or not.
+
+    What the worker still owes the rule is agreement. `Clip.playbackExpiresAt`
+    is stamped from ``CLIPFORGE_CLIP_RETENTION_DAYS`` at upload so the app can
+    stop offering a video the bucket has collected — if the two numbers drift,
+    the app either offers a dead object or hides a live one. This command is
+    where they are compared, and `--apply` is how they are made to agree.
+    """
+    from google.cloud import storage as gcs  # type: ignore[attr-defined]
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
+    if not settings.firebase_storage_bucket:
+        typer.echo(
+            "No CLIPFORGE_FIREBASE_STORAGE_BUCKET is set, so there is no bucket to "
+            "keep in check. Clips stay on this machine.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if settings.google_application_credentials:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+
+    bucket = gcs.Client().bucket(settings.firebase_storage_bucket)
+    bucket.reload()
+
+    wanted = [
+        {
+            "action": {"type": "Delete"},
+            "condition": {"age": settings.clip_retention_days, "matchesPrefix": ["clips/"]},
+        }
+    ]
+    current = list(bucket.lifecycle_rules)
+
+    typer.echo(f"bucket     {settings.firebase_storage_bucket}")
+    typer.echo(f"configured {settings.clip_retention_days} day(s), for objects under clips/")
+    typer.echo(f"on bucket  {json.dumps(current) if current else 'no lifecycle rules'}")
+
+    if not apply:
+        agreed = len(current) == 1 and current[0].get("condition", {}).get(
+            "age"
+        ) == settings.clip_retention_days
+        typer.echo("")
+        typer.echo("in step" if agreed else "NOT in step — run with --apply")
+        raise typer.Exit(code=0 if agreed else 1)
+
+    bucket.lifecycle_rules = wanted
+    bucket.patch()
+    typer.echo("")
+    typer.echo(f"applied: clips expire {settings.clip_retention_days} day(s) after upload")
+
+
+@app.command()
 def quota() -> None:
     """Report today's YouTube quota and how many uploads it still allows.
 

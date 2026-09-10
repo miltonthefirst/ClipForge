@@ -16,9 +16,14 @@
     then every read hangs against 127.0.0.1:8080 on a phone that has no worker.
 
 .PARAMETER Only
-    Which targets to deploy: rules, indexes, hosting. Defaults to all three.
-    Storage rules are deliberately NOT deployable here — the Spark free tier has
-    no bucket at all, so `firebase deploy --only storage` fails by definition.
+    Which targets to deploy: rules, indexes, storage, hosting. Defaults to all
+    four. `storage` deploys firebase/storage.rules, which needs a bucket — it is
+    included by default now that the project is on Blaze, and fails clearly if
+    the bucket is missing.
+
+    Note that `storage` deploys the RULES only. Clip retention is a bucket
+    lifecycle rule, which the Firebase CLI does not manage; apply that with
+    tools/storage-lifecycle.ps1.
     See docs/adr/0009-spark-tier-local-artefacts.md.
 
 .PARAMETER DryRun
@@ -36,6 +41,7 @@
 
 .EXAMPLE
     pwsh -File tools/deploy.ps1 -Only rules,indexes -DryRun
+    pwsh -File tools/deploy.ps1 -Only storage
     pwsh -File tools/deploy.ps1
 #>
 [CmdletBinding()]
@@ -46,7 +52,7 @@ param(
     # "rules indexes", space-joined, when bound to [string]. Accepting a string
     # and splitting on either separator below binds the same under -File and
     # -Command, which is the only property that matters here.
-    [string] $Only = 'rules,indexes,hosting',
+    [string] $Only = 'rules,indexes,storage,hosting',
 
     [switch] $DryRun,
     [switch] $BuildOnly,
@@ -57,7 +63,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$known = @('rules', 'indexes', 'hosting')
+$known = @('rules', 'indexes', 'storage', 'hosting')
 
 # Into a NEW variable, never back into $Only. `param([string] $Only)` type-
 # constrains that variable for the whole script, so assigning an array to it
@@ -116,6 +122,10 @@ if ($deployHosting) {
     $apiKey = $config['CLIPFORGE_WEB_API_KEY']
     $authDomain = $config['CLIPFORGE_WEB_AUTH_DOMAIN']
     $appId = $config['CLIPFORGE_WEB_APP_ID']
+    # The bucket is genuinely optional: without it clips are reviewable on the
+    # worker's own machine and nowhere else, which is the pre-Blaze behaviour
+    # and still a working configuration.
+    $storageBucket = $config['CLIPFORGE_FIREBASE_STORAGE_BUCKET']
     $localOrigin = $config['CLIPFORGE_WEB_LOCAL_SERVER_ORIGIN']
     if ([string]::IsNullOrWhiteSpace($localOrigin)) { $localOrigin = 'http://127.0.0.1:8765' }
 
@@ -150,6 +160,7 @@ Register a Web app first if there is not one yet.
           apiKey: '$apiKey',
           authDomain: '$authDomain',
           appId: '$appId',
+          storageBucket: '$storageBucket',
         },
         localServerOrigin: '$localOrigin',
       });
@@ -161,6 +172,7 @@ Register a Web app first if there is not one yet.
 $targets = @()
 if ($targetsWanted -contains 'rules') { $targets += 'firestore:rules' }
 if ($targetsWanted -contains 'indexes') { $targets += 'firestore:indexes' }
+if ($targetsWanted -contains 'storage') { $targets += 'storage' }
 if ($deployHosting) { $targets += 'hosting' }
 $onlyArg = $targets -join ','
 
