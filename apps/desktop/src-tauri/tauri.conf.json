@@ -30,7 +30,7 @@
     "targets": [
       "nsis"
     ],
-    "publisher": "BytePic",
+    "publisher": "Bytepic",
     "shortDescription": "Review AI-selected clips on the machine that renders them",
     "icon": [
       "icons/32x32.png",

@@ -37,7 +37,7 @@ case *End of video* costs nothing and reads as less pushy.
 | Name | `ClipForge` |
 | Handle | `@ClipForge`, else `@ClipForgeAI`, `@ClipForgeHQ`, `@clipforge_dev` |
 | Country | Wherever you are — it decides which trending and monetisation rules apply |
-| Contact email | `hello@bytepic.dev` — a public About page is a scraped page, so prefer a role address over a personal one |
+| Contact email | `support@bytepic.dev` — a public About page is a scraped page, so prefer a role address over a personal one |
 
 Decide the handle before the first upload: changing it later breaks every link
 anyone has already shared.
@@ -91,7 +91,7 @@ Up to 14 in Customisation → Basic info; the first ones surface on the banner.
 | --- | --- |
 | Website | `https://getclipforge.web.app` |
 | Source code | `https://github.com/miltonthefirst/ClipForge` |
-| ByteP | `https://bytepic.dev` |
+| Bytepic | `https://bytepic.dev` |
 
 ---
 
