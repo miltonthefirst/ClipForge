@@ -3,7 +3,7 @@
        Navigation moved to the sidebar, so this stays the same three things on
        every page and stops competing with them for width on a phone. -->
   <header class="sticky top-0 z-30 border-b border-line bg-canvas/95 backdrop-blur">
-    <div class="mx-auto flex max-w-6xl items-center gap-2 px-4 py-3">
+    <div class="flex items-center gap-2 px-4 py-3 lg:px-6">
       @if (approved()) {
         <button
           type="button"
@@ -107,13 +107,13 @@
     </div>
   </header>
 
-  <div class="mx-auto flex w-full max-w-6xl flex-1">
+  <div class="flex w-full flex-1">
     <!-- ── Sidebar ──────────────────────────────────────────────────────────
          A permanent column from `lg` up, a drawer below it. Only shown once
          approved: an account that can read nothing has nothing to navigate. -->
     @if (approved()) {
       <aside
-        class="fixed inset-y-0 left-0 z-20 w-60 shrink-0 border-r border-line bg-panel pt-16 transition-transform lg:sticky lg:top-14 lg:z-0 lg:h-[calc(100vh-3.5rem)] lg:translate-x-0 lg:bg-transparent lg:pt-6"
+        class="fixed inset-y-0 left-0 z-20 w-64 shrink-0 border-r border-line bg-panel pt-16 transition-transform lg:sticky lg:top-14 lg:z-0 lg:h-[calc(100vh-3.5rem)] lg:w-56 lg:translate-x-0 lg:bg-transparent lg:pt-6"
         [class.translate-x-0]="navOpen()"
         [class.-translate-x-full]="!navOpen()"
       >
@@ -146,51 +146,62 @@
       }
     }
 
-    <main class="w-full min-w-0 flex-1 px-4 py-6">
-      @if (checking()) {
-        <!-- Distinct from signed-out: showing the sign-in screen here would
+    <main class="w-full min-w-0 flex-1 px-4 py-6 lg:px-8">
+      <!-- Left-aligned, not centred. Centring inside the remaining space put a
+           400px gap between the nav and the content on a wide window, which
+           reads as two disconnected panels rather than one app. -->
+      <div class="w-full max-w-5xl">
+        @if (checking()) {
+          <!-- Distinct from signed-out: showing the sign-in screen here would
              flash it at every signed-in user on every load. -->
-        <p class="py-16 text-center text-ink-subtle">Checking your session…</p>
-      } @else if (!signedIn()) {
-        @if (signInError(); as message) {
-          <p
-            class="mx-auto mb-4 max-w-sm rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
-          >
-            {{ message }}
-          </p>
-        }
-        <app-sign-in-page />
-      } @else if (awaitingApproval()) {
-        <!-- Signed in, not let in. Explained rather than left as an empty page
-             and a console full of permission errors. -->
-        <section class="mx-auto max-w-md py-16 text-center">
-          <img src="icons/mark.png" alt="" width="56" height="56" class="mx-auto mb-6 h-14 w-14" />
-          @if (profile()?.status === 'PENDING') {
-            <h1 class="text-2xl font-semibold">Waiting for approval</h1>
-            <p class="mt-3 text-ink-muted">
-              Your account exists but an administrator has not approved it yet. This page updates by
-              itself the moment they do.
-            </p>
-          } @else {
-            <h1 class="text-2xl font-semibold">Access not available</h1>
-            <p class="mt-3 text-ink-muted">
-              This account is {{ profile()?.status }}. An administrator can change that.
+          <p class="py-16 text-center text-ink-subtle">Checking your session…</p>
+        } @else if (!signedIn()) {
+          @if (signInError(); as message) {
+            <p
+              class="mx-auto mb-4 max-w-sm rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+            >
+              {{ message }}
             </p>
           }
-          <p class="mt-6 text-sm text-ink-subtle">{{ profile()?.email }}</p>
-          <button
-            type="button"
-            class="mt-6 rounded-lg border border-line-strong px-4 py-2.5 text-sm font-medium text-ink hover:bg-line"
-            (click)="signOut()"
-          >
-            Sign out
-          </button>
-        </section>
-      } @else if (profile() === undefined) {
-        <p class="py-16 text-center text-ink-subtle">Loading your account…</p>
-      } @else {
-        <router-outlet />
-      }
+          <app-sign-in-page />
+        } @else if (awaitingApproval()) {
+          <!-- Signed in, not let in. Explained rather than left as an empty page
+             and a console full of permission errors. -->
+          <section class="mx-auto max-w-md py-16 text-center">
+            <img
+              src="icons/mark.png"
+              alt=""
+              width="56"
+              height="56"
+              class="mx-auto mb-6 h-14 w-14"
+            />
+            @if (profile()?.status === 'PENDING') {
+              <h1 class="text-2xl font-semibold">Waiting for approval</h1>
+              <p class="mt-3 text-ink-muted">
+                Your account exists but an administrator has not approved it yet. This page updates
+                by itself the moment they do.
+              </p>
+            } @else {
+              <h1 class="text-2xl font-semibold">Access not available</h1>
+              <p class="mt-3 text-ink-muted">
+                This account is {{ profile()?.status }}. An administrator can change that.
+              </p>
+            }
+            <p class="mt-6 text-sm text-ink-subtle">{{ profile()?.email }}</p>
+            <button
+              type="button"
+              class="mt-6 rounded-lg border border-line-strong px-4 py-2.5 text-sm font-medium text-ink hover:bg-line"
+              (click)="signOut()"
+            >
+              Sign out
+            </button>
+          </section>
+        } @else if (profile() === undefined) {
+          <p class="py-16 text-center text-ink-subtle">Loading your account…</p>
+        } @else {
+          <router-outlet />
+        }
+      </div>
     </main>
   </div>
 </div>
