@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge — local-first AI video clipping</title>
+<meta name="description" content="ClipForge turns long-form video into short vertical clips on your own GPU. Transcription, selection and encoding run locally. Open source, MIT licensed.">
+<link rel="canonical" href="https://getclipforge.web.app/">
+<meta name="theme-color" content="#06060f">
+<meta name="color-scheme" content="dark">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ClipForge">
+<meta property="og:url" content="https://getclipforge.web.app/">
+<meta property="og:title" content="ClipForge — local-first AI video clipping">
+<meta property="og:description" content="Long-form video in. Vertical clips out. Transcribed, analysed, cut and encoded on your own GPU.">
+<meta property="og:image" content="https://getclipforge.web.app/img/og-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="ClipForge — long-form video in, vertical clips out.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="ClipForge — local-first AI video clipping">
+<meta name="twitter:description" content="Long-form video in. Vertical clips out. Transcribed, analysed, cut and encoded on your own GPU.">
+<meta name="twitter:image" content="https://getclipforge.web.app/img/og-card.png">
+
+<link rel="icon" href="/img/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/img/icon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/img/icon-192.png">
+<link rel="apple-touch-icon" href="/img/apple-touch-icon-180.png">
+<link rel="stylesheet" href="/assets/site.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://getclipforge.web.app/#website",
+      "url": "https://getclipforge.web.app/",
+      "name": "ClipForge",
+      "description": "Local-first AI content agent that cuts vertical clips from long-form video on your own GPU.",
+      "publisher": { "@id": "https://getclipforge.web.app/#publisher" },
+      "inLanguage": "en"
+    },
+    {
+      "@type": "Organization",
+      "@id": "https://getclipforge.web.app/#publisher",
+      "name": "ByteP",
+      "url": "https://bytepic.dev",
+      "logo": "https://getclipforge.web.app/img/icon-512.png"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "name": "ClipForge",
+      "url": "https://getclipforge.web.app/",
+      "applicationCategory": "MultimediaApplication",
+      "applicationSubCategory": "Video editing",
+      "operatingSystem": "Windows 10 or later with an NVIDIA GPU",
+      "description": "ClipForge ingests long-form video, transcribes and analyses it locally, cuts high-potential vertical clips, and publishes them to YouTube after review.",
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "softwareRequirements": "Python 3.12, ffmpeg, Ollama, an NVIDIA GPU with 6 GB VRAM, a Firebase project",
+      "codeRepository": "https://github.com/miltonthefirst/ClipForge",
+      "author": { "@id": "https://getclipforge.web.app/#publisher" }
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://getclipforge.web.app/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Does my video get uploaded to a server?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Source video never leaves your machine. Only a finished clip is uploaded, only so you can review it on a phone, and it is deleted as soon as you review it or after five days, whichever comes first."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What hardware does ClipForge need?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "An NVIDIA GPU. The reference machine is an RTX 3050 with 6 GB of VRAM, which is the constraint the architecture is built around: transcription and the analysis model cannot both be resident, so GPU residency is scheduled explicitly and jobs resume mid-run."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What does it cost to run?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "ClipForge is MIT licensed and free. There is no metered API in the pipeline: transcription, analysis and encoding all run on hardware you already own. The control plane is a Firebase project, which for one person's usage sits inside the free tier apart from the clip bucket used for phone review."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can it publish to YouTube on its own?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It publishes what you approve. The YouTube OAuth client secret and refresh token stay on the worker machine and are never written to the cloud, and a publish that cannot afford its API quota is refused before the upload starts rather than after it."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is ClipForge a hosted service?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. It is software you install and run. There is nothing to sign up for here, no seat to buy, and no queue you are waiting in behind other people's video."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <img src="/img/icon-192.png" alt="" width="30" height="30">
+      ClipForge
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a class="nav-hide" href="#how">How it works</a>
+      <a class="nav-hide" href="#local">What stays local</a>
+      <a class="nav-hide" href="#faq">FAQ</a>
+      <a class="btn" href="https://github.com/miltonthefirst/ClipForge" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <div class="hero">
+    <div class="wrap">
+      <span class="eyebrow">Local-first AI content agent</span>
+      <h1>Long-form video in.<br>Vertical clips out.</h1>
+      <p class="lede">
+        ClipForge transcribes your video, works out which sixty seconds are worth
+        keeping, cuts them vertically and hands them to you for review — all on
+        the GPU already sitting in your desk. Nothing is billed per minute,
+        because nothing is sent anywhere to be billed.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn--primary btn--lg" href="https://github.com/miltonthefirst/ClipForge" rel="noopener">Get it on GitHub</a>
+        <a class="btn btn--lg" href="#how">See how it works</a>
+      </div>
+      <ul class="trust">
+        <li><span class="dot" aria-hidden="true"></span>MIT licensed</li>
+        <li><span class="dot" aria-hidden="true"></span>Runs on 6 GB of VRAM</li>
+        <li><span class="dot" aria-hidden="true"></span>No per-minute API</li>
+        <li><span class="dot" aria-hidden="true"></span>Review from your phone</li>
+      </ul>
+    </div>
+  </div>
+
+  <section id="why">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Cloud video pipelines charge by the minute. Your GPU does not.</h2>
+        <p>
+          Transcription, semantic analysis and encoding are the three expensive
+          operations in a clipping pipeline, and they are also the three that a
+          consumer graphics card is genuinely good at. ClipForge runs all three
+          locally and uses the cloud only for the things it is actually better
+          at: knowing who you are, holding a little structured state, and
+          reaching your phone.
+        </p>
+      </div>
+      <div class="grid">
+        <article class="card">
+          <h3>No metered anything</h3>
+          <p>
+            No per-minute transcription, no per-token analysis. Process a
+            three-hour podcast twice because you did not like the first pass, and
+            the bill is the same as processing nothing.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Your footage stays put</h3>
+          <p>
+            A 60-minute 1080p source is 1–3 GB. Uploading it would invert the
+            whole point, so it never happens: the source is read from disk and
+            stays there.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Built for one small card</h3>
+          <p>
+            Whisper and the analysis model cannot both sit on 6 GB at once, so
+            GPU residency is scheduled explicitly and every job is a checkpointed
+            pipeline that resumes mid-run instead of starting over.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>How it works</h2>
+        <p>
+          Five stages, each one checkpointed. Close the lid halfway through and
+          the job picks up where it stopped rather than paying for the same work
+          twice.
+        </p>
+      </div>
+
+      <div class="diagram">
+        <svg viewBox="0 0 900 250" role="img" aria-labelledby="pipe-t pipe-d">
+          <title id="pipe-t">The ClipForge pipeline</title>
+          <desc id="pipe-d">
+            Ingest, transcribe, analyse and cut all run on your own machine.
+            Only the last stage — review and publish — touches the network.
+          </desc>
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#2e9bf0"/>
+              <stop offset="0.4" stop-color="#7a3cf0"/>
+              <stop offset="0.72" stop-color="#e63ac0"/>
+              <stop offset="1" stop-color="#ff9a2e"/>
+            </linearGradient>
+            <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L10 5 L0 10 z" fill="#5a5f85"/>
+            </marker>
+          </defs>
+
+          <rect x="8" y="58" width="700" height="118" rx="14" fill="none"
+                stroke="url(#g)" stroke-width="1.5" stroke-dasharray="6 6" opacity="0.75"/>
+          <text x="24" y="46" fill="#a2a8c8" font-size="12.5" font-family="system-ui, sans-serif"
+                letter-spacing="0.06em">YOUR MACHINE — NOTHING HERE TOUCHES THE NETWORK</text>
+
+          <g font-family="system-ui, sans-serif">
+            <g>
+              <rect x="26" y="86" width="152" height="62" rx="11" fill="#101024" stroke="#ffffff22"/>
+              <text x="102" y="112" text-anchor="middle" fill="#edeef8" font-size="14" font-weight="600">Ingest</text>
+              <text x="102" y="131" text-anchor="middle" fill="#8f95b8" font-size="11.5">yt-dlp or a local file</text>
+            </g>
+            <g>
+              <rect x="200" y="86" width="152" height="62" rx="11" fill="#101024" stroke="#ffffff22"/>
+              <text x="276" y="112" text-anchor="middle" fill="#edeef8" font-size="14" font-weight="600">Transcribe</text>
+              <text x="276" y="131" text-anchor="middle" fill="#8f95b8" font-size="11.5">faster-whisper, on GPU</text>
+            </g>
+            <g>
+              <rect x="374" y="86" width="152" height="62" rx="11" fill="#101024" stroke="#ffffff22"/>
+              <text x="450" y="112" text-anchor="middle" fill="#edeef8" font-size="14" font-weight="600">Analyse</text>
+              <text x="450" y="131" text-anchor="middle" fill="#8f95b8" font-size="11.5">a local model, via Ollama</text>
+            </g>
+            <g>
+              <rect x="548" y="86" width="152" height="62" rx="11" fill="#101024" stroke="#ffffff22"/>
+              <text x="624" y="112" text-anchor="middle" fill="#edeef8" font-size="14" font-weight="600">Cut &amp; encode</text>
+              <text x="624" y="131" text-anchor="middle" fill="#8f95b8" font-size="11.5">ffmpeg with NVENC</text>
+            </g>
+            <g>
+              <rect x="732" y="86" width="152" height="62" rx="11" fill="#0d0d22" stroke="url(#g)" stroke-width="1.5"/>
+              <text x="808" y="112" text-anchor="middle" fill="#edeef8" font-size="14" font-weight="600">Review &amp; publish</text>
+              <text x="808" y="131" text-anchor="middle" fill="#8f95b8" font-size="11.5">phone, then YouTube</text>
+            </g>
+
+            <g stroke="#5a5f85" stroke-width="1.6" marker-end="url(#a)">
+              <line x1="180" y1="117" x2="196" y2="117"/>
+              <line x1="354" y1="117" x2="370" y2="117"/>
+              <line x1="528" y1="117" x2="544" y2="117"/>
+              <line x1="702" y1="117" x2="728" y2="117"/>
+            </g>
+
+            <text x="808" y="196" text-anchor="middle" fill="#767c9c" font-size="11.5">sign-in, job state,</text>
+            <text x="808" y="212" text-anchor="middle" fill="#767c9c" font-size="11.5">and one clip for five days</text>
+            <text x="360" y="204" text-anchor="middle" fill="#767c9c" font-size="11.5">
+              every stage checkpointed — a job resumes, it does not restart
+            </text>
+          </g>
+        </svg>
+      </div>
+
+      <ol class="steps">
+        <li>
+          <h3>Ingest</h3>
+          <p>Point it at a file or a URL. yt-dlp handles the fetch; the source lands on your disk and stays there.</p>
+        </li>
+        <li>
+          <h3>Transcribe</h3>
+          <p>faster-whisper produces a word-level transcript on the GPU, without PyTorch and without an API key.</p>
+        </li>
+        <li>
+          <h3>Analyse</h3>
+          <p>A local language model reads the transcript and scores candidate segments on whether they stand alone.</p>
+        </li>
+        <li>
+          <h3>Cut and encode</h3>
+          <p>ffmpeg cuts the winners, reframes them vertically and encodes with NVENC — hardware you already paid for.</p>
+        </li>
+        <li>
+          <h3>Review and publish</h3>
+          <p>Approve or reject from your phone. Approved clips upload to YouTube with the title and privacy you chose.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="local">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>What stays on your machine</h2>
+        <p>
+          "Local-first" is a claim that is easy to make and easy to check. Here
+          is the actual split, and it is enforced by the security rules in the
+          repository rather than by a promise on a marketing page.
+        </p>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h3>Never leaves your machine</h3>
+          <ul>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8.6 6 12.5 14 3.8" fill="none" stroke="#4fffa0" stroke-width="2.2" stroke-linecap="round"/></svg><span><b>Source video.</b> Read from disk, never uploaded.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8.6 6 12.5 14 3.8" fill="none" stroke="#4fffa0" stroke-width="2.2" stroke-linecap="round"/></svg><span><b>Transcripts and model weights.</b> Produced and used locally.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8.6 6 12.5 14 3.8" fill="none" stroke="#4fffa0" stroke-width="2.2" stroke-linecap="round"/></svg><span><b>Your YouTube credentials.</b> The client secret and refresh token are written encrypted to the worker and never to the cloud.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8.6 6 12.5 14 3.8" fill="none" stroke="#4fffa0" stroke-width="2.2" stroke-linecap="round"/></svg><span><b>The finished clips.</b> The copy that survives is the one on your disk.</span></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Goes to the cloud, and why</h3>
+          <ul>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#7dd3ff" stroke-width="2"/></svg><span><b>Who you are.</b> Firebase Authentication, so the phone and the desktop agree.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#7dd3ff" stroke-width="2"/></svg><span><b>Job and clip metadata.</b> Titles, timings, scores and status — kilobytes, not gigabytes.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#7dd3ff" stroke-width="2"/></svg><span><b>One clip at a time, briefly.</b> So it can play on a phone. Deleted when you review it, and by a bucket rule after five days regardless.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="#7dd3ff" stroke-width="2"/></svg><span><b>A notification.</b> When a job finishes and you are not at the desk.</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="stack">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Under the hood</h2>
+        <p>Nothing exotic, and every part of it replaceable.</p>
+      </div>
+      <div class="grid">
+        <article class="card card--quiet">
+          <h3>Worker</h3>
+          <p>Python 3.12 · faster-whisper on CTranslate2 · Ollama · yt-dlp · ffmpeg with NVENC · a scheduler with one GPU lane and several CPU lanes.</p>
+        </article>
+        <article class="card card--quiet">
+          <h3>App</h3>
+          <p>Angular 22 · Tailwind · an installable PWA with an offline shell, plus a Tauri desktop build for the machine that holds the credentials.</p>
+        </article>
+        <article class="card card--quiet">
+          <h3>Control plane</h3>
+          <p>Firebase Auth, Firestore, Cloud Messaging and Hosting. Security rules enforce approval; there is no server of ours in the path.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Questions</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Does my video get uploaded to a server?</summary>
+          <p>
+            No. Source video never leaves your machine. Only a finished clip is
+            uploaded, only so it can play on a phone during review, and it is
+            deleted as soon as you review it — or after five days by a bucket
+            lifecycle rule, whichever comes first.
+          </p>
+        </details>
+        <details>
+          <summary>What hardware does ClipForge need?</summary>
+          <p>
+            An NVIDIA GPU. The reference machine is an RTX 3050 with 6 GB of
+            VRAM, and that constraint shapes the design: transcription and the
+            analysis model cannot both be resident, so GPU residency is
+            scheduled explicitly and jobs are checkpointed so they can resume.
+          </p>
+        </details>
+        <details>
+          <summary>What does it cost to run?</summary>
+          <p>
+            ClipForge is MIT licensed and free. There is no metered API in the
+            pipeline. You supply a Firebase project for sign-in and job state,
+            which for one person sits inside the free tier apart from the clip
+            bucket that makes phone review possible.
+          </p>
+        </details>
+        <details>
+          <summary>Can it publish to YouTube on its own?</summary>
+          <p>
+            It publishes what you approve. The OAuth client secret and refresh
+            token stay on the worker machine, encrypted, and are never written
+            to the cloud — so a compromised database cannot upload to or delete
+            from your channel. A publish that cannot afford its API quota is
+            refused before the upload starts rather than after it.
+          </p>
+        </details>
+        <details>
+          <summary>Is this a hosted service?</summary>
+          <p>
+            No. It is software you install and run. There is nothing to sign up
+            for here, no seat to buy, and no queue behind other people's video.
+          </p>
+        </details>
+        <details>
+          <summary>Is it finished?</summary>
+          <p>
+            It is in active development and built in the open. The pipeline,
+            review and publishing all work; the plan, the architecture decisions
+            and every rough edge are in the repository rather than behind a
+            roadmap page.
+          </p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="get">
+    <div class="wrap">
+      <div class="cta">
+        <h2>Clone it and point it at a video</h2>
+        <p>
+          Python 3.12, ffmpeg, Ollama and a Firebase project. The README walks
+          through the rest in about fifteen minutes.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn--primary btn--lg" href="https://github.com/miltonthefirst/ClipForge" rel="noopener">github.com/miltonthefirst/ClipForge</a>
+          <a class="btn btn--lg" href="https://bytepic-clipforge.web.app" rel="noopener">Open the app</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span class="footer-brand">
+      <img src="/img/icon-192.png" alt="" width="26" height="26">
+      ClipForge — a <a href="https://bytepic.dev" rel="noopener">ByteP</a> project
+    </span>
+    <nav aria-label="Footer">
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="https://github.com/miltonthefirst/ClipForge" rel="noopener">GitHub</a>
+      <a href="mailto:hello@bytepic.dev">Contact</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>

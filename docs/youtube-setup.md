@@ -66,6 +66,32 @@ rather than assuming something is wrong.
 | Scopes | Leave empty here | ClipForge requests them at run time |
 | Test users | **Add your own Google account** | Without this, sign-in fails with `access_denied` |
 
+### Branding
+
+The **Branding** page asks for links, and it validates them against the
+authorised domains rather than merely storing them. They point at
+[`apps/site`](../apps/site/README.md), which exists for this:
+
+| Field | Value |
+| --- | --- |
+| App logo | `apps/site/img/consent-logo-120.png` — square, 120 px, 7 KB |
+| Application home page | `https://getclipforge.web.app/` |
+| Application privacy policy link | `https://getclipforge.web.app/privacy` |
+| Application terms of service link | `https://getclipforge.web.app/terms` |
+| Authorised domains | `bytepic-clipforge.firebaseapp.com` **and** `getclipforge.web.app` |
+| Developer contact | Your own address — Google notifies you here, and it is not shown publicly |
+
+> **The logo is optional, and not free.** Uploading one puts the app in the
+> branding verification queue; leaving it blank does not, and while the consent
+> screen is in Testing the logo is not shown to anyone anyway. Add it when you
+> submit for verification, not before.
+
+The privacy policy is not boilerplate: the YouTube API Services Developer
+Policies require it to name YouTube API Services, link to the YouTube Terms of
+Service and the Google Privacy Policy, and tell users they can revoke access at
+`myaccount.google.com/permissions`. It does all four, and a verification review
+checks for them.
+
 Leave it in **Testing**. Publishing the consent screen means Google verification,
 which the upload scope triggers because it is *sensitive*.
 

@@ -89,9 +89,9 @@ Up to 14 in Customisation → Basic info; the first ones surface on the banner.
 
 | Label | URL |
 | --- | --- |
+| Website | `https://getclipforge.web.app` |
 | Source code | `https://github.com/miltonthefirst/ClipForge` |
 | ByteP | `https://bytepic.dev` |
-| How it works | `https://github.com/miltonthefirst/ClipForge/blob/master/README.md` |
 
 ---
 
@@ -183,12 +183,23 @@ Built this because cloud video pipelines bill per minute and per token, and I al
 
 ## 9. How the images were made
 
-Both generators read `logo.png` at the project root and write into this folder:
+Every image here is generated from `logo.png` by
+[`tools/brand-assets.py`](../tools/brand-assets.py), which also produces the
+favicons, OAuth consent logo and Open Graph card for
+[`apps/site`](../apps/site/README.md). Run it from the repository root:
 
-- **Watermarks** — film frame, sprocket rail and play triangle drawn at 8x and
-  downsampled, so the 150 px file still has clean edges at the ~64 px the player
-  actually renders.
-- **Banner** — the logo composited with `ImageChops.lighter` over the brand
-  glows, so its near-black field can never show as a dark rectangle, with every
-  text line measured and shrunk to fit inside the 1546 x 423 safe box rather
+```bash
+python tools/brand-assets.py
+```
+
+Do not edit the outputs by hand — the next run overwrites them. Two decisions in
+there are worth knowing before changing anything:
+
+- **Watermarks** are the film frame, sprocket rail and play triangle drawn at 8x
+  and downsampled, so the 150 px file still has clean edges at the ~64 px the
+  player actually renders. The full mark's orbit and waveform turn to mush that
+  small, which is why small sizes get a simplified mark rather than a scaled one.
+- **The banner** composites the logo with `ImageChops.lighter` over the brand
+  glows, so its near-black field can never show as a dark rectangle, and every
+  text line is measured and shrunk to fit inside the 1546 x 423 safe box rather
   than trusted to fit.

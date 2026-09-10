@@ -16,10 +16,17 @@
     then every read hangs against 127.0.0.1:8080 on a phone that has no worker.
 
 .PARAMETER Only
-    Which targets to deploy: rules, indexes, storage, hosting. Defaults to all
-    four. `storage` deploys firebase/storage.rules, which needs a bucket — it is
-    included by default now that the project is on Blaze, and fails clearly if
+    Which targets to deploy: rules, indexes, storage, hosting, site. Defaults to
+    all five. `storage` deploys firebase/storage.rules, which needs a bucket — it
+    is included by default now that the project is on Blaze, and fails clearly if
     the bucket is missing.
+
+    `hosting` is the PWA, at bytepic-clipforge.web.app. `site` is the public
+    marketing and legal site in apps/site, at getclipforge.web.app — the one
+    whose /privacy and /terms URLs the Google OAuth consent screen points at.
+    They are separate Firebase Hosting sites and separate targets on purpose:
+    `--only hosting` against a two-site config would deploy both, and the site
+    is static while the PWA needs a build and a configuration step first.
 
     Note that `storage` deploys the RULES only. Clip retention is a bucket
     lifecycle rule, which the Firebase CLI does not manage; apply that with
@@ -52,7 +59,7 @@ param(
     # "rules indexes", space-joined, when bound to [string]. Accepting a string
     # and splitting on either separator below binds the same under -File and
     # -Command, which is the only property that matters here.
-    [string] $Only = 'rules,indexes,storage,hosting',
+    [string] $Only = 'rules,indexes,storage,hosting,site',
 
     [switch] $DryRun,
     [switch] $BuildOnly,
@@ -63,7 +70,12 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$known = @('rules', 'indexes', 'storage', 'hosting')
+$known = @('rules', 'indexes', 'storage', 'hosting', 'site')
+
+# The marketing site's Firebase Hosting site id. The PWA's is the project id,
+# which is where firebase.json's first hosting entry points; this one is a
+# second site in the same project and has no other source of truth.
+$marketingSiteId = 'getclipforge'
 
 # Into a NEW variable, never back into $Only. `param([string] $Only)` type-
 # constrains that variable for the whole script, so assigning an array to it
@@ -173,7 +185,11 @@ $targets = @()
 if ($targetsWanted -contains 'rules') { $targets += 'firestore:rules' }
 if ($targetsWanted -contains 'indexes') { $targets += 'firestore:indexes' }
 if ($targetsWanted -contains 'storage') { $targets += 'storage' }
-if ($deployHosting) { $targets += 'hosting' }
+# Named sites rather than a bare `hosting`, which since firebase.json grew a
+# second site would deploy both — including a PWA build that may not have been
+# built or configured in this run.
+if ($deployHosting) { $targets += "hosting:$projectId" }
+if ($targetsWanted -contains 'site') { $targets += "hosting:$marketingSiteId" }
 $onlyArg = $targets -join ','
 
 Write-Host ''
@@ -282,5 +298,7 @@ npx firebase deploy --project $projectId --only $onlyArg
 if ($LASTEXITCODE -ne 0) { Fail "Deploy failed with exit code $LASTEXITCODE." }
 
 Write-Host ''
-Write-Host "  Done. https://$projectId.web.app" -ForegroundColor Green
+if ($deployHosting) { Write-Host "  Done. https://$projectId.web.app" -ForegroundColor Green }
+if ($targetsWanted -contains 'site') { Write-Host "  Done. https://$marketingSiteId.web.app" -ForegroundColor Green }
+if (-not $deployHosting -and $targetsWanted -notcontains 'site') { Write-Host '  Done.' -ForegroundColor Green }
 Write-Host ''
