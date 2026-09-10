@@ -71,6 +71,11 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
 
 MAX_BODY_BYTES = 64 * 1024
 
+# How much of an unread body is read and thrown away so that the reply reaches
+# the caller rather than racing a connection reset. See `_drain_request`.
+DRAIN_LIMIT_BYTES = 1024 * 1024
+DRAIN_CHUNK_BYTES = 32 * 1024
+
 
 def read_or_create_token(path: Path) -> str:
     """The shared secret between the worker and the desktop shell.
@@ -103,6 +108,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     server_version = "ClipForgeControl/1"
 
+    # Whether this request's body has been read. A class-level default rather
+    # than an __init__: BaseHTTPRequestHandler does the whole request inside its
+    # constructor, so an override would have to set this before calling super()
+    # and would read as though the ordering were incidental. One handler is
+    # constructed per request, so the default is per request too.
+    _drained = False
+
     def log_message(self, fmt: str, *args: object) -> None:
         log.debug("localapi.request", request=fmt % args)
 
@@ -129,6 +141,14 @@ class _Handler(BaseHTTPRequestHandler):
     # ── Plumbing ─────────────────────────────────────────────────────────────
 
     def _reply(self, status: int, payload: dict[str, Any]) -> None:
+        # Read whatever is still in flight before answering. Every refusal here
+        # replies *before* touching the body — a bad token and a foreign origin
+        # are decided from headers alone — so replying and closing leaves the
+        # client's remaining bytes unread, and the OS answers the rest of that
+        # write with a TCP reset. The caller then sees a connection error
+        # instead of the reason it was refused, which is the one thing this API
+        # exists to be able to say.
+        self._drain_request()
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -186,8 +206,10 @@ class _Handler(BaseHTTPRequestHandler):
         if length <= 0:
             return {}
         if length > MAX_BODY_BYTES:
-            raise ValueError("request body too large")
+            raise ValueError(f"request body too large: {length} bytes, limit {MAX_BODY_BYTES}")
         raw = self.rfile.read(length)
+        # Consumed exactly what was announced, so the reply has nothing to drain.
+        self._drained = True
         try:
             parsed = json.loads(raw)
         except ValueError as exc:
@@ -195,6 +217,27 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(parsed, dict):
             raise ValueError("body must be a JSON object")
         return parsed
+
+    def _drain_request(self) -> None:
+        """Read and discard an unread request body, so the reply can be read.
+
+        Bounded, because draining is a courtesy and an unbounded courtesy is a
+        lever: a client that announces a gigabyte does not get a gigabyte read
+        on its behalf. Past the limit the reset is the correct answer, and
+        nothing that deliberately sent that is owed an explanation. Read in
+        fixed chunks rather than in one call — the whole point of the size cap
+        is to not allocate what a stranger announced.
+        """
+        if self._drained:
+            return
+        self._drained = True
+        announced = int(self.headers.get("Content-Length") or 0)
+        remaining = min(announced, DRAIN_LIMIT_BYTES)
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, DRAIN_CHUNK_BYTES))
+            if not chunk:
+                return
+            remaining -= len(chunk)
 
 
 class _Server(socketserver.ThreadingTCPServer):

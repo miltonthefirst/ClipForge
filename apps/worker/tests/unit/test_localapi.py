@@ -157,6 +157,35 @@ def test_a_body_that_is_not_json_is_rejected(api: tuple[str, str, list[dict[str,
     assert seen == []
 
 
+def test_a_refusal_reaches_the_caller_even_with_a_body_in_flight(
+    api: tuple[str, str, list[dict[str, Any]]],
+) -> None:
+    """The refusal has to arrive, not merely be sent.
+
+    Every guard here decides from headers alone and answers before touching the
+    body. Reply and close with the client still writing, and the OS answers the
+    rest of that write with a reset — the caller sees a connection error rather
+    than "origin not allowed", which is the one thing it needed to be told.
+
+    This was a real intermittent failure before the body was drained, and it
+    failed by timing: a body small enough to fit the socket buffer arrives in
+    full before the reply is sent and the bug never shows. Hence the size — big
+    enough that the client is definitely still writing when the answer goes
+    out. It is over MAX_BODY_BYTES, which does not matter: the token is checked
+    before the length is, so this is the refusal path and not the too-large one.
+    """
+    base, _token, seen = api
+    response = httpx.post(
+        f"{base}/set",
+        headers={"Authorization": "Bearer not-the-token", "Origin": "http://tauri.localhost"},
+        content=json.dumps({"x": "y" * 400_000}).encode(),
+    )
+
+    assert response.status_code == 401
+    assert "bearer token" in response.json()["error"]
+    assert seen == []
+
+
 def test_an_oversized_body_is_rejected_rather_than_read(
     api: tuple[str, str, list[dict[str, Any]]],
 ) -> None:
