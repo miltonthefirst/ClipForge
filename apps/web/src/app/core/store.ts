@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import type {
   Candidate,
+  Channel,
   Clip,
   ClipPreview,
   Job,
@@ -239,6 +240,25 @@ export class ClipForgeStore {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
     return snapshot.docs.map((d) => d.data() as Publication);
+  }
+
+  /**
+   * Follow one publishing channel.
+   *
+   * Read-only to every client: rules make `channels` worker-written, because the
+   * worker is the only thing that can actually reach a channel and therefore the
+   * only thing that can honestly report on one.
+   */
+  watchChannel(
+    channelId: string,
+    onData: (channel: Channel | null) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      doc(this.firebase.db, 'channels', channelId),
+      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Channel) : null),
+      (error) => onError?.(error),
+    );
   }
 
   /**

@@ -64,11 +64,16 @@
     -->
     <script>
       /* CLIPFORGE-CONFIG-START */
-      window.__clipforge = {
+      // Merged, not assigned. Anything set before this script runs — a test
+      // pinning the playback origin, an injected override — must survive, and a
+      // bare assignment silently discards it. The symptom when it did was a
+      // review test that passed until something happened to be listening on the
+      // worker's port.
+      window.__clipforge = Object.assign({}, window.__clipforge, {
         // Local development against the Emulator Suite. src/environments.ts
         // already defaults to exactly this, so an empty object is the whole
         // configuration — a deploy is what fills this in.
-      };
+      });
       /* CLIPFORGE-CONFIG-END */
     </script>
   </head>

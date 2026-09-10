@@ -22,11 +22,14 @@
     ],
     "security": {
       "csp": null
-    }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "BytePic",
     "shortDescription": "Review AI-selected clips on the machine that renders them",
     "icon": [

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import typer
 
@@ -41,6 +42,7 @@ def run(
     from clipforge.localserver import LocalFileServer
     from clipforge.media.workspace import Workspace
     from clipforge.publish.channels import ChannelRoutes
+    from clipforge.scheduler.control import WorkerRoutes
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
     from clipforge.store.blobs import build_blob_store
@@ -100,11 +102,15 @@ def run(
             file_server = None
 
     # The desktop app's way of handing over a YouTube client secret without it
-    # ever reaching Firestore. Loopback only, bearer-token authenticated.
+    # ever reaching Firestore, and of stopping this worker cleanly. Loopback
+    # only, bearer-token authenticated.
     # See docs/adr/0011-local-control-api.md.
     control: LocalControlApi | None = None
     if settings.local_api_enabled:
-        routes = ChannelRoutes(settings, ChannelStore(client, settings)).table()
+        routes = {
+            **ChannelRoutes(settings, ChannelStore(client, settings)).table(),
+            **WorkerRoutes(worker, pid=os.getpid()).table(),
+        }
         control = LocalControlApi(
             routes,
             token=read_or_create_token(settings.local_api_token_file),

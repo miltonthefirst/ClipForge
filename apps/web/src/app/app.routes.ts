@@ -30,6 +30,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),
   },
   {
+    path: 'settings/youtube',
+    title: 'YouTube · ClipForge',
+    loadComponent: () => import('./features/settings/youtube-page').then((m) => m.YouTubePage),
+  },
+  {
     // Admin-only in the security rules as well as here. The route guard is a
     // courtesy — the listener is what actually refuses a member.
     path: 'admin/users',

@@ -128,7 +128,11 @@ class Settings(BaseSettings):
     # See docs/adr/0011-local-control-api.md.
     local_api_enabled: bool = True
     local_api_port: int = Field(default=8767, ge=1024, le=65535)
-    local_api_token_file: Path = Path("./.clipforge/local-api-token")
+    # In the home directory, not the working directory. The worker runs from the
+    # repo root and the desktop app from its own build output, so a relative path
+    # would resolve to two different files and the pairing would silently never
+    # match. `~` is expanded at use.
+    local_api_token_file: Path = Path("~/.clipforge/local-api-token")
 
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"

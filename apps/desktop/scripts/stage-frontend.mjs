@@ -92,7 +92,9 @@ function desktopConfig() {
   }
 
   return [
-    '      window.__clipforge = {',
+    // Merged rather than assigned, for the same reason as index.html: anything
+    // set before this runs has to survive.
+    '      window.__clipforge = Object.assign({}, window.__clipforge, {',
     '        useEmulators: false,',
     '        firebase: {',
     `          projectId: '${projectId}',`,

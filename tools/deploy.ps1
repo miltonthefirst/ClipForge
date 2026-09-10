@@ -141,7 +141,9 @@ Register a Web app first if there is not one yet.
     # Built by hand rather than with ConvertTo-Json so the emitted block stays
     # readable in view-source, which is where anyone debugging a live site looks.
     $webConfig = @"
-      window.__clipforge = {
+      // Merged rather than assigned, matching src/index.html: anything set
+      // before this script runs must survive it.
+      window.__clipforge = Object.assign({}, window.__clipforge, {
         useEmulators: false,
         firebase: {
           projectId: '$projectId',
@@ -150,7 +152,7 @@ Register a Web app first if there is not one yet.
           appId: '$appId',
         },
         localServerOrigin: '$localOrigin',
-      };
+      });
 "@
 }
 
