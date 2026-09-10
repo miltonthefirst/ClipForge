@@ -34,37 +34,36 @@ import { FirebaseService } from './firebase';
 /**
  * Firestore reads and writes, as signals.
  *
- * Every listener is **narrowly scoped and bounded**. That is a cost decision as
- * much as a correctness one: Firestore bills a read per delivered document, and
- * a listener re-delivers its whole result set on reconnect. An unfiltered listen
- * over `jobs` is the single easiest way to burn the free daily quota
- * (docs/adr/0009-spark-tier-local-artefacts.md), and the security rules would
- * reject it anyway.
+ * Every listener is **bounded**, and that is a cost decision: Firestore bills a
+ * read per delivered document, and a listener re-delivers its whole result set
+ * on reconnect. An unbounded listen over `jobs` is the single easiest way to
+ * burn the free daily quota (docs/adr/0009-spark-tier-local-artefacts.md).
+ *
+ * They are no longer *scoped by uid*. ClipForge is one shared workspace, so the
+ * limit is what keeps a listener cheap — not a filter that also happened to
+ * hide half the system from the person looking at it.
  */
 @Injectable({ providedIn: 'root' })
 export class ClipForgeStore {
   private readonly firebase = inject(FirebaseService);
 
   /**
-   * Live jobs for one user, newest first.
+   * The queue, newest first — everyone's, because there is only one.
+   *
+   * Not filtered by uid. ClipForge is a single shared workspace, so a job
+   * submitted from a phone belongs in the list shown on the desktop beside it.
+   * Filtering here was what made one system look like two: the rules would now
+   * allow the read, but a query that asks only for its own rows gets only its
+   * own rows regardless of what it is permitted to see.
    *
    * Delivers through a callback rather than returning a signal. Returning one
    * would push the caller into creating an `effect` to read it — and an effect
    * created inside another effect is not valid in Angular, which is exactly the
    * shape a re-subscribing watcher wants to take.
    */
-  watchJobs(
-    uid: string,
-    onData: (jobs: Job[]) => void,
-    onError?: (error: Error) => void,
-  ): Unsubscribe {
+  watchJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
     return onSnapshot(
-      query(
-        collection(this.firebase.db, 'jobs'),
-        where('uid', '==', uid),
-        orderBy('createdAt', 'desc'),
-        limit(25),
-      ),
+      query(collection(this.firebase.db, 'jobs'), orderBy('createdAt', 'desc'), limit(25)),
       (snapshot) => onData(snapshot.docs.map((d) => d.data() as Job)),
       (error) => onError?.(error),
     );
@@ -137,22 +136,23 @@ export class ClipForgeStore {
    * broken; it is finished and empty, and saying so is the difference between
    * "it worked" and "why is the review queue still empty?".
    *
-   * Both queries filter on `uid` as well as `jobId`, and not for tidiness: the
-   * security rules only let a list run when the query itself proves it can
-   * return nothing but the caller's own documents.
+   * Keyed on `jobId` alone. It used to filter on `uid` too, because the rules
+   * only permitted a list that proved it returned the caller's own documents;
+   * in a shared workspace that requirement is gone, and so is the composite
+   * index it needed.
    *
    * The candidates side is counted rather than fetched — an aggregation costs a
    * fraction of a read per document instead of one each, and the number is all
    * this page shows.
    */
-  async loadJobResults(uid: string, jobId: string): Promise<{ candidates: number; clips: Clip[] }> {
+  async loadJobResults(jobId: string): Promise<{ candidates: number; clips: Clip[] }> {
     const { getCountFromServer, getDocs } = await import('firebase/firestore');
 
-    const owned = [where('uid', '==', uid), where('jobId', '==', jobId)];
+    const ofJob = [where('jobId', '==', jobId)];
 
     const [candidates, clips] = await Promise.all([
-      getCountFromServer(query(collection(this.firebase.db, 'candidates'), ...owned)),
-      getDocs(query(collection(this.firebase.db, 'clips'), ...owned, limit(20))),
+      getCountFromServer(query(collection(this.firebase.db, 'candidates'), ...ofJob)),
+      getDocs(query(collection(this.firebase.db, 'clips'), ...ofJob, limit(20))),
     ]);
 
     return {
@@ -164,11 +164,8 @@ export class ClipForgeStore {
   /**
    * Worker heartbeats — who is serving the queue, and what they can do.
    *
-   * The only listener here that is not scoped to a uid, because a worker is not
-   * user-owned data: one machine serves everyone, and the rules say so
-   * (`allow read: if isApproved()`). Bounded at ten anyway — this deployment has
-   * one worker, and an unbounded listen is how the free tier's daily read
-   * allowance gets spent on nothing.
+   * Bounded at ten: this deployment has one worker, and an unbounded listen is
+   * how the free tier's daily read allowance gets spent on nothing.
    *
    * What this answers that nothing else can: a job sitting at QUEUED is either
    * "the worker is busy with something else" or "there is no worker", and those
@@ -185,9 +182,8 @@ export class ClipForgeStore {
     );
   }
 
-  /** The review queue: this user's clips awaiting a decision. */
+  /** The review queue: every clip awaiting a decision, whoever submitted it. */
   watchReviewQueue(
-    uid: string,
     onData: (clips: Clip[]) => void,
     review: ReviewState = 'PENDING',
     onError?: (error: Error) => void,
@@ -195,7 +191,6 @@ export class ClipForgeStore {
     return onSnapshot(
       query(
         collection(this.firebase.db, 'clips'),
-        where('uid', '==', uid),
         where('review', '==', review),
         orderBy('createdAt', 'desc'),
         limit(50),
@@ -276,12 +271,8 @@ export class ClipForgeStore {
   }
 
   /** Approved clips, the publish queue's input. */
-  watchApproved(
-    uid: string,
-    onData: (clips: Clip[]) => void,
-    onError?: (error: Error) => void,
-  ): Unsubscribe {
-    return this.watchReviewQueue(uid, onData, 'APPROVED', onError);
+  watchApproved(onData: (clips: Clip[]) => void, onError?: (error: Error) => void): Unsubscribe {
+    return this.watchReviewQueue(onData, 'APPROVED', onError);
   }
 
   /**

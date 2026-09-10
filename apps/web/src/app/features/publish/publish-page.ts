@@ -100,7 +100,6 @@ export class PublishPage implements OnDestroy {
         return;
       }
       const stop = this.store.watchApproved(
-        uid,
         (clips) => void this.buildCards(clips),
         (err) => this.error.set(err.message),
       );

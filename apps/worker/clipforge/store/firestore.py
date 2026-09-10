@@ -397,7 +397,7 @@ class SourceStore:
         return Source.model_validate(snapshot.to_dict() or {})
 
     def find_by_external_id(
-        self, *, uid: str, provider: SourceProvider, external_id: str
+        self, *, provider: SourceProvider, external_id: str
     ) -> Source | None:
         """Dedupe *before* downloading.
 
@@ -405,10 +405,16 @@ class SourceStore:
         keyed on the identity an adapter can derive with no network access.
         Content hashing catches the remaining case — the same video under two
         URLs — but only after the bytes have already arrived.
+
+        Deliberately not scoped to a uid. ClipForge is one shared workspace with
+        one workspace directory on one machine, so a video someone else already
+        downloaded is *already here*; keying the lookup on who asked would send
+        the worker to fetch a second copy of a file sitting next to the first,
+        and transcribe it again on top. The cache is a property of the machine,
+        not of the account.
         """
         query = (
             self._db.collection(SOURCES)
-            .where(filter=firestore.FieldFilter("uid", "==", uid))
             .where(filter=firestore.FieldFilter("provider", "==", provider.value))
             .where(filter=firestore.FieldFilter("externalId", "==", external_id))
             .limit(1)
@@ -417,10 +423,10 @@ class SourceStore:
             return Source.model_validate(doc.to_dict() or {})
         return None
 
-    def find_by_content_hash(self, *, uid: str, content_hash: str) -> Source | None:
+    def find_by_content_hash(self, *, content_hash: str) -> Source | None:
+        """The same bytes under another name — shared, for the same reason."""
         query = (
             self._db.collection(SOURCES)
-            .where(filter=firestore.FieldFilter("uid", "==", uid))
             .where(filter=firestore.FieldFilter("contentHash", "==", content_hash))
             .limit(1)
         )

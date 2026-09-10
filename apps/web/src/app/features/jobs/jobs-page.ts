@@ -44,7 +44,6 @@ export class JobsPage implements OnDestroy {
         return;
       }
       const stop = this.store.watchJobs(
-        uid,
         (jobs) => this.jobs.set(jobs),
         (err) => this.error.set(err.message),
       );

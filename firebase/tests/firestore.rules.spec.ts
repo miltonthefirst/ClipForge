@@ -59,41 +59,72 @@ async function seed(path: string, data: Record<string, unknown>): Promise<void> 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 1, exit criterion 1: per-user isolation on read, write and list.
+// One shared workspace.
+//
+// This file used to assert the opposite — per-user isolation on read, write and
+// list — and that turned out to describe something nobody wanted: two private
+// workspaces that happened to share a worker. A job submitted from a phone was
+// invisible on the desktop beside it. Access is decided by approval now, and
+// `uid` records who submitted the work rather than who may see it.
+//
+// What these still assert, and what the change did NOT loosen: the gate itself
+// (an unapproved account reads nothing), and the client's inability to forge
+// pipeline state or reassign work to someone else.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('per-user isolation', () => {
+describe('a shared workspace', () => {
   beforeEach(async () => {
     await seed('jobs/alice-job', queuedJob(ALICE));
   });
 
-  it("lets the owner read their own job", async () => {
+  it('lets any approved member read any job', async () => {
     await assertSucceeds(getDoc(doc(aliceDb(), 'jobs/alice-job')));
+    await assertSucceeds(getDoc(doc(bobDb(), 'jobs/alice-job')));
   });
 
-  it("denies another user reading it", async () => {
-    await assertFails(getDoc(doc(bobDb(), 'jobs/alice-job')));
+  it('lets an approved member list the whole queue', async () => {
+    // The listen the Jobs page actually makes. Under the old rules this was
+    // denied, which is why the app filtered by uid and showed half the system.
+    await assertSucceeds(getDocs(collection(bobDb(), 'jobs')));
   });
 
-  it("denies another user writing it", async () => {
-    await assertFails(updateDoc(doc(bobDb(), 'jobs/alice-job'), { status: 'CANCELLED' }));
-  });
-
-  it("denies another user deleting it", async () => {
-    await assertFails(deleteDoc(doc(bobDb(), 'jobs/alice-job')));
-  });
-
-  it('denies an unfiltered list, which would leak every user’s jobs', async () => {
-    await assertFails(getDocs(collection(aliceDb(), 'jobs')));
-  });
-
-  it("denies listing another user's jobs by uid", async () => {
-    await assertFails(getDocs(query(collection(bobDb(), 'jobs'), where('uid', '==', ALICE))));
-  });
-
-  it('allows a list scoped to the caller’s own uid', async () => {
+  it("lets a member cancel someone else's job", async () => {
     await assertSucceeds(
-      getDocs(query(collection(aliceDb(), 'jobs'), where('uid', '==', ALICE))),
+      updateDoc(doc(bobDb(), 'jobs/alice-job'), {
+        status: 'CANCELLED',
+        updatedAt: '2026-09-10T12:00:00.000Z',
+      }),
+    );
+  });
+
+  it('does not let cancelling a job reassign who submitted it', async () => {
+    // `uid` is outside the writable field set, so a shared workspace still
+    // cannot be used to quietly take credit for someone else's work.
+    await assertFails(
+      updateDoc(doc(bobDb(), 'jobs/alice-job'), { status: 'CANCELLED', uid: BOB }),
+    );
+  });
+
+  it('still refuses to let a member forge progress on any job', async () => {
+    await assertFails(updateDoc(doc(bobDb(), 'jobs/alice-job'), { status: 'COMPLETED' }));
+    await assertFails(updateDoc(doc(aliceDb(), 'jobs/alice-job'), { status: 'COMPLETED' }));
+  });
+
+  it('lets any approved member read the clips and candidates', async () => {
+    await seed('clips/clip-1', pendingClip(ALICE));
+    await seed('candidates/cand-1', candidate(ALICE));
+
+    await assertSucceeds(getDoc(doc(bobDb(), 'clips/clip-1')));
+    await assertSucceeds(getDoc(doc(bobDb(), 'candidates/cand-1')));
+  });
+
+  it("lets any approved member review a clip they did not submit", async () => {
+    await seed('clips/clip-1', pendingClip(ALICE));
+    await assertSucceeds(
+      updateDoc(doc(bobDb(), 'clips/clip-1'), {
+        review: 'APPROVED',
+        reviewedAt: '2026-09-10T12:00:00.000Z',
+      }),
     );
   });
 
@@ -199,7 +230,7 @@ describe('job updates', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('worker-owned data is read-only', () => {
-  it('lets the owner read the event log but never write it', async () => {
+  it('lets any member read the event log but nobody write it', async () => {
     await seed('jobs/alice-job', queuedJob(ALICE));
     await seed('jobs/alice-job/events/e1', {
       id: 'e1',
@@ -209,7 +240,7 @@ describe('worker-owned data is read-only', () => {
     });
 
     await assertSucceeds(getDoc(doc(aliceDb(), 'jobs/alice-job/events/e1')));
-    await assertFails(getDoc(doc(bobDb(), 'jobs/alice-job/events/e1')));
+    await assertSucceeds(getDoc(doc(bobDb(), 'jobs/alice-job/events/e1')));
     await assertFails(
       setDoc(doc(aliceDb(), 'jobs/alice-job/events/forged'), {
         id: 'forged',
@@ -220,11 +251,11 @@ describe('worker-owned data is read-only', () => {
     );
   });
 
-  it('lets the owner read candidates but never fabricate a score', async () => {
+  it('lets any member read candidates but nobody fabricate a score', async () => {
     await seed('candidates/cand-1', candidate(ALICE));
 
     await assertSucceeds(getDoc(doc(aliceDb(), 'candidates/cand-1')));
-    await assertFails(getDoc(doc(bobDb(), 'candidates/cand-1')));
+    await assertSucceeds(getDoc(doc(bobDb(), 'candidates/cand-1')));
     await assertFails(updateDoc(doc(aliceDb(), 'candidates/cand-1'), { total: 100 }));
   });
 
@@ -243,7 +274,7 @@ describe('worker-owned data is read-only', () => {
     await assertFails(getDoc(doc(anonDb(), 'workers/worker-1')));
   });
 
-  it('lets the owner read a transcript but never write one', async () => {
+  it('lets any member read a transcript but nobody write one', async () => {
     await seed('sources/src-1', source(ALICE));
     await seed('sources/src-1/transcripts/whisper-v3', {
       sourceId: 'src-1',
@@ -253,7 +284,7 @@ describe('worker-owned data is read-only', () => {
     });
 
     await assertSucceeds(getDoc(doc(aliceDb(), 'sources/src-1/transcripts/whisper-v3')));
-    await assertFails(getDoc(doc(bobDb(), 'sources/src-1/transcripts/whisper-v3')));
+    await assertSucceeds(getDoc(doc(bobDb(), 'sources/src-1/transcripts/whisper-v3')));
     await assertFails(
       setDoc(doc(aliceDb(), 'sources/src-1/transcripts/forged'), {
         sourceId: 'src-1',
@@ -310,8 +341,13 @@ describe('clip review', () => {
     );
   });
 
-  it("denies reviewing another user's clip", async () => {
-    await assertFails(updateDoc(doc(bobDb(), 'clips/clip-1'), { review: 'APPROVED' }));
+  it("allows reviewing a clip somebody else submitted", async () => {
+    // One queue. Whoever gets to it first reviews it.
+    await assertSucceeds(updateDoc(doc(bobDb(), 'clips/clip-1'), { review: 'APPROVED' }));
+  });
+
+  it('denies reassigning a clip while reviewing it', async () => {
+    await assertFails(updateDoc(doc(bobDb(), 'clips/clip-1'), { review: 'APPROVED', uid: BOB }));
   });
 
   it('denies creating a clip from the client', async () => {
@@ -356,8 +392,8 @@ describe('clip previews', () => {
     await assertSucceeds(getDoc(doc(aliceDb(), 'clips/clip-1/preview/poster')));
   });
 
-  it("denies another user reading it", async () => {
-    await assertFails(getDoc(doc(bobDb(), 'clips/clip-1/preview/poster')));
+  it('lets another member read it — on the free tier the poster is the review', async () => {
+    await assertSucceeds(getDoc(doc(bobDb(), 'clips/clip-1/preview/poster')));
   });
 
   it('denies the client writing one', async () => {

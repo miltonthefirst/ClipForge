@@ -66,7 +66,6 @@ export class ReviewPage implements OnDestroy {
         return;
       }
       const stop = this.store.watchReviewQueue(
-        uid,
         (clips) => void this.buildCards(clips),
         'PENDING',
         (err) => this.error.set(err.message),

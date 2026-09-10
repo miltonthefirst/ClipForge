@@ -143,9 +143,18 @@ describe('the rights gate on publish jobs', () => {
     );
   });
 
-  it('refuses a publish job for a clip the caller does not own', async () => {
-    // Bob's clip is perfectly publishable — by Bob.
+  it('accepts a publish job for a clip somebody else submitted', async () => {
+    // One workspace, one library. What gates publishing is the state of the
+    // clip — approved, and attested by a named person — not which account
+    // happened to submit the job that produced it.
     await seed('clips/clip-1', pendingClip(BOB, { review: 'APPROVED', rights: attestation({ attestedBy: BOB }) }));
+
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+  });
+
+  it("still refuses somebody else's clip that nobody has attested", async () => {
+    // Sharing widens who may publish. It does not remove the rights gate.
+    await seed('clips/clip-1', pendingClip(BOB, { review: 'APPROVED' }));
 
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
@@ -300,8 +309,11 @@ describe('publications are the worker’s to write', () => {
     await assertSucceeds(getDoc(doc(aliceDb(), 'clips/clip-1/publications/pub-1')));
   });
 
-  it('hides one user’s publications from another', async () => {
-    await assertFails(getDoc(doc(bobDb(), 'clips/clip-1/publications/pub-1')));
+  it('shows the publication history to any approved member', async () => {
+    // The audit trail answers "who authorised this, and on what basis" — a
+    // question the whole team has, and one the record itself still answers
+    // because `attestedBy` names a person.
+    await assertSucceeds(getDoc(doc(bobDb(), 'clips/clip-1/publications/pub-1')));
   });
 
   it('refuses a client that tries to forge a publication record', async () => {

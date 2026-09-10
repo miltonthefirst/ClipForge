@@ -92,11 +92,10 @@ class DownloadStage:
     def _ingest(
         self, context: StageContext, adapter: SourceAdapter, submission: str
     ) -> StageOutcome:
-        uid = context.job.uid
         identity = adapter.identify(submission)
 
         existing = self._sources.find_by_external_id(
-            uid=uid, provider=identity.provider, external_id=identity.external_id
+            provider=identity.provider, external_id=identity.external_id
         )
         if existing is not None and _file_present(existing):
             self._sources.touch(existing.id)
@@ -113,7 +112,7 @@ class DownloadStage:
 
         fetched = adapter.fetch(identity, self._workspace.sources_dir)
 
-        duplicate = self._sources.find_by_content_hash(uid=uid, content_hash=fetched.content_hash)
+        duplicate = self._sources.find_by_content_hash(content_hash=fetched.content_hash)
         # The same video under a different URL. Keep the original and discard what
         # we just fetched — unless what we fetched *is* the original's file, which
         # is the normal case for a local source submitted twice by two paths.

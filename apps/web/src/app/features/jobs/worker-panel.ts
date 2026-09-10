@@ -48,7 +48,7 @@ export class WorkerPanel implements OnDestroy {
   private readonly config = inject(CLIPFORGE_CONFIG);
   protected readonly control = inject(WorkerControlService);
 
-  /** How many of this user's jobs are waiting, so the panel can say what that means. */
+  /** How many jobs are waiting, so the panel can say what that means. */
   readonly queued = input(0);
 
   private stopWatching: (() => void) | null = null;

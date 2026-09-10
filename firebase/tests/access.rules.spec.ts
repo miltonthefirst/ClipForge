@@ -231,11 +231,11 @@ describe('an admin', () => {
     );
   });
 
-  it('still cannot read another person’s clips', async () => {
-    // Administering access is not the same as having it. An admin approves
-    // people; they do not inherit everyone's content.
+  it('reads the shared library like any other approved member', async () => {
+    // Being an admin adds nothing here: the library is shared with everyone
+    // approved, and administering access is a separate power from having it.
     await seed(`users/${BOB}`, userProfile(BOB));
     await seed('clips/bob-clip', pendingClip(BOB));
-    await assertFails(getDoc(doc(db(ALICE), 'clips/bob-clip')));
+    await assertSucceeds(getDoc(doc(db(ALICE), 'clips/bob-clip')));
   });
 });

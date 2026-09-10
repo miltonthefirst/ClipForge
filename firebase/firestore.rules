@@ -53,21 +53,36 @@ service cloud.firestore {
       return isApproved() && profile().role == 'ADMIN';
     }
 
-    // Ownership AND approval. Every rule below uses these rather than comparing
-    // uids directly, so revoking an account closes every door at once instead of
-    // whichever ones someone remembered to check.
-    function isOwner(uid) {
-      return isApproved() && request.auth.uid == uid;
-    }
+    // ── One workspace, not one per person ────────────────────────────────────
+    //
+    // ClipForge is a single shared system: one machine, one clip library, a
+    // small group of trusted people. Access is therefore decided by *approval*,
+    // not by ownership — an approved member sees and acts on everything.
+    //
+    // It was built the other way first, with every collection scoped to the
+    // uid that created it, and that turned out to describe something nobody
+    // wanted: two private workspaces that happened to share a worker. A job
+    // submitted from a phone was invisible on the desktop next to it, and a
+    // clip rendered by one account could not be reviewed by the other.
+    //
+    // `uid` stays on every document, and still has a job — it records who
+    // submitted the work, so the audit trail survives. It is deliberately no
+    // longer the access control.
+    //
+    // The consequence, stated plainly because it is the whole security model:
+    // registration is open, so *approving* an account is what hands over the
+    // entire library. Approval is the gate. There is nothing behind it.
+    //
+    // What has NOT changed is the other half of the design — the PWA may create
+    // work and review results, and may never write pipeline state. Sharing
+    // widens who can read and decide; it does not let a client forge a
+    // COMPLETED job, invent a candidate, or rewrite an event log.
 
     // The document being written must be stamped with the caller's own uid.
-    // Without this, a signed-in user could create documents owned by someone else.
+    // Kept even though reads are shared: attribution is only worth having if a
+    // client cannot file work under somebody else's name.
     function ownsIncoming() {
       return isApproved() && request.resource.data.uid == request.auth.uid;
-    }
-
-    function ownsExisting() {
-      return isApproved() && resource.data.uid == request.auth.uid;
     }
 
     // Which fields an update actually touched.
@@ -118,17 +133,14 @@ service cloud.firestore {
     // Heartbeats are written by the worker through the Admin SDK. The PWA reads
     // them to show whether a worker is online and why a job might be stalled.
     //
-    // Approval, not ownership. A worker is shared infrastructure: one machine
-    // serves everyone's queue, and "is anything running?" is the same question
-    // and the same answer for every approved member. Scoping it to `uid` would
-    // have been the tidier-looking rule and the wrong one — it was also broken
-    // in practice, because the worker announces itself with a placeholder uid
-    // rather than a Firebase account, so `ownsExisting()` matched nobody at all
-    // and the heartbeat was unreadable by every client. A job stuck at QUEUED
-    // then looked identical to a job nobody had explained.
+    // This was the first rule to be scoped by approval rather than ownership,
+    // and it was scoped that way because the ownership version was not merely
+    // wrong but inert: the worker announces itself with a placeholder uid
+    // rather than a Firebase account, so it matched nobody and the heartbeat
+    // was unreadable by every client. A job stuck at QUEUED then looked
+    // identical to a job nobody had explained.
     //
-    // `heartbeat.uid` stays a record of who runs the worker. It is deliberately
-    // not the access control for it.
+    // `heartbeat.uid` records who runs the worker, not who may look at it.
     match /workers/{workerId} {
       allow read: if isApproved();
       allow write: if false;
@@ -159,10 +171,14 @@ service cloud.firestore {
              && clip.rights.attestedAt != null;
     }
 
+    // Note what is *not* checked: who owns the clip. In a shared workspace any
+    // approved member may publish any clip that has been approved and attested.
+    // The attestation still names whoever made it, so "who said this was ours
+    // to publish" remains answerable — which is the question that matters here,
+    // and it is not the same question as "who submitted the job".
     function publishable(clipId) {
       let clip = clipOf(clipId);
-      return clip.uid == request.auth.uid
-             && clip.review == 'APPROVED'
+      return clip.review == 'APPROVED'
              && hasAttestation(clip);
     }
 
@@ -203,16 +219,16 @@ service cloud.firestore {
 
     // ── Jobs ─────────────────────────────────────────────────────────────────
     match /jobs/{jobId} {
-      allow read: if ownsExisting();
+      allow read: if isApproved();
 
       // The PWA may enqueue work, but only as itself and only in the one state
       // that means "not yet started". It may not create a job that is already
       // RUNNING, already has a worker, or already holds a lease.
       //
-      // A PUBLISH job additionally has to name a clip that is the caller's own,
-      // approved, and attested. This costs one document read per publish
-      // request; publishing is rare — YouTube's quota allows about six a day —
-      // so that is the right place to spend one.
+      // A PUBLISH job additionally has to name a clip that is approved and
+      // attested. This costs one document read per publish request; publishing
+      // is rare — YouTube's quota allows about six a day — so that is the right
+      // place to spend one.
       allow create: if ownsIncoming()
                     && request.resource.data.status == 'QUEUED'
                     && request.resource.data.workerId == null
@@ -229,35 +245,40 @@ service cloud.firestore {
 
       // The only state transition a user may drive is cancellation. Everything
       // else — claiming, progress, stage results — belongs to the worker.
-      allow update: if ownsExisting()
-                    && ownsIncoming()
+      //
+      // `changed().hasOnly` is what protects attribution here: `uid` is not in
+      // the writable set, so cancelling someone else's job cannot quietly
+      // reassign it to the person who cancelled it.
+      allow update: if isApproved()
                     && request.resource.data.status == 'CANCELLED'
                     && resource.data.status in ['QUEUED', 'RUNNING']
                     && changed().hasOnly(['status', 'updatedAt', 'endedAt']);
 
-      allow delete: if ownsExisting();
+      allow delete: if isApproved();
 
       // ── Job events ─────────────────────────────────────────────────────────
-      // Append-only, written by the worker. Readable by the job's owner so a
-      // failure can be diagnosed from the phone rather than from worker logs.
+      // Append-only, written by the worker. Readable so a failure can be
+      // diagnosed from the phone rather than from worker logs.
+      //
+      // This used to `get()` the parent job to compare its uid, which is now
+      // both pointless and expensive — a rule `get()` is a billed read, on
+      // every event of every log.
       match /events/{eventId} {
-        allow read: if isApproved()
-                    && get(/databases/$(database)/documents/jobs/$(jobId)).data.uid == request.auth.uid;
+        allow read: if isApproved();
         allow write: if false;
       }
     }
 
     // ── Sources ──────────────────────────────────────────────────────────────
     match /sources/{sourceId} {
-      allow read: if ownsExisting();
+      allow read: if isApproved();
       allow create: if ownsIncoming();
       allow update, delete: if false;
 
       // Transcripts are expensive to produce and are cached by content hash.
       // Nothing about them is user-editable.
       match /transcripts/{modelVersion} {
-        allow read: if isApproved()
-                    && get(/databases/$(database)/documents/sources/$(sourceId)).data.uid == request.auth.uid;
+        allow read: if isApproved();
         allow write: if false;
       }
     }
@@ -280,21 +301,22 @@ service cloud.firestore {
     // Produced by the ANALYZE stage. Read-only to the client: a user who could
     // write these could fabricate a score and corrupt the Phase 9 feedback loop.
     match /candidates/{candidateId} {
-      allow read: if ownsExisting();
+      allow read: if isApproved();
       allow write: if false;
     }
 
     // ── Clips ────────────────────────────────────────────────────────────────
     match /clips/{clipId} {
-      allow read: if ownsExisting();
+      allow read: if isApproved();
       allow create, delete: if false;
 
-      // Review is the one thing the user genuinely owns. Restricting the
-      // writable field set matters: publishing is gated on `rights`, so a rule
-      // that allowed a blanket update would let the client relabel storagePath
-      // or forge an attestation on someone else's render.
-      allow update: if ownsExisting()
-                    && ownsIncoming()
+      // Review is the decision the people own; everything else about a clip
+      // belongs to the render that produced it. Restricting the writable field
+      // set is what keeps that line: publishing is gated on `rights`, so a rule
+      // that allowed a blanket update would let a client relabel storagePath or
+      // rewrite an attestation. It also pins `uid`, so reviewing a clip never
+      // reassigns who made it.
+      allow update: if isApproved()
                     && changed().hasOnly(['review', 'reviewedAt', 'rights', 'title', 'description'])
                     && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED'];
 
@@ -303,20 +325,17 @@ service cloud.firestore {
       // readable — but it is produced by the render stage, never by a client.
       // See docs/adr/0009-spark-tier-local-artefacts.md.
       match /preview/{previewId} {
-        allow read: if isApproved()
-                    && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
+        allow read: if isApproved();
         allow write: if false;
       }
 
       match /publications/{pubId} {
-        allow read: if isApproved()
-                    && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
+        allow read: if isApproved();
         allow write: if false;
       }
 
       match /metrics/{day} {
-        allow read: if isApproved()
-                    && get(/databases/$(database)/documents/clips/$(clipId)).data.uid == request.auth.uid;
+        allow read: if isApproved();
         allow write: if false;
       }
     }

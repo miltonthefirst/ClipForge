@@ -149,7 +149,15 @@ def submit(
     submission: str = typer.Argument(
         "", help="A YouTube URL or a local media file. Omit to enqueue an ECHO job."
     ),
-    uid: str = typer.Option("local", help="Owning user id."),
+    uid: str = typer.Option(
+        "local",
+        help=(
+            "Who to attribute the job to. The default is a placeholder that matches no "
+            "Firebase account — the job still runs and, in a shared workspace, is still "
+            "visible to everyone, but it is credited to nobody. `clipforge-worker user "
+            "list` prints the real ids."
+        ),
+    ),
     job_id: str = typer.Option("", help="Explicit job id; generated when omitted."),
 ) -> None:
     """Enqueue a job.
@@ -309,7 +317,15 @@ def youtube_auth(
 @app.command()
 def publish(
     clip_id: str = typer.Argument(..., help="The approved clip to publish."),
-    uid: str = typer.Option("local", help="Owning user id."),
+    uid: str = typer.Option(
+        "local",
+        help=(
+            "Who to attribute the job to. The default is a placeholder that matches no "
+            "Firebase account — the job still runs and, in a shared workspace, is still "
+            "visible to everyone, but it is credited to nobody. `clipforge-worker user "
+            "list` prints the real ids."
+        ),
+    ),
     at: str = typer.Option("", help="ISO-8601 time to publish at; immediate when omitted."),
 ) -> None:
     """Queue an approved, attested clip for publishing.

@@ -11,7 +11,6 @@ import {
 import { RouterLink } from '@angular/router';
 import type { Clip, Job, JobEvent, Source, Stage, StageStatus } from '@clipforge/contracts';
 
-import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
 
 /**
@@ -43,7 +42,6 @@ import { ClipForgeStore } from '../../core/store';
 })
 export class JobPage implements OnDestroy {
   private readonly store = inject(ClipForgeStore);
-  private readonly session = inject(SessionService);
 
   /** From the route: `jobs/:id`. */
   readonly id = input.required<string>();
@@ -84,10 +82,9 @@ export class JobPage implements OnDestroy {
           // Only once nothing more can be produced. Polled on every job update
           // it would run two queries per heartbeat for an answer that is still
           // being written; a finished job's output does not change.
-          const uid = this.session.uid;
-          if (uid && job && this.terminal(job) && !this.results()) {
+          if (job && this.terminal(job) && !this.results()) {
             void this.store
-              .loadJobResults(uid, job.id)
+              .loadJobResults(job.id)
               .then((found) => this.results.set(found))
               .catch((err: unknown) =>
                 this.error.set(err instanceof Error ? err.message : String(err)),

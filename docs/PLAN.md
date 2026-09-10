@@ -134,7 +134,7 @@ git 2.54. (Billing tier on `bytepic-clipforge` is still unverified — see
 ┌───────────────────────────────┐
 │  FIREBASE — control plane     │   Auth · Firestore (jobs, state, metadata,
 │  Spark (free tier)            │   poster frames) · FCM · Hosting
-│  No Functions, no Storage     │   Rules enforce per-user isolation
+│  No Functions, no Storage     │   Rules gate on approval, not ownership
 │  (see ADR-0009)               │   Reaper runs on the worker, not as a Function
 └───────────────┬───────────────┘
                 │ Admin SDK (service account) — onSnapshot, not polling
@@ -187,7 +187,7 @@ workers/{workerId}                # heartbeat and capability advertisement
   gpu: { name, vramTotalMb, vramFreeMb }
   lastSeenAt, version
 
-sources/{sourceId}                # one ingested long-form video (owner: uid)
+sources/{sourceId}                # one ingested long-form video (uid: who submitted it)
   provider: youtube|local
   externalId, title, channel, durationSec, contentHash
   localPath                       # never uploaded
@@ -316,7 +316,11 @@ stays coherent and one that drifts.
 - Codegen: JSON Schema → TypeScript interfaces (`json-schema-to-typescript`) and → Pydantic v2 models
   (`datamodel-code-generator`). A CI check fails if generated output is stale.
 - Firebase project creation; Auth (Google provider); Firestore; Storage; FCM.
-- `firestore.rules` and `storage.rules` enforcing strict per-`uid` isolation.
+- `firestore.rules` and `storage.rules` gating every collection on approval. *(Originally written
+  as strict per-`uid` isolation. That described two private workspaces that happened to share a
+  worker — a job submitted from a phone was invisible on the desktop beside it — so access is now
+  decided by approval and `uid` records who submitted the work rather than who may see it. The
+  client still may not write pipeline state; that half never changed.)*
 - `firestore.indexes.json` for the queries the review queue and analytics will need.
 - Firebase Emulator Suite wired into local dev and CI.
 - Cloud Function: the **lease reaper**, scheduled every 60s.
