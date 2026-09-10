@@ -91,6 +91,25 @@ class Worker:
         self._started_at = datetime.now(UTC)
         self._threads: list[threading.Thread] = []
 
+    # ── Introspection ────────────────────────────────────────────────────────
+    #
+    # Read-only views for the loopback control API (clipforge.scheduler.control).
+    # Exposed as accessors rather than by making `_active` public: the set is
+    # mutated from several threads, and a caller iterating it directly would be
+    # one job completion away from a RuntimeError.
+
+    @property
+    def worker_id(self) -> str:
+        return self._jobs.worker_id
+
+    @property
+    def started_at(self) -> datetime:
+        return self._started_at
+
+    def active_job_ids(self) -> list[str]:
+        with self._active_lock:
+            return list(self._active)
+
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def install_signal_handlers(self) -> None:
