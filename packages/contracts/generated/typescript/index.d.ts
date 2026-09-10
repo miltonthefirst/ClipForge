@@ -9,13 +9,26 @@
  */
 
 /**
- * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days.
+ * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched.
  */
-export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH';
+export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC';
 /**
  * Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.
  */
 export type JobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+/**
+ * What the added track does to the clip's own audio. BED keeps the original and sits the music under it, ducking automatically so speech stays intelligible — the usual choice for a talking clip. REPLACE removes the original audio entirely and the track becomes the whole soundtrack, which is what a montage or a silent-action clip wants.
+ */
+export type MusicMode = 'BED' | 'REPLACE';
+/**
+ * Captions are burned into the clip's pixels by the RENDER stage, so they cannot be peeled off a finished file — removing them means re-rendering the segment from the original source without the subtitle filter. KEEP is therefore cheap and always available; REMOVE needs the source media to still be on the worker, and fails clearly when it has been garbage-collected. Offered as a choice rather than inferred from the mode because 'music over captions' is a real style, and guessing wrong either way is worse than asking.
+ */
+export type MusicCaptions = 'KEEP' | 'REMOVE';
+/**
+ * Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
+ */
+export type RightsBasis =
+  'OWN_CONTENT' | 'LICENSED' | 'PERMISSION_GRANTED' | 'FAIR_USE_ASSERTED' | 'PUBLIC_DOMAIN';
 /**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
@@ -31,7 +44,8 @@ export type StageName =
   | 'TRANSCRIBE'
   | 'ANALYZE'
   | 'RENDER'
-  | 'PUBLISH';
+  | 'PUBLISH'
+  | 'MUSIC';
 /**
  * Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).
  */
@@ -76,11 +90,6 @@ export type IngestErrorCode =
  */
 export type ClipLocation = 'LOCAL' | 'REMOTE';
 export type ReviewState = 'PENDING' | 'APPROVED' | 'REJECTED';
-/**
- * Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
- */
-export type RightsBasis =
-  'OWN_CONTENT' | 'LICENSED' | 'PERMISSION_GRANTED' | 'FAIR_USE_ASSERTED' | 'PUBLIC_DOMAIN';
 /**
  * Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.
  */
@@ -143,9 +152,13 @@ export interface Job {
    */
   submission?: string | null;
   /**
-   * The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+   * The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
    */
   clipId?: string | null;
+  /**
+   * What a MUSIC job should add, and how. Null for every other job type.
+   */
+  musicOptions?: MusicOptions | null;
   /**
    * Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
    */
@@ -175,6 +188,35 @@ export interface Job {
   updatedAt: string;
   startedAt?: string | null;
   endedAt?: string | null;
+}
+/**
+ * What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.
+ */
+export interface MusicOptions {
+  /**
+   * A YouTube URL, or a path to an audio file on the worker. Only the audio is ever fetched from a URL — the video of a music source is of no use here and would cost bandwidth for nothing.
+   */
+  source: string;
+  mode: MusicMode;
+  captions: MusicCaptions;
+  /**
+   * Trim on the music, relative to the level the stage picks. Null means 'use the stage's judgement', which targets a bed roughly 18 LUFS below speech and a replacement at the clip's own loudness target.
+   */
+  gainDb?: number | null;
+  /**
+   * Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure.
+   */
+  alignToBeat?: boolean;
+  rights: RightsAttestation;
+}
+/**
+ * Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards.
+ */
+export interface RightsAttestation {
+  basis: RightsBasis;
+  attestedBy?: string | null;
+  attestedAt?: string | null;
+  note?: string | null;
 }
 /**
  * What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
@@ -417,13 +459,45 @@ export interface Clip {
   review: ReviewState;
   reviewedAt?: string | null;
   /**
+   * The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates.
+   */
+  derivedFromClipId?: string | null;
+  /**
+   * What was added to this clip, when something was. Null on an ordinary render.
+   */
+  music?: AppliedMusic | null;
+  /**
    * What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
    */
   reviewNote?: string | null;
-  rights?: RightsAttestation | null;
+  rights?: RightsAttestation1 | null;
   createdAt: string;
 }
-export interface RightsAttestation {
+/**
+ * What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.
+ */
+export interface AppliedMusic {
+  mode: MusicMode;
+  captions: MusicCaptions;
+  /**
+   * The URL or path the track came from, verbatim.
+   */
+  source: string;
+  /**
+   * What the source called itself, when it said. Worth keeping for the description and for answering a claim.
+   */
+  trackTitle?: string | null;
+  /**
+   * The tempo the analysis settled on. Null when the track had no beat clear enough to measure, in which case alignment was skipped rather than guessed.
+   */
+  tempoBpm?: number | null;
+  /**
+   * Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
+   */
+  musicStartSec?: number | null;
+  rights?: RightsAttestation1 | null;
+}
+export interface RightsAttestation1 {
   basis: RightsBasis;
   attestedBy?: string | null;
   attestedAt?: string | null;
@@ -476,7 +550,7 @@ export interface Publication {
   /**
    * Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
    */
-  rights?: RightsAttestation | null;
+  rights?: RightsAttestation1 | null;
   attempts?: number;
   /**
    * What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure.

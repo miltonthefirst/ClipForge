@@ -176,10 +176,47 @@ service cloud.firestore {
     // The attestation still names whoever made it, so "who said this was ours
     // to publish" remains answerable — which is the question that matters here,
     // and it is not the same question as "who submitted the job".
+    // A clip with music has two things in it that a claim could be made
+    // against, so it has to answer for both. The video's attestation covers the
+    // footage; the music's covers the track. Neither substitutes for the other,
+    // and a scored clip whose music nobody vouched for is exactly the upload
+    // this gate exists to stop.
+    function musicAttested(clip) {
+      return clip.get('music', null) == null
+             || (clip.music.get('rights', null) != null
+                 && clip.music.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
+                                                'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']);
+    }
+
     function publishable(clipId) {
       let clip = clipOf(clipId);
       return clip.review == 'APPROVED'
-             && hasAttestation(clip);
+             && hasAttestation(clip)
+             && musicAttested(clip);
+    }
+
+    // What a MUSIC job may ask for. Validated because these values reach
+    // ffmpeg and yt-dlp on the worker, and because a job that cannot possibly
+    // succeed should fail here rather than after a download.
+    function musicOptionsOk() {
+      let options = request.resource.data.get('musicOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['source', 'mode', 'captions', 'gainDb', 'alignToBeat', 'rights'])
+             && options.source is string
+             && options.source.size() > 0
+             && options.source.size() <= 2048
+             && options.mode in ['BED', 'REPLACE']
+             && options.captions in ['KEEP', 'REMOVE']
+             && (options.get('gainDb', null) == null
+                 || (options.gainDb is number && options.gainDb >= -40 && options.gainDb <= 12))
+             && (options.get('alignToBeat', null) == null || options.alignToBeat is bool)
+             // The music's own rights, recorded at the moment the track is
+             // chosen — which is the only moment anyone knows why it is usable.
+             && options.get('rights', null) != null
+             && options.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
+                                         'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
+             && options.rights.get('attestedBy', null) == request.auth.uid;
     }
 
     // What the operator chose for one specific upload: title, description,
@@ -240,6 +277,18 @@ service cloud.firestore {
                          || (
                               request.resource.data.clipId is string
                               && publishable(request.resource.data.clipId)
+                            )
+                       )
+                    // A MUSIC job names a clip and says what to do to it. It
+                    // does NOT require the clip to be approved: choosing a
+                    // track is part of deciding whether the clip is any good,
+                    // and the scored version is reviewed on its own merits.
+                    && (
+                         request.resource.data.type != 'MUSIC'
+                         || (
+                              request.resource.data.clipId is string
+                              && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                              && musicOptionsOk()
                             )
                        );
 

@@ -33,9 +33,9 @@
 
     "JobType": {
       "title": "JobType",
-      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days.",
+      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched.",
       "type": "string",
-      "enum": ["ECHO", "CLIP", "PUBLISH"]
+      "enum": ["ECHO", "CLIP", "PUBLISH", "MUSIC"]
     },
 
     "StageStatus": {
@@ -57,7 +57,8 @@
         "TRANSCRIBE",
         "ANALYZE",
         "RENDER",
-        "PUBLISH"
+        "PUBLISH",
+        "MUSIC"
       ]
     },
 
@@ -124,6 +125,88 @@
       }
     },
 
+    "AppliedMusic": {
+      "title": "AppliedMusic",
+      "description": "What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "captions", "source"],
+      "properties": {
+        "mode": { "$ref": "#/definitions/MusicMode" },
+        "captions": { "$ref": "#/definitions/MusicCaptions" },
+        "source": {
+          "type": "string",
+          "description": "The URL or path the track came from, verbatim."
+        },
+        "trackTitle": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "What the source called itself, when it said. Worth keeping for the description and for answering a claim."
+        },
+        "tempoBpm": {
+          "type": ["number", "null"],
+          "default": null,
+          "description": "The tempo the analysis settled on. Null when the track had no beat clear enough to measure, in which case alignment was skipped rather than guessed."
+        },
+        "musicStartSec": {
+          "type": ["number", "null"],
+          "default": null,
+          "description": "Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat."
+        },
+        "rights": {
+          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
+          "default": null
+        }
+      }
+    },
+
+    "MusicMode": {
+      "title": "MusicMode",
+      "description": "What the added track does to the clip's own audio. BED keeps the original and sits the music under it, ducking automatically so speech stays intelligible — the usual choice for a talking clip. REPLACE removes the original audio entirely and the track becomes the whole soundtrack, which is what a montage or a silent-action clip wants.",
+      "type": "string",
+      "enum": ["BED", "REPLACE"]
+    },
+
+    "MusicCaptions": {
+      "title": "MusicCaptions",
+      "description": "Captions are burned into the clip's pixels by the RENDER stage, so they cannot be peeled off a finished file — removing them means re-rendering the segment from the original source without the subtitle filter. KEEP is therefore cheap and always available; REMOVE needs the source media to still be on the worker, and fails clearly when it has been garbage-collected. Offered as a choice rather than inferred from the mode because 'music over captions' is a real style, and guessing wrong either way is worse than asking.",
+      "type": "string",
+      "enum": ["KEEP", "REMOVE"]
+    },
+
+    "MusicOptions": {
+      "title": "MusicOptions",
+      "description": "What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "mode", "captions", "rights"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A YouTube URL, or a path to an audio file on the worker. Only the audio is ever fetched from a URL — the video of a music source is of no use here and would cost bandwidth for nothing."
+        },
+        "mode": { "$ref": "#/definitions/MusicMode" },
+        "captions": { "$ref": "#/definitions/MusicCaptions" },
+        "gainDb": {
+          "type": ["number", "null"],
+          "minimum": -40,
+          "maximum": 12,
+          "default": null,
+          "description": "Trim on the music, relative to the level the stage picks. Null means 'use the stage's judgement', which targets a bed roughly 18 LUFS below speech and a replacement at the clip's own loudness target."
+        },
+        "alignToBeat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure."
+        },
+        "rights": {
+          "$ref": "#/definitions/RightsAttestation",
+          "description": "Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards."
+        }
+      }
+    },
+
     "Job": {
       "title": "Job",
       "description": "One pipeline run over one source. Stored at jobs/{jobId}.",
@@ -162,7 +245,12 @@
         "clipId": {
           "type": ["string", "null"],
           "default": null,
-          "description": "The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all."
+          "description": "The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all."
+        },
+        "musicOptions": {
+          "anyOf": [{ "$ref": "#/definitions/MusicOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "What a MUSIC job should add, and how. Null for every other job type."
         },
         "publishOptions": {
           "anyOf": [{ "$ref": "#/definitions/PublishOptions" }, { "type": "null" }],
@@ -656,6 +744,16 @@
         "description": { "type": ["string", "null"], "default": null },
         "review": { "$ref": "#/definitions/ReviewState" },
         "reviewedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "derivedFromClipId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates."
+        },
+        "music": {
+          "anyOf": [{ "$ref": "#/definitions/AppliedMusic" }, { "type": "null" }],
+          "default": null,
+          "description": "What was added to this clip, when something was. Null on an ordinary render."
+        },
         "reviewNote": {
           "type": ["string", "null"],
           "maxLength": 2000,

@@ -10,6 +10,7 @@
 """ClipForge wire protocol, generated from JSON Schema."""
 
 from clipforge_contracts.models import (
+    AppliedMusic as AppliedMusic,
     Candidate as Candidate,
     Channel as Channel,
     ChannelConnection as ChannelConnection,
@@ -27,6 +28,9 @@ from clipforge_contracts.models import (
     Lane as Lane,
     LlmClipProposal as LlmClipProposal,
     LlmClipResponse as LlmClipResponse,
+    MusicCaptions as MusicCaptions,
+    MusicMode as MusicMode,
+    MusicOptions as MusicOptions,
     Publication as Publication,
     PublicationState as PublicationState,
     PublishDefaults as PublishDefaults,
@@ -56,6 +60,7 @@ from clipforge_contracts.models import (
 )
 
 __all__ = [
+    "AppliedMusic",
     "Candidate",
     "Channel",
     "ChannelConnection",
@@ -73,6 +78,9 @@ __all__ = [
     "Lane",
     "LlmClipProposal",
     "LlmClipResponse",
+    "MusicCaptions",
+    "MusicMode",
+    "MusicOptions",
     "Publication",
     "PublicationState",
     "PublishDefaults",

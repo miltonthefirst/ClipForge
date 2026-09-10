@@ -519,3 +519,81 @@ def select_adapter(
         IngestErrorCode.UNSUPPORTED_URL,
         f"Not a YouTube video URL, and no such local file: {submission!r}",
     )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audio-only sources, for the MUSIC stage
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class FetchedAudio:
+    """A track on disk, and whatever the source called it."""
+
+    path: Path
+    title: str | None
+
+
+def resolve_audio_source(
+    submission: str, dest_dir: Path, *, ffmpeg: str = "ffmpeg"
+) -> FetchedAudio:
+    """Get the audio for a music submission — a YouTube URL, or a file here.
+
+    Only ever the audio. Pulling the video of a music source would cost
+    bandwidth and disk for something no part of this uses, and on a link that is
+    an hour-long mix that is a meaningful amount of both. `bestaudio` and a
+    `-vn` extraction are the whole difference.
+
+    Deliberately separate from the ingest adapters above, which exist to
+    identify, deduplicate and garbage-collect *source video*. A music track is
+    not a Source: it is not clipped, not transcribed, and not tracked — it is
+    fetched, used, and left in tmp for the workspace to sweep.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    local = Path(submission).expanduser()
+    if local.is_file():
+        return FetchedAudio(path=local, title=local.stem)
+
+    if parse_youtube_id(submission) is None:
+        raise IngestError(
+            IngestErrorCode.UNSUPPORTED_URL,
+            f"not a YouTube link or a file on this machine: {submission!r}",
+        )
+
+    # Imported here: yt-dlp is the `media` extra, and the worker must import
+    # this module without it.
+    import yt_dlp
+
+    template = str(dest_dir / "music-%(id)s.%(ext)s")
+    options = {
+        "format": "bestaudio/best",
+        "outtmpl": template,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        # m4a rather than mp3: no transcode when YouTube already serves AAC,
+        # which it usually does, and ffmpeg reads it just as happily.
+        "postprocessors": [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "192"}
+        ],
+        "ffmpeg_location": ffmpeg,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(submission, download=True)
+    except Exception as exc:  # yt-dlp raises many shapes; all mean 'no track'
+        raise IngestError(
+            classify_youtube_error(str(exc)),
+            f"could not fetch audio: {exc}",
+        ) from exc
+
+    video_id = info.get("id")
+    matches = sorted(dest_dir.glob(f"music-{video_id}.*"))
+    if not matches:
+        raise IngestError(
+            IngestErrorCode.NO_SUITABLE_FORMAT,
+            "the download reported success but produced no audio file",
+        )
+
+    return FetchedAudio(path=matches[0], title=info.get("title"))

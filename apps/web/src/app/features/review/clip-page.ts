@@ -16,6 +16,9 @@ import type {
   Channel,
   Clip,
   ClipPreview,
+  MusicCaptions,
+  MusicMode,
+  MusicOptions,
   Publication,
   PublishOptions,
   PublishPrivacy,
@@ -102,6 +105,27 @@ export class ClipPage implements OnDestroy {
   protected readonly draftBasis = signal<RightsBasis | null>(null);
   protected readonly draftRightsNote = signal('');
   protected readonly showPublishOptions = signal(false);
+
+  // ── Music ──────────────────────────────────────────────────────────────────
+  protected readonly showMusic = signal(false);
+  protected readonly musicSource = signal('');
+  protected readonly musicMode = signal<MusicMode>('BED');
+  protected readonly musicCaptions = signal<MusicCaptions>('KEEP');
+  protected readonly musicBasis = signal<RightsBasis | null>(null);
+  protected readonly musicNote = signal('');
+
+  /**
+   * REMOVE re-cuts the segment from the original video, because captions are
+   * burned into pixels and there is nothing to switch off in a finished file.
+   * That needs the source still on the worker — worth saying before someone
+   * chooses it, rather than after the job fails.
+   */
+  protected readonly captionsNeedSource = computed(() => this.musicCaptions() === 'REMOVE');
+
+  protected readonly canAddMusic = computed(
+    () =>
+      this.musicSource().trim().length > 0 && draftIsComplete(this.musicBasis(), this.musicNote()),
+  );
 
   constructor() {
     void this.playback.probeLocalServer().then((ok) => this.localAvailable.set(ok));
@@ -306,5 +330,40 @@ export class ClipPage implements OnDestroy {
 
   protected tagsValue(): string {
     return this.draftTags() ?? '';
+  }
+
+  /**
+   * Queue a MUSIC job for this clip.
+   *
+   * The result is a *new* clip, not an edit of this one — the version that was
+   * reviewed stays exactly as it was, and the scored one arrives in the queue
+   * to be watched on its own merits.
+   */
+  protected async addMusic(): Promise<void> {
+    const clip = this.clip();
+    const uid = this.session.uid;
+    const basis = this.musicBasis();
+    if (!clip || !uid || !basis) return;
+
+    const options: MusicOptions = {
+      source: this.musicSource().trim(),
+      mode: this.musicMode(),
+      captions: this.musicCaptions(),
+      rights: {
+        basis,
+        attestedBy: uid,
+        attestedAt: new Date().toISOString(),
+        note: this.musicNote().trim() || null,
+      },
+    };
+
+    await this.run(
+      'Music queued — the scored version will appear in the review queue',
+      async () => {
+        await this.store.requestMusic(uid, clip.id, options);
+        this.showMusic.set(false);
+        this.musicSource.set('');
+      },
+    );
   }
 }

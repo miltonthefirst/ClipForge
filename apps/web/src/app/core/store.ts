@@ -6,6 +6,7 @@ import type {
   ClipPreview,
   Job,
   JobEvent,
+  MusicOptions,
   Publication,
   PublishOptions,
   ReviewState,
@@ -416,6 +417,44 @@ export class ClipForgeStore {
       leaseExpiresAt: null,
       attempts: 0,
       maxAttempts: 3,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      endedAt: null,
+    });
+    return reference.id;
+  }
+
+  /**
+   * Ask the worker to score a clip with a track.
+   *
+   * Creates a job, not a render — same shape as `requestPublish`, and for the
+   * same reason: the media lives on the worker and the work happens there.
+   *
+   * `maxAttempts` is 1. Every way the music stage fails is a property of its
+   * inputs — a link that is not a link, a track with no audio, a source the
+   * workspace GC has taken — and a retry reproduces them exactly while paying
+   * for the download twice.
+   */
+  async requestMusic(uid: string, clipId: string, options: MusicOptions): Promise<string> {
+    const reference = doc(collection(this.firebase.db, 'jobs'));
+    const now = new Date().toISOString();
+    await setDoc(reference, {
+      id: reference.id,
+      uid,
+      type: 'MUSIC',
+      status: 'QUEUED',
+      submission: null,
+      sourceId: null,
+      clipId,
+      musicOptions: options,
+      notBefore: null,
+      stages: [{ name: 'MUSIC', lane: 'CPU', status: 'PENDING' }],
+      workerId: null,
+      leaseExpiresAt: null,
+      attempts: 0,
+      maxAttempts: 1,
       error: null,
       createdAt: now,
       updatedAt: now,

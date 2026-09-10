@@ -77,6 +77,24 @@ function publishJob(uid: string, overrides: Record<string, unknown> = {}) {
   });
 }
 
+/** A music job as the clip page would create it. */
+function musicJob(uid: string, overrides: Record<string, unknown> = {}) {
+  return queuedJob(uid, {
+    id: 'job-music-1',
+    type: 'MUSIC',
+    clipId: 'clip-1',
+    notBefore: null,
+    stages: [{ name: 'MUSIC', lane: 'CPU', status: 'PENDING' }],
+    musicOptions: {
+      source: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      mode: 'BED',
+      captions: 'KEEP',
+      rights: attestation(),
+    },
+    ...overrides,
+  });
+}
+
 describe('the rights gate on publish jobs', () => {
   it('accepts a publish job for an approved, attested clip', async () => {
     await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
@@ -335,5 +353,121 @@ describe('publications are the worker’s to write', () => {
     await assertFails(
       updateDoc(doc(aliceDb(), 'clips/clip-1/publications/pub-1'), { state: 'CANCELLED' }),
     );
+  });
+});
+
+describe('music jobs', () => {
+  it('accepts one for a clip that has not been approved yet', async () => {
+    // Choosing a track is part of deciding whether the clip is any good. The
+    // scored version comes back PENDING and is reviewed on its own merits.
+    await seed('clips/clip-1', pendingClip(ALICE));
+
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-music-1'), musicJob(ALICE)));
+  });
+
+  it('accepts one for a clip somebody else submitted', async () => {
+    await seed('clips/clip-1', pendingClip(BOB));
+
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-music-1'), musicJob(ALICE)));
+  });
+
+  it('refuses one naming a clip that does not exist', async () => {
+    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-music-1'), musicJob(ALICE)));
+  });
+
+  it('refuses one whose music has no rights recorded', async () => {
+    // The whole point of gating the music separately: a Content ID match does
+    // not care which half of the file it came from.
+    await seed('clips/clip-1', pendingClip(ALICE));
+
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-music-1'),
+        musicJob(ALICE, {
+          musicOptions: { source: 'https://youtu.be/x', mode: 'BED', captions: 'KEEP' },
+        }),
+      ),
+    );
+  });
+
+  it("refuses one attesting the music in somebody else's name", async () => {
+    await seed('clips/clip-1', pendingClip(ALICE));
+
+    await assertFails(
+      setDoc(
+        doc(aliceDb(), 'jobs/job-music-1'),
+        musicJob(ALICE, {
+          musicOptions: {
+            source: 'https://youtu.be/x',
+            mode: 'BED',
+            captions: 'KEEP',
+            rights: attestation({ attestedBy: BOB }),
+          },
+        }),
+      ),
+    );
+  });
+
+  it('refuses a mode or caption choice it does not recognise', async () => {
+    await seed('clips/clip-1', pendingClip(ALICE));
+
+    for (const bad of [{ mode: 'SIDECHAIN' }, { captions: 'BLUR' }]) {
+      await assertFails(
+        setDoc(
+          doc(aliceDb(), 'jobs/job-music-1'),
+          musicJob(ALICE, {
+            musicOptions: {
+              source: 'https://youtu.be/x',
+              mode: 'BED',
+              captions: 'KEEP',
+              rights: attestation(),
+              ...bad,
+            },
+          }),
+        ),
+      );
+    }
+  });
+});
+
+describe('publishing a clip that has music', () => {
+  const withMusic = (overrides: Record<string, unknown> = {}) => ({
+    mode: 'BED',
+    captions: 'KEEP',
+    source: 'https://youtu.be/x',
+    rights: attestation(),
+    ...overrides,
+  });
+
+  it('accepts one where both the footage and the track are attested', async () => {
+    await seed(
+      'clips/clip-1',
+      pendingClip(ALICE, { review: 'APPROVED', rights: attestation(), music: withMusic() }),
+    );
+
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+  });
+
+  it('refuses one whose track nobody vouched for', async () => {
+    // The footage is fine. The music is not, and that is enough.
+    await seed(
+      'clips/clip-1',
+      pendingClip(ALICE, {
+        review: 'APPROVED',
+        rights: attestation(),
+        music: withMusic({ rights: null }),
+      }),
+    );
+
+    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+  });
+
+  it('still refuses one whose footage nobody vouched for, music or not', async () => {
+    await seed(
+      'clips/clip-1',
+      pendingClip(ALICE, { review: 'APPROVED', rights: null, music: withMusic() }),
+    );
+
+    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 });

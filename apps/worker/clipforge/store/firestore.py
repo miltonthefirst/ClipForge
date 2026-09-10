@@ -482,6 +482,18 @@ class CandidateStore:
         self._db = client
         self._settings = settings
 
+    def get(self, candidate_id: str) -> Candidate | None:
+        """One candidate, by id.
+
+        The MUSIC stage needs it: removing burned-in captions means cutting the
+        segment again from the source, and the candidate is what recorded where
+        in the source that segment was.
+        """
+        snapshot = self._db.collection(CANDIDATES).document(candidate_id).get()
+        if not snapshot.exists:
+            return None
+        return Candidate.model_validate(snapshot.to_dict() or {})
+
     def for_job(self, job_id: str) -> list[Candidate]:
         query = self._db.collection(CANDIDATES).where(
             filter=firestore.FieldFilter("jobId", "==", job_id)

@@ -233,6 +233,186 @@
         </section>
       }
 
+      <!-- ── Music ──────────────────────────────────────────────────────────
+           An extra step after the clip exists, not part of making it. Adding a
+           track produces a NEW clip; this one is left exactly as it was
+           reviewed, which is why there is no "undo" here to want. -->
+      @if (clip.music; as applied) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold">Music</h2>
+          <p class="mt-2 text-sm text-ink-muted">
+            {{ applied.mode === 'REPLACE' ? 'Original audio replaced' : 'Bed under the speech' }}
+            @if (applied.captions === 'REMOVE') {
+              · captions removed
+            }
+            @if (applied.tempoBpm) {
+              · {{ applied.tempoBpm | number: '1.0-0' }} BPM
+            }
+          </p>
+          <p class="mt-1 truncate text-xs text-ink-subtle" [title]="applied.source">
+            {{ applied.trackTitle || applied.source }}
+          </p>
+          @if (applied.rights; as trackRights) {
+            <p class="mt-1 text-xs text-ink-subtle">Track rights: {{ trackRights.basis }}</p>
+          }
+          @if (clip.derivedFromClipId; as originalId) {
+            <a
+              [routerLink]="['/review', originalId]"
+              class="mt-2 inline-block text-xs text-accent-ink hover:underline"
+              >← the version without music</a
+            >
+          }
+        </section>
+      } @else {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-sm font-semibold">Music</h2>
+            <button
+              type="button"
+              class="text-sm text-ink-subtle hover:text-ink"
+              [attr.aria-expanded]="showMusic()"
+              (click)="showMusic.set(!showMusic())"
+            >
+              {{ showMusic() ? 'Cancel' : 'Add a track' }}
+            </button>
+          </div>
+
+          @if (!showMusic()) {
+            <p class="mt-1 text-xs text-ink-subtle">
+              Makes a new clip with the track added. This one stays as it is.
+            </p>
+          } @else {
+            <div class="mt-3 space-y-3 text-sm">
+              <label class="block">
+                <span class="text-ink-muted">Track</span>
+                <input
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+                  type="text"
+                  placeholder="YouTube link, or a path to an audio file on the worker"
+                  [ngModel]="musicSource()"
+                  (ngModelChange)="musicSource.set($event)"
+                  name="musicSource"
+                />
+                <span class="mt-1 block text-xs text-ink-subtle"
+                  >Only the audio is fetched from a link — never the video.</span
+                >
+              </label>
+
+              <fieldset>
+                <legend class="text-ink-muted">What it does to the existing audio</legend>
+                <div class="mt-2 space-y-2">
+                  <label class="flex items-start gap-2">
+                    <input
+                      type="radio"
+                      name="musicMode"
+                      class="mt-1"
+                      [checked]="musicMode() === 'BED'"
+                      (change)="musicMode.set('BED')"
+                    />
+                    <span>
+                      <span class="font-medium text-ink">Under the speech</span>
+                      <span class="block text-xs text-ink-subtle"
+                        >The original stays. The music ducks automatically whenever anyone talks, so
+                        it fills the pauses without masking words.</span
+                      >
+                    </span>
+                  </label>
+                  <label class="flex items-start gap-2">
+                    <input
+                      type="radio"
+                      name="musicMode"
+                      class="mt-1"
+                      [checked]="musicMode() === 'REPLACE'"
+                      (change)="musicMode.set('REPLACE')"
+                    />
+                    <span>
+                      <span class="font-medium text-ink">Replace the audio</span>
+                      <span class="block text-xs text-ink-subtle"
+                        >The original is removed and the track becomes the whole soundtrack.</span
+                      >
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend class="text-ink-muted">Captions</legend>
+                <div class="mt-2 flex gap-4">
+                  <label class="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="musicCaptions"
+                      [checked]="musicCaptions() === 'KEEP'"
+                      (change)="musicCaptions.set('KEEP')"
+                    />
+                    <span>Keep them</span>
+                  </label>
+                  <label class="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="musicCaptions"
+                      [checked]="musicCaptions() === 'REMOVE'"
+                      (change)="musicCaptions.set('REMOVE')"
+                    />
+                    <span>Remove them</span>
+                  </label>
+                </div>
+                @if (captionsNeedSource()) {
+                  <p class="mt-2 rounded-lg bg-panel-soft px-3 py-2 text-xs text-ink-muted">
+                    Captions are burned into the picture, so removing them means cutting the segment
+                    again from the original video — which has to still be on the worker. Keeping
+                    them needs no re-encode at all.
+                  </p>
+                }
+              </fieldset>
+
+              <!-- The same gate the footage passes, applied to the track. It
+                   does not make a Content ID claim less likely; it records who
+                   decided the track was usable. -->
+              <fieldset>
+                <legend class="text-ink-muted">Why this track may be used</legend>
+                <div class="mt-2 space-y-2">
+                  @for (basis of bases; track basis.value) {
+                    <label class="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="musicBasis"
+                        class="mt-1"
+                        [checked]="musicBasis() === basis.value"
+                        (change)="musicBasis.set(basis.value)"
+                      />
+                      <span>
+                        <span class="font-medium text-ink">{{ basis.label }}</span>
+                        <span class="block text-xs text-ink-subtle">{{ basis.hint }}</span>
+                      </span>
+                    </label>
+                  }
+                </div>
+                @if (musicBasis() === 'FAIR_USE_ASSERTED') {
+                  <textarea
+                    class="mt-2 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
+                    rows="2"
+                    placeholder="Why fair use applies to this track"
+                    [ngModel]="musicNote()"
+                    (ngModelChange)="musicNote.set($event)"
+                    name="musicNote"
+                  ></textarea>
+                }
+              </fieldset>
+
+              <button
+                type="button"
+                class="w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+                [disabled]="busy() || !canAddMusic()"
+                (click)="addMusic()"
+              >
+                Add music
+              </button>
+            </div>
+          }
+        </section>
+      }
+
       <!-- ── Publishing ────────────────────────────────────────────────────
            Only once approved. Offering an upload button beside a clip nobody
            has said yes to invites exactly the mistake the rights gate exists

@@ -31,6 +31,10 @@ dependencies = [
     # degrades to "unknown" rather than failing. Needed by `doctor` and the
     # ModelBroker budget check, so it belongs in core rather than the gpu extra.
     "nvidia-ml-py>=12.560",
+    # Direct rather than transitive. The MUSIC stage's beat analysis is numpy
+    # arithmetic (clipforge/media/beats.py) and must work without the `gpu`
+    # extra, which is where numpy would otherwise arrive from.
+    "numpy>=1.26",
     # The wire protocol, generated from packages/contracts/schemas/clipforge.json.
     # A path dependency rather than a copied module: the PWA and the worker are
     # two implementations of one protocol and must not be able to drift.

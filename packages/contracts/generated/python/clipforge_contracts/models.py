@@ -29,12 +29,13 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     """
-    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days.
+    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched.
     """
 
     ECHO = "ECHO"
     CLIP = "CLIP"
     PUBLISH = "PUBLISH"
+    MUSIC = "MUSIC"
 
 
 class StageStatus(StrEnum):
@@ -62,6 +63,7 @@ class StageName(StrEnum):
     ANALYZE = "ANALYZE"
     RENDER = "RENDER"
     PUBLISH = "PUBLISH"
+    MUSIC = "MUSIC"
 
 
 class Lane(StrEnum):
@@ -123,6 +125,24 @@ class Stage(BaseModel):
     Opaque, stage-owned resume state. The scheduler persists and returns it verbatim and never interprets it.
     """
     error: StageError | None = None
+
+
+class MusicMode(StrEnum):
+    """
+    What the added track does to the clip's own audio. BED keeps the original and sits the music under it, ducking automatically so speech stays intelligible — the usual choice for a talking clip. REPLACE removes the original audio entirely and the track becomes the whole soundtrack, which is what a montage or a silent-action clip wants.
+    """
+
+    BED = "BED"
+    REPLACE = "REPLACE"
+
+
+class MusicCaptions(StrEnum):
+    """
+    Captions are burned into the clip's pixels by the RENDER stage, so they cannot be peeled off a finished file — removing them means re-rendering the segment from the original source without the subtitle filter. KEEP is therefore cheap and always available; REMOVE needs the source media to still be on the worker, and fails clearly when it has been garbage-collected. Offered as a choice rather than inferred from the mode because 'music over captions' is a real style, and guessing wrong either way is worse than asking.
+    """
+
+    KEEP = "KEEP"
+    REMOVE = "REMOVE"
 
 
 class JobEventKind(StrEnum):
@@ -424,55 +444,6 @@ class ClipLocation(StrEnum):
     REMOTE = "REMOTE"
 
 
-class Clip(BaseModel):
-    """
-    A rendered artefact at clips/{clipId}. The FILE itself never enters Firestore. On the free tier it stays on the worker and is reachable through the worker's local file server; when Blaze is available the same document also carries a playbackUrl. Both states are first-class here on purpose, so enabling Blaze populates a field rather than migrating a model.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-    )
-    id: str = Field(..., min_length=1)
-    uid: str = Field(..., min_length=1)
-    candidate_id: str = Field(..., alias="candidateId", min_length=1)
-    source_id: str | None = Field(None, alias="sourceId")
-    job_id: str | None = Field(None, alias="jobId")
-    location: ClipLocation
-    local_path: str = Field(..., alias="localPath", min_length=1)
-    """
-    Absolute path on the worker. Always set, even once a remote copy exists — the worker still needs it to publish (decision D7).
-    """
-    playback_url: str | None = Field(None, alias="playbackUrl")
-    """
-    A URL any browser can fetch. Null on the free tier. Populated by the Cloud Storage adapter, and equally by a tunnel — this field is 'a URL', not 'a Firebase thing'.
-    """
-    storage_path: str | None = Field(None, alias="storagePath")
-    """
-    Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL.
-    """
-    playback_expires_at: AwareDatetime | None = Field(None, alias="playbackExpiresAt")
-    """
-    When the bucket copy stops being playable. Written at upload as upload time plus the retention window, and honoured by the UI without asking the bucket: the object is removed by a Cloud Storage lifecycle rule, which reports to nobody, so a clip whose expiry has passed is treated as local-only rather than discovered to be missing when someone presses play. Null when there is no bucket copy.
-    """
-    thumbnail_path: str | None = Field(None, alias="thumbnailPath")
-    duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
-    width_px: int | None = Field(None, alias="widthPx", ge=1)
-    height_px: int | None = Field(None, alias="heightPx", ge=1)
-    size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
-    render_profile: str | None = Field(None, alias="renderProfile")
-    title: str | None = None
-    description: str | None = None
-    review: ReviewState
-    reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
-    review_note: str | None = Field(None, alias="reviewNote", max_length=2000)
-    """
-    What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
-    """
-    rights: RightsAttestation | None = None
-    created_at: AwareDatetime = Field(..., alias="createdAt")
-
-
 class ClipPreview(BaseModel):
     """
     What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.
@@ -686,6 +657,65 @@ class LlmClipResponse(BaseModel):
     clips: list[LlmClipProposal]
 
 
+class AppliedMusic(BaseModel):
+    """
+    What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    mode: MusicMode
+    captions: MusicCaptions
+    source: str
+    """
+    The URL or path the track came from, verbatim.
+    """
+    track_title: str | None = Field(None, alias="trackTitle")
+    """
+    What the source called itself, when it said. Worth keeping for the description and for answering a claim.
+    """
+    tempo_bpm: float | None = Field(None, alias="tempoBpm")
+    """
+    The tempo the analysis settled on. Null when the track had no beat clear enough to measure, in which case alignment was skipped rather than guessed.
+    """
+    music_start_sec: float | None = Field(None, alias="musicStartSec")
+    """
+    Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
+    """
+    rights: RightsAttestation | None = None
+
+
+class MusicOptions(BaseModel):
+    """
+    What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    source: str = Field(..., min_length=1)
+    """
+    A YouTube URL, or a path to an audio file on the worker. Only the audio is ever fetched from a URL — the video of a music source is of no use here and would cost bandwidth for nothing.
+    """
+    mode: MusicMode
+    captions: MusicCaptions
+    gain_db: float | None = Field(None, alias="gainDb", ge=-40.0, le=12.0)
+    """
+    Trim on the music, relative to the level the stage picks. Null means 'use the stage's judgement', which targets a bed roughly 18 LUFS below speech and a replacement at the clip's own loudness target.
+    """
+    align_to_beat: bool | None = Field(True, alias="alignToBeat")
+    """
+    Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure.
+    """
+    rights: RightsAttestation
+    """
+    Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards.
+    """
+
+
 class PublishDefaults(BaseModel):
     """
     What a publish uses when the clip does not say otherwise. Editable from the app because none of it is secret — unlike the credentials, which never leave the worker.
@@ -776,6 +806,63 @@ class PublishOptions(BaseModel):
     """
 
 
+class Clip(BaseModel):
+    """
+    A rendered artefact at clips/{clipId}. The FILE itself never enters Firestore. On the free tier it stays on the worker and is reachable through the worker's local file server; when Blaze is available the same document also carries a playbackUrl. Both states are first-class here on purpose, so enabling Blaze populates a field rather than migrating a model.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    candidate_id: str = Field(..., alias="candidateId", min_length=1)
+    source_id: str | None = Field(None, alias="sourceId")
+    job_id: str | None = Field(None, alias="jobId")
+    location: ClipLocation
+    local_path: str = Field(..., alias="localPath", min_length=1)
+    """
+    Absolute path on the worker. Always set, even once a remote copy exists — the worker still needs it to publish (decision D7).
+    """
+    playback_url: str | None = Field(None, alias="playbackUrl")
+    """
+    A URL any browser can fetch. Null on the free tier. Populated by the Cloud Storage adapter, and equally by a tunnel — this field is 'a URL', not 'a Firebase thing'.
+    """
+    storage_path: str | None = Field(None, alias="storagePath")
+    """
+    Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL.
+    """
+    playback_expires_at: AwareDatetime | None = Field(None, alias="playbackExpiresAt")
+    """
+    When the bucket copy stops being playable. Written at upload as upload time plus the retention window, and honoured by the UI without asking the bucket: the object is removed by a Cloud Storage lifecycle rule, which reports to nobody, so a clip whose expiry has passed is treated as local-only rather than discovered to be missing when someone presses play. Null when there is no bucket copy.
+    """
+    thumbnail_path: str | None = Field(None, alias="thumbnailPath")
+    duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
+    width_px: int | None = Field(None, alias="widthPx", ge=1)
+    height_px: int | None = Field(None, alias="heightPx", ge=1)
+    size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
+    render_profile: str | None = Field(None, alias="renderProfile")
+    title: str | None = None
+    description: str | None = None
+    review: ReviewState
+    reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
+    derived_from_clip_id: str | None = Field(None, alias="derivedFromClipId")
+    """
+    The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates.
+    """
+    music: AppliedMusic | None = None
+    """
+    What was added to this clip, when something was. Null on an ordinary render.
+    """
+    review_note: str | None = Field(None, alias="reviewNote", max_length=2000)
+    """
+    What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
+    """
+    rights: RightsAttestation | None = None
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+
+
 class Job(BaseModel):
     """
     One pipeline run over one source. Stored at jobs/{jobId}.
@@ -802,7 +889,11 @@ class Job(BaseModel):
     """
     clip_id: str | None = Field(None, alias="clipId")
     """
-    The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+    The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+    """
+    music_options: MusicOptions | None = Field(None, alias="musicOptions")
+    """
+    What a MUSIC job should add, and how. Null for every other job type.
     """
     publish_options: PublishOptions | None = Field(None, alias="publishOptions")
     """

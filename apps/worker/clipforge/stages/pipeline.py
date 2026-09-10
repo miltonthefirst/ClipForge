@@ -18,7 +18,15 @@ import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
-from clipforge_contracts import Job, JobStatus, JobType, Lane, StageName, StageStatus
+from clipforge_contracts import (
+    Job,
+    JobStatus,
+    JobType,
+    Lane,
+    MusicOptions,
+    StageName,
+    StageStatus,
+)
 from clipforge_contracts import Stage as ContractStage
 
 from clipforge.config import Settings
@@ -38,6 +46,7 @@ from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
 __all__ = [
     "CLIP_PIPELINE",
+    "MUSIC_PIPELINE",
     "PUBLISH_PIPELINE",
     "build_clip_registry",
     "build_clip_stages",
@@ -45,6 +54,7 @@ __all__ = [
     "build_registry_factory",
     "clip_stages",
     "new_clip_job",
+    "new_music_job",
     "new_publish_job",
 ]
 
@@ -67,6 +77,12 @@ CLIP_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
 # stage because it starts on the far side of a human approval — see
 # clipforge/stages/publish.py.
 PUBLISH_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.PUBLISH, Lane.CPU),)
+
+# So is a music job, and for the same reason: someone chooses a track while
+# watching a finished clip, which is hours after CLIP ended. CPU lane — the
+# analysis is numpy arithmetic and the mix is ffmpeg, neither of which wants the
+# GPU that Whisper and the model are contending over.
+MUSIC_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.MUSIC, Lane.CPU),)
 
 
 def build_clip_stages(
@@ -216,6 +232,63 @@ def new_publish_job(
     )
 
 
+def build_music_registry(
+    *,
+    settings: Settings,
+    clips: ClipStore,
+    candidates: CandidateStore,
+    sources: SourceStore,
+    workspace: Workspace,
+    blobs: BlobStore,
+) -> StageRegistry:
+    """The one-stage registry for MUSIC jobs."""
+    from clipforge.stages.music import MusicStage
+
+    registry = StageRegistry()
+    registry.register(
+        MusicStage(
+            settings=settings,
+            clips=clips,
+            candidates=candidates,
+            sources=sources,
+            workspace=workspace,
+            blobs=blobs,
+        )
+    )
+    return registry
+
+
+def new_music_job(
+    *,
+    uid: str,
+    clip_id: str,
+    options: MusicOptions,
+    job_id: str | None = None,
+    max_attempts: int = 1,
+) -> Job:
+    """Build a MUSIC job for one finished clip.
+
+    ``max_attempts`` is 1 rather than 3. Every way this stage fails is a
+    property of its inputs — a track with no audio, a source the GC has taken,
+    a link that is not a link — and retrying reproduces them exactly while
+    costing another download.
+    """
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.MUSIC,
+        status=JobStatus.QUEUED,
+        clip_id=clip_id,
+        music_options=options,
+        stages=clip_stages(MUSIC_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def build_publish_registry(
     *,
     settings: Settings,
@@ -288,6 +361,15 @@ def build_registry_factory(
         settings=settings, clips=clips, publications=publications, channels=channels
     )
 
+    music = build_music_registry(
+        settings=settings,
+        clips=clips,
+        candidates=candidates,
+        sources=sources,
+        workspace=workspace,
+        blobs=blobs,
+    )
+
     def factory(job_type: JobType) -> StageRegistry:
         if job_type is JobType.ECHO:
             return echo_registry()
@@ -295,6 +377,8 @@ def build_registry_factory(
             return clip
         if job_type is JobType.PUBLISH:
             return publish
+        if job_type is JobType.MUSIC:
+            return music
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")
 
     return factory
