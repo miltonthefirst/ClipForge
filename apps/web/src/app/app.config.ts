@@ -1,5 +1,5 @@
 import { ApplicationConfig, isDevMode, provideBrowserGlobalErrorListeners } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideServiceWorker } from '@angular/service-worker';
 
 import { loadConfig } from '../environments';
@@ -25,7 +25,9 @@ const useServiceWorker = config.serviceWorker ?? (!config.useEmulators && !isDev
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
-    provideRouter(routes),
+    // Route parameters arrive as component inputs, so a detail page reads
+    // `id` like any other input instead of subscribing to ActivatedRoute.
+    provideRouter(routes, withComponentInputBinding()),
     provideServiceWorker('ngsw-worker.js', {
       enabled: useServiceWorker,
       // The review queue is a live Firestore listener, so registering during

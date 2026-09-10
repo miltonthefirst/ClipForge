@@ -25,6 +25,14 @@ export const routes: Routes = [
     loadComponent: () => import('./features/jobs/jobs-page').then((m) => m.JobsPage),
   },
   {
+    // `withComponentInputBinding` feeds `:id` straight into the component's
+    // `id` input, so the page needs no ActivatedRoute and works identically
+    // when opened cold from a link.
+    path: 'jobs/:id',
+    title: 'Job · ClipForge',
+    loadComponent: () => import('./features/jobs/job-page').then((m) => m.JobPage),
+  },
+  {
     path: 'settings',
     title: 'Settings · ClipForge',
     loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),

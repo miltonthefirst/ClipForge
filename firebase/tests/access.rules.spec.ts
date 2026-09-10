@@ -10,6 +10,7 @@ import {
   ALICE,
   BOB,
   createTestEnvironment,
+  heartbeat,
   queuedJob,
   pendingClip,
   userProfile,
@@ -81,6 +82,13 @@ describe('a pending account', () => {
 
   it('cannot enqueue a job', async () => {
     await assertFails(setDoc(doc(db(ALICE), 'jobs/job-1'), queuedJob(ALICE)));
+  });
+
+  it('cannot see whether a worker is running', async () => {
+    // Worker heartbeats are readable by *any* approved member rather than by an
+    // owner, which makes it worth stating that "any" still stops at the gate.
+    await seed('workers/worker-1', heartbeat('local'));
+    await assertFails(getDoc(doc(db(ALICE), 'workers/worker-1')));
   });
 
   it('cannot approve itself', async () => {

@@ -4,6 +4,8 @@
 //! one capability the browser cannot have — a way to reach the worker running on
 //! this machine.
 
+mod worker;
+
 use std::path::PathBuf;
 
 /// Where the worker and the shell agree the pairing token lives.
@@ -79,7 +81,14 @@ pub fn run() {
             )?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![local_api])
+        .manage(worker::WorkerState::default())
+        .invoke_handler(tauri::generate_handler![
+            local_api,
+            worker::worker_status,
+            worker::worker_start,
+            worker::worker_stop,
+            worker::worker_set_repo,
+        ])
         // Log every page the webview loads.
         //
         // This is not decoration. Google sign-in leaves the app entirely — off

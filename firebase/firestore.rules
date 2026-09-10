@@ -117,8 +117,20 @@ service cloud.firestore {
     // ── Workers ──────────────────────────────────────────────────────────────
     // Heartbeats are written by the worker through the Admin SDK. The PWA reads
     // them to show whether a worker is online and why a job might be stalled.
+    //
+    // Approval, not ownership. A worker is shared infrastructure: one machine
+    // serves everyone's queue, and "is anything running?" is the same question
+    // and the same answer for every approved member. Scoping it to `uid` would
+    // have been the tidier-looking rule and the wrong one — it was also broken
+    // in practice, because the worker announces itself with a placeholder uid
+    // rather than a Firebase account, so `ownsExisting()` matched nobody at all
+    // and the heartbeat was unreadable by every client. A job stuck at QUEUED
+    // then looked identical to a job nobody had explained.
+    //
+    // `heartbeat.uid` stays a record of who runs the worker. It is deliberately
+    // not the access control for it.
     match /workers/{workerId} {
-      allow read: if ownsExisting();
+      allow read: if isApproved();
       allow write: if false;
     }
 

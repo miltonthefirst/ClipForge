@@ -1,0 +1,200 @@
+<!-- ── Worker ───────────────────────────────────────────────────────────────
+     Deliberately above the queue rather than tucked into Settings: "nothing is
+     running" is the explanation for the list underneath it, and an explanation
+     on another page is one nobody reads. -->
+<section
+  class="rounded-xl border bg-panel p-4"
+  [class]="stalled() ? 'border-warn-ink/40' : 'border-line'"
+>
+  <div class="flex flex-wrap items-start gap-3">
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2">
+        <span
+          class="h-2 w-2 shrink-0 rounded-full"
+          [class.bg-ok-ink-soft]="live() === 'online'"
+          [class.bg-accent-ink]="live() === 'busy'"
+          [class.bg-ink-subtle]="live() === 'offline'"
+          aria-hidden="true"
+        ></span>
+        <h2 class="text-sm font-semibold">
+          @switch (live()) {
+            @case ('busy') {
+              Worker busy
+            }
+            @case ('online') {
+              Worker idle
+            }
+            @default {
+              No worker running
+            }
+          }
+        </h2>
+      </div>
+
+      @if (heartbeat(); as beat) {
+        <p class="mt-1 truncate text-xs text-ink-subtle">
+          {{ beat.hostname || beat.workerId }} · v{{ beat.version }}
+          @if (vram(beat); as gpu) {
+            · {{ gpu }}
+          }
+        </p>
+        <p
+          class="mt-0.5 text-xs"
+          [class.text-ink-subtle]="!stale()"
+          [class.text-warn-ink]="stale()"
+        >
+          @if (stale()) {
+            Last heartbeat {{ since(beat.lastSeenAt) }} ago — it stopped reporting.
+          } @else if (beat.activeJobIds?.length) {
+            Running {{ beat.activeJobIds!.length }} job{{
+              beat.activeJobIds!.length === 1 ? '' : 's'
+            }}
+            · last seen {{ since(beat.lastSeenAt) }} ago
+          } @else {
+            Waiting for work · last seen {{ since(beat.lastSeenAt) }} ago
+          }
+        </p>
+      } @else if (heartbeats() === null) {
+        <p class="mt-1 text-xs text-ink-subtle">Checking…</p>
+      } @else {
+        <p class="mt-1 text-xs text-ink-subtle">No worker has ever reported in.</p>
+      }
+    </div>
+
+    <!-- Start and stop exist only in the desktop shell. See worker-control.ts:
+         a browser tab cannot spawn a process, and there is no server-side
+         executor to ask on the free tier. -->
+    @if (control.available) {
+      <div class="flex shrink-0 items-center gap-2">
+        @if (running()) {
+          <button
+            type="button"
+            class="rounded-lg border border-line-strong px-3 py-1.5 text-xs font-medium text-ink hover:bg-line disabled:opacity-50"
+            [disabled]="control.busy()"
+            (click)="stop()"
+          >
+            {{ control.busy() ? 'Stopping…' : 'Stop' }}
+          </button>
+        } @else {
+          <button
+            type="button"
+            class="rounded-lg bg-forge-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+            [disabled]="control.busy() || !control.status()?.canStart"
+            (click)="start()"
+          >
+            {{ control.busy() ? 'Starting…' : 'Start worker' }}
+          </button>
+        }
+      </div>
+    }
+  </div>
+
+  @if (stalled()) {
+    <p class="mt-3 rounded-lg bg-warn-ink/10 px-3 py-2 text-xs text-warn-ink">
+      {{ queued() }} job{{ queued() === 1 ? '' : 's' }} waiting with nothing to run
+      {{ queued() === 1 ? 'it' : 'them' }}.
+      @if (control.available) {
+        Start the worker to pick {{ queued() === 1 ? 'it' : 'them' }} up.
+      } @else {
+        Nothing here can start it — the worker runs on the machine that renders, so open the
+        ClipForge desktop app there, or run
+        <code class="rounded bg-panel-soft px-1">tools/worker.ps1 -Live</code> in a terminal.
+      }
+    </p>
+  }
+
+  @if (heartbeatError(); as message) {
+    <p
+      class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+    >
+      Cannot read worker status: {{ message }}
+    </p>
+  }
+
+  @if (control.error(); as message) {
+    <p
+      class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+    >
+      {{ message }}
+    </p>
+  }
+
+  <!-- ── The desktop half ──────────────────────────────────────────────────
+       Everything below is process detail: what this machine started, what it
+       said, and where it was started from. Absent in a browser, where none of
+       it has an answer. -->
+  @if (control.available && control.status(); as process) {
+    <div class="mt-3 border-t border-line pt-3 text-xs text-ink-subtle">
+      <p>
+        @switch (process.state) {
+          @case ('running') {
+            Started from this app {{ sinceMs(process.startedAtMs) }} ago · pid {{ process.pid }}
+          }
+          @case ('foreign') {
+            Started outside this app
+            @if (process.pid) {
+              · pid {{ process.pid }}
+            }
+          }
+          @case ('exited') {
+            {{ process.note ?? 'The worker exited.' }}
+          }
+          @default {
+            {{ process.note ?? 'Not running on this machine.' }}
+          }
+        }
+      </p>
+
+      @if (process.repo) {
+        <p class="mt-1 truncate" [title]="process.repo">from {{ process.repo }}</p>
+      } @else {
+        <!-- An installed build has no relationship to a checkout, so it has to
+             be told once. A development build resolves this on its own and
+             never shows this field. -->
+        <form class="mt-2 flex gap-2" (ngSubmit)="saveRepo()">
+          <input
+            class="min-w-0 flex-1 rounded-md border border-line-strong bg-panel-soft px-2 py-1 text-xs text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+            type="text"
+            name="repo"
+            placeholder="Path to the ClipForge checkout"
+            autocomplete="off"
+            [ngModel]="repoDraft()"
+            (ngModelChange)="repoDraft.set($event)"
+          />
+          <button
+            type="submit"
+            class="rounded-md border border-line-strong px-2 py-1 text-xs text-ink hover:bg-line disabled:opacity-50"
+            [disabled]="control.busy() || !repoDraft().trim()"
+          >
+            Use
+          </button>
+        </form>
+      }
+
+      @if (process.log.length) {
+        <button
+          type="button"
+          class="mt-2 text-xs text-ink-subtle hover:text-ink-muted"
+          [attr.aria-expanded]="logOpen()"
+          (click)="logOpen.set(!logOpen())"
+        >
+          {{ logOpen() ? 'Hide' : 'Show' }} log ({{ process.log.length }} lines)
+        </button>
+
+        @if (logOpen()) {
+          <!-- `flex-col-reverse` over newest-first lines puts the newest at the
+               bottom *and* opens the pane already scrolled there, which a plain
+               overflow container does not. The alternative is a scrollIntoView
+               effect that fights the user the moment they scroll up to read. -->
+          <div
+            class="mt-2 flex max-h-64 flex-col-reverse overflow-auto rounded-lg bg-panel-soft p-2 font-mono text-[11px] leading-relaxed text-ink-muted"
+          >
+            @for (line of newestFirst(); track $index) {
+              <div class="whitespace-pre-wrap break-all">{{ line }}</div>
+            }
+          </div>
+        }
+      }
+    </div>
+  }
+</section>

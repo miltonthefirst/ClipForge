@@ -228,12 +228,19 @@ describe('worker-owned data is read-only', () => {
     await assertFails(updateDoc(doc(aliceDb(), 'candidates/cand-1'), { total: 100 }));
   });
 
-  it('lets the owner read a heartbeat but never write one', async () => {
-    await seed('workers/worker-1', heartbeat(ALICE));
+  it('lets any approved member read a heartbeat, but nobody write one', async () => {
+    // Deliberately *not* isolated by uid, unlike everything else in this file.
+    // A worker is one shared machine serving everyone's queue, so "is anything
+    // running?" has the same answer for every member — and the worker announces
+    // itself with a placeholder uid rather than a Firebase account, so an
+    // ownership rule here matched nobody and left the heartbeat unreadable.
+    await seed('workers/worker-1', heartbeat('local'));
 
     await assertSucceeds(getDoc(doc(aliceDb(), 'workers/worker-1')));
-    await assertFails(getDoc(doc(bobDb(), 'workers/worker-1')));
+    await assertSucceeds(getDoc(doc(bobDb(), 'workers/worker-1')));
+    await assertSucceeds(getDocs(collection(bobDb(), 'workers')));
     await assertFails(updateDoc(doc(aliceDb(), 'workers/worker-1'), { status: 'OFFLINE' }));
+    await assertFails(getDoc(doc(anonDb(), 'workers/worker-1')));
   });
 
   it('lets the owner read a transcript but never write one', async () => {

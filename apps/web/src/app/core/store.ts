@@ -5,13 +5,16 @@ import type {
   Clip,
   ClipPreview,
   Job,
+  JobEvent,
   Publication,
   PublishOptions,
   ReviewState,
   RightsBasis,
+  Source,
   UserProfile,
   UserRole,
   UserStatus,
+  WorkerHeartbeat,
 } from '@clipforge/contracts';
 import {
   collection,
@@ -63,6 +66,121 @@ export class ClipForgeStore {
         limit(25),
       ),
       (snapshot) => onData(snapshot.docs.map((d) => d.data() as Job)),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * One job, live.
+   *
+   * A separate listener from {@link watchJobs} rather than a lookup into its
+   * result, because the detail page has to work when it is opened directly — a
+   * link from a phone notification, a bookmark, a reload — and because the list
+   * is capped at 25, so an older job is not in it at all.
+   */
+  watchJob(
+    jobId: string,
+    onData: (job: Job | null) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      doc(this.firebase.db, 'jobs', jobId),
+      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Job) : null),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * A job's event log, in the order things actually happened.
+   *
+   * Ordered by `(at, seq)`, not by `at` alone — the same ordering the worker
+   * reads it back with. One transition can emit several events at the identical
+   * instant (a reap emits LEASE_EXPIRED and REQUEUED together), and ordering by
+   * timestamp alone leaves Firestore breaking the tie on a random document id,
+   * so the log would read in a different order on different loads.
+   *
+   * This is the only place a stalled job explains itself: the stage list says
+   * *where* it stopped, and the log says *what happened* — reclaimed after a
+   * lease expiry, retried, cancelled.
+   */
+  watchJobEvents(
+    jobId: string,
+    onData: (events: JobEvent[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(
+        collection(this.firebase.db, 'jobs', jobId, 'events'),
+        orderBy('at', 'asc'),
+        orderBy('seq', 'asc'),
+        limit(200),
+      ),
+      (snapshot) => onData(snapshot.docs.map((d) => d.data() as JobEvent)),
+      (error) => onError?.(error),
+    );
+  }
+
+  /** What a job's submission resolved to, once ingestion has worked it out. */
+  async loadSource(sourceId: string): Promise<Source | null> {
+    const { getDoc } = await import('firebase/firestore');
+    const snapshot = await getDoc(doc(this.firebase.db, 'sources', sourceId));
+    return snapshot.exists() ? (snapshot.data() as Source) : null;
+  }
+
+  /**
+   * What one job actually produced.
+   *
+   * The question a COMPLETED job cannot answer about itself. Every stage can
+   * run to DONE and the job still yield nothing — a video with no speech in it
+   * transcribes to zero words, so the model is asked to judge nothing, proposes
+   * nothing, and RENDER has nothing to do. That job is not failed and it is not
+   * broken; it is finished and empty, and saying so is the difference between
+   * "it worked" and "why is the review queue still empty?".
+   *
+   * Both queries filter on `uid` as well as `jobId`, and not for tidiness: the
+   * security rules only let a list run when the query itself proves it can
+   * return nothing but the caller's own documents.
+   *
+   * The candidates side is counted rather than fetched — an aggregation costs a
+   * fraction of a read per document instead of one each, and the number is all
+   * this page shows.
+   */
+  async loadJobResults(uid: string, jobId: string): Promise<{ candidates: number; clips: Clip[] }> {
+    const { getCountFromServer, getDocs } = await import('firebase/firestore');
+
+    const owned = [where('uid', '==', uid), where('jobId', '==', jobId)];
+
+    const [candidates, clips] = await Promise.all([
+      getCountFromServer(query(collection(this.firebase.db, 'candidates'), ...owned)),
+      getDocs(query(collection(this.firebase.db, 'clips'), ...owned, limit(20))),
+    ]);
+
+    return {
+      candidates: candidates.data().count,
+      clips: clips.docs.map((d) => d.data() as Clip),
+    };
+  }
+
+  /**
+   * Worker heartbeats — who is serving the queue, and what they can do.
+   *
+   * The only listener here that is not scoped to a uid, because a worker is not
+   * user-owned data: one machine serves everyone, and the rules say so
+   * (`allow read: if isApproved()`). Bounded at ten anyway — this deployment has
+   * one worker, and an unbounded listen is how the free tier's daily read
+   * allowance gets spent on nothing.
+   *
+   * What this answers that nothing else can: a job sitting at QUEUED is either
+   * "the worker is busy with something else" or "there is no worker", and those
+   * look identical from the job document alone.
+   */
+  watchWorkers(
+    onData: (workers: WorkerHeartbeat[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'workers'), limit(10)),
+      (snapshot) => onData(snapshot.docs.map((d) => d.data() as WorkerHeartbeat)),
       (error) => onError?.(error),
     );
   }

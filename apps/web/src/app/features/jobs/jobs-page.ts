@@ -2,19 +2,22 @@ import {
   ChangeDetectionStrategy,
   Component,
   OnDestroy,
+  computed,
   effect,
   inject,
   signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import type { Job, Stage } from '@clipforge/contracts';
 
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
+import { WorkerPanel } from './worker-panel';
 
 @Component({
   selector: 'app-jobs-page',
-  imports: [FormsModule],
+  imports: [FormsModule, RouterLink, WorkerPanel],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './jobs-page.html',
 })
@@ -27,6 +30,11 @@ export class JobsPage implements OnDestroy {
   protected readonly submission = signal('');
   protected readonly error = signal<string | null>(null);
   protected readonly submitting = signal(false);
+
+  /** How many jobs are waiting, so the worker panel can say what that means. */
+  protected readonly queuedCount = computed(
+    () => this.jobs()?.filter((job) => job.status === 'QUEUED').length ?? 0,
+  );
 
   constructor() {
     effect((onCleanup) => {
