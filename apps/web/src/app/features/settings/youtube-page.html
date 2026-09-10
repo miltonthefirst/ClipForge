@@ -135,6 +135,22 @@
         >
           Save to this machine
         </button>
+        @if (status()?.hasClient) {
+          <button
+            type="button"
+            class="rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="authorise()"
+          >
+            @if (authorising()) {
+              Waiting for the browser…
+            } @else if (status()?.hasToken) {
+              Re-authorise
+            } @else {
+              Authorise
+            }
+          </button>
+        }
         @if (status()?.hasToken) {
           <button
             type="button"

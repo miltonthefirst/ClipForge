@@ -108,18 +108,32 @@ def test_the_gpu_lane_cannot_be_widened() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _factory_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Settings as shipped, with nothing this machine happens to have set.
+
+    `Settings()` reads the repository's .env, so a bare `Settings()` here would
+    assert what the developer configured rather than what the code defaults to —
+    and would pass or fail depending on whose checkout it ran in. These two
+    tests exist precisely to pin the safe default, so they have to ignore both
+    the file and the environment.
+    """
+    for name in ("CLIPFORGE_PUBLISHING_ENABLED", "CLIPFORGE_YOUTUBE_DEFAULT_PRIVACY"):
+        monkeypatch.delenv(name, raising=False)
+    return Settings(_env_file=None)
+
+
 @pytest.mark.unit
-def test_publishing_is_off_by_default() -> None:
+def test_publishing_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """The default is the point, not caution. Nothing should reach a public
     platform because a config file was left at its factory setting."""
-    assert Settings().publishing_enabled is False
+    assert _factory_settings(monkeypatch).publishing_enabled is False
 
 
 @pytest.mark.unit
-def test_the_default_privacy_is_unlisted() -> None:
+def test_the_default_privacy_is_unlisted(monkeypatch: pytest.MonkeyPatch) -> None:
     """Publishing to the world by accident is not recoverable the way an
     unlisted upload is — the link may already have been scraped."""
-    assert Settings().youtube_default_privacy == "unlisted"
+    assert _factory_settings(monkeypatch).youtube_default_privacy == "unlisted"
 
 
 @pytest.mark.unit

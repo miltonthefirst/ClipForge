@@ -14,6 +14,10 @@ anywhere. Nothing that could publish to a channel ever crosses that line.
 from __future__ import annotations
 
 import json
+import secrets
+import threading
+import webbrowser
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +44,27 @@ __all__ = ["DEFAULT_CHANNEL_ID", "ChannelRoutes"]
 # one marked isDefault", and there is exactly one place to change.
 DEFAULT_CHANNEL_ID = "youtube-primary"
 
+# How long the loopback listener waits for the browser to come back. Long enough
+# to pick an account and read the unverified-app warning; short enough that a
+# window closed halfway through frees the port rather than holding it until the
+# worker restarts.
+AUTHORISE_TIMEOUT_S = 180.0
+
+
+@dataclass
+class _AuthAttempt:
+    """One in-flight authorisation, so the app can ask how it went.
+
+    The OAuth dance cannot answer within the request that starts it — it waits
+    on a human in a browser. So the request returns immediately and this carries
+    the outcome to whichever `/status` poll asks next.
+    """
+
+    started_at: datetime
+    url: str
+    error: str | None = None
+    done: bool = False
+
 
 class ChannelRoutes:
     """Read and change a channel's configuration, from the machine only."""
@@ -47,6 +72,8 @@ class ChannelRoutes:
     def __init__(self, settings: Settings, channels: ChannelStore | None = None) -> None:
         self._settings = settings
         self._channels = channels
+        self._auth_lock = threading.Lock()
+        self._auth: _AuthAttempt | None = None
 
     # ── Routing table ────────────────────────────────────────────────────────
 
@@ -54,6 +81,7 @@ class ChannelRoutes:
         return {
             ("GET", "/status"): self.status,
             ("POST", "/youtube/client"): self.set_client,
+            ("POST", "/youtube/authorise"): self.authorise,
             ("POST", "/youtube/defaults"): self.set_defaults,
             ("POST", "/youtube/disconnect"): self.disconnect,
         }
@@ -81,6 +109,9 @@ class ChannelRoutes:
             except CredentialError:
                 age_days = None
 
+        with self._auth_lock:
+            attempt = self._auth
+
         return {
             "publishingEnabled": self._settings.publishing_enabled,
             "connection": state.value,
@@ -90,6 +121,9 @@ class ChannelRoutes:
             "hasToken": tokens.exists(),
             "tokenAgeDays": age_days,
             "defaultPrivacy": self._settings.youtube_default_privacy,
+            # The app polls this while a browser window is open somewhere.
+            "authorising": attempt is not None and not attempt.done,
+            "authError": attempt.error if attempt is not None else None,
         }
 
     def set_client(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -135,7 +169,108 @@ class ChannelRoutes:
         log.info("channels.client_written", path=str(path))
 
         self._publish_state()
-        return {"ok": True, "next": "Run: clipforge-worker youtube-auth"}
+        return {"ok": True, "next": "Press Authorise to sign in to YouTube."}
+
+    def authorise(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Run the OAuth dance from the app, rather than from a terminal.
+
+        This exists because of the seven-day catch. While the consent screen is
+        in Testing mode Google expires the refresh token every week, which turns
+        `clipforge-worker youtube-auth` from a one-off into a chore — and a
+        chore that needs a terminal, on the one machine, by someone who
+        remembers the command. A button does the same thing.
+
+        It returns as soon as the browser is open. The dance cannot finish
+        inside this request because it waits on a person, so the outcome is
+        reported through `/status`, which the app is already polling. Holding
+        the request open for three minutes instead would work exactly until a
+        proxy, a webview or a laptop lid decided otherwise.
+
+        The secret still never moves: the code exchange happens here, on this
+        machine, and the refresh token is written to the same encrypted file the
+        CLI writes (ADR-0010).
+        """
+        from clipforge.publish.oauth import authorization_url
+        from clipforge.publish.youtube import load_client_secrets
+
+        if not self._client_path().is_file():
+            raise ValueError("no OAuth client yet — save the client id and secret first")
+
+        tokens = TokenStore(self._settings.youtube_token_store)
+        if tokens.exists() and not payload.get("force"):
+            return {"ok": True, "already": True, "message": "Already authorised."}
+
+        with self._auth_lock:
+            current = self._auth
+            if current is not None and not current.done:
+                # A second press while a browser is already open. Re-opening the
+                # window would strand the first `state` and leave the listener
+                # holding the port, so hand back the URL already in flight.
+                return {"ok": True, "waiting": True, "url": current.url}
+
+            client_id, client_secret = load_client_secrets(self._settings.youtube_client_secrets)
+            redirect_uri = f"http://127.0.0.1:{self._settings.youtube_auth_port}/"
+            state = secrets.token_urlsafe(24)
+            url, verifier = authorization_url(
+                client_id=client_id, redirect_uri=redirect_uri, state=state
+            )
+            attempt = _AuthAttempt(started_at=datetime.now(UTC), url=url)
+            self._auth = attempt
+            threading.Thread(
+                target=self._finish_authorisation,
+                args=(attempt, state, verifier, client_id, client_secret, redirect_uri),
+                name="youtube-authorise",
+                daemon=True,
+            ).start()
+
+        opened = webbrowser.open(url)
+        log.info("channels.authorise_started", opened=opened)
+        # The URL goes back either way: a headless or unusual desktop session
+        # cannot open a browser, and the app can still show a link to click.
+        return {
+            "ok": True,
+            "waiting": True,
+            "url": url,
+            "openedBrowser": opened,
+            "timeoutSec": AUTHORISE_TIMEOUT_S,
+        }
+
+    def _finish_authorisation(
+        self,
+        attempt: _AuthAttempt,
+        state: str,
+        verifier: str,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+    ) -> None:
+        """Wait for the redirect, exchange the code, store the token."""
+        from clipforge.publish.oauth import exchange_code, listen_for_redirect
+
+        try:
+            result = listen_for_redirect(
+                self._settings.youtube_auth_port, timeout_s=AUTHORISE_TIMEOUT_S
+            )
+            if not secrets.compare_digest(result.state, state):
+                # A mismatched state means the redirect did not come from the
+                # request we made. Refusing is the entire point of sending one.
+                raise ValueError("the redirect did not match this request; nothing was stored")
+
+            tokens = exchange_code(
+                code=result.code,
+                verifier=verifier,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+            )
+            TokenStore(self._settings.youtube_token_store).save(tokens)
+            log.info("channels.authorised")
+            self._publish_state()
+        except Exception as exc:  # noqa: BLE001 - reported to the app, not raised into a thread
+            attempt.error = str(exc)
+            log.warning("channels.authorise_failed", error=str(exc))
+        finally:
+            attempt.done = True
 
     def set_defaults(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Update the channel's publish defaults in Firestore.
@@ -187,7 +322,7 @@ class ChannelRoutes:
             return (
                 ChannelConnection.NEEDS_AUTH,
                 "The client is set up but nobody has authorised it. "
-                "Run: clipforge-worker youtube-auth",
+                "Press Authorise, or run: clipforge-worker youtube-auth",
             )
         return ChannelConnection.CONNECTED, None
 

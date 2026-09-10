@@ -30,6 +30,22 @@ export interface YouTubeStatus {
   readonly hasToken: boolean;
   readonly tokenAgeDays: number | null;
   readonly defaultPrivacy: string;
+  /** True while a browser window is open on the consent screen. */
+  readonly authorising: boolean;
+  /** Why the last authorisation attempt failed, if it did. */
+  readonly authError: string | null;
+}
+
+export interface AuthoriseResult {
+  readonly ok: boolean;
+  /** Already authorised, so nothing was opened. */
+  readonly already?: boolean;
+  /** A browser is open and the worker is waiting for the redirect. */
+  readonly waiting?: boolean;
+  readonly url?: string;
+  readonly openedBrowser?: boolean;
+  readonly timeoutSec?: number;
+  readonly message?: string;
 }
 
 interface TauriGlobal {
@@ -92,6 +108,17 @@ export class LocalApiService {
 
   async setClient(clientId: string, clientSecret: string): Promise<void> {
     await this.request('POST', '/youtube/client', { clientId, clientSecret });
+  }
+
+  /**
+   * Start the OAuth dance on this machine.
+   *
+   * Returns as soon as the browser is open — the worker cannot finish inside
+   * this request, because it is waiting on a person. Poll `status()` for the
+   * outcome.
+   */
+  async authorise(force = false): Promise<AuthoriseResult | null> {
+    return this.request<AuthoriseResult>('POST', '/youtube/authorise', { force });
   }
 
   async disconnect(): Promise<void> {

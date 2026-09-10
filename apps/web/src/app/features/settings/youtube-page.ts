@@ -55,6 +55,8 @@ export class YouTubePage implements OnDestroy {
   protected readonly busy = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly notice = signal<string | null>(null);
+  /** True from pressing Authorise until the browser comes back, or gives up. */
+  protected readonly authorising = signal(false);
 
   /** Draft defaults, so a half-typed tag list is not written on every keystroke. */
   protected readonly draftPrivacy = signal<string | null>(null);
@@ -101,7 +103,7 @@ export class YouTubePage implements OnDestroy {
       case 'NOT_CONFIGURED':
         return 'Add the OAuth client id and secret below.';
       case 'NEEDS_AUTH':
-        return 'Client saved. Run: clipforge-worker youtube-auth';
+        return 'Client saved. Press Authorise to sign in to YouTube.';
       case 'CONNECTED':
         return null;
       default:
@@ -162,11 +164,70 @@ export class YouTubePage implements OnDestroy {
       // Cleared immediately. It is on the worker now, and there is no reason for
       // it to sit in a form field afterwards.
       this.clientSecret.set('');
-      this.notice.set('Saved to this machine. Now run: clipforge-worker youtube-auth');
+      this.notice.set('Saved to this machine. Now press Authorise.');
       this.status.set(await this.local.status());
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
+      this.busy.set(false);
+    }
+  }
+
+  /**
+   * Sign in to YouTube without leaving the app.
+   *
+   * Testing-mode refresh tokens expire every seven days, so this is a weekly
+   * action rather than a one-off, and a weekly action should not require
+   * remembering a command.
+   *
+   * The worker returns as soon as the browser is open, because the rest of the
+   * dance waits on a person. So this polls `/status` until the token lands —
+   * the same endpoint the page already uses, rather than a second mechanism
+   * that could disagree with it.
+   */
+  protected async authorise(): Promise<void> {
+    this.busy.set(true);
+    this.error.set(null);
+    this.notice.set(null);
+    try {
+      const started = await this.local.authorise(this.status()?.hasToken === true);
+      if (!started) return;
+      if (started.already) {
+        this.notice.set(started.message ?? 'Already authorised.');
+        return;
+      }
+
+      this.authorising.set(true);
+      this.notice.set(
+        started.openedBrowser === false
+          ? 'Could not open a browser. Open this URL to continue: ' + (started.url ?? '')
+          : 'Finish signing in with the browser window that just opened.',
+      );
+
+      const deadline = Date.now() + (started.timeoutSec ?? 180) * 1000 + 5_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        const status = await this.local.status();
+        if (!status) break;
+        this.status.set(status);
+        if (status.connection === 'CONNECTED') {
+          this.notice.set('Connected. ClipForge can publish to this channel.');
+          return;
+        }
+        if (status.authError) {
+          this.error.set(status.authError);
+          this.notice.set(null);
+          return;
+        }
+        if (!status.authorising) break;
+      }
+      // Fell out of the loop without a verdict: the window was probably closed.
+      this.error.set('Authorisation did not finish. Press Authorise to try again.');
+      this.notice.set(null);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.authorising.set(false);
       this.busy.set(false);
     }
   }

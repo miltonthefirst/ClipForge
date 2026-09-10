@@ -44,7 +44,7 @@ _DONE_PAGE = b"""<!doctype html><meta charset="utf-8">
 <body style="font:16px system-ui;padding:3rem;max-width:34rem">
 <h1>Authorised</h1>
 <p>ClipForge can now upload to your channel. You can close this tab and return
-to the terminal.</p>
+to ClipForge.</p>
 <p style="color:#666">The token is stored on this machine only.</p>
 """
 
