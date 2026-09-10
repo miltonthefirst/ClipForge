@@ -214,6 +214,20 @@ service cloud.firestore {
       }
     }
 
+    // ── Channels ─────────────────────────────────────────────────────────────
+    // Publishing destinations. Written by the worker, which is the only thing
+    // that can actually reach a channel, and read by any approved user so the
+    // settings page can show connection state and quota.
+    //
+    // Deliberately holds no credentials: the client secret and refresh token
+    // stay on the worker (docs/adr/0010-worker-held-publishing-credentials.md).
+    // If a field ever appears here that could publish to a channel, this rule is
+    // the wrong shape and the field is in the wrong place.
+    match /channels/{channelId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
     // ── Candidates ───────────────────────────────────────────────────────────
     // Produced by the ANALYZE stage. Read-only to the client: a user who could
     // write these could fabricate a score and corrupt the Phase 9 feedback loop.

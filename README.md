@@ -153,6 +153,10 @@ Off by default, and meant to stay off until you have read
 [Rights and responsible use](#rights-and-responsible-use). Nothing is uploaded while
 `CLIPFORGE_PUBLISHING_ENABLED=false`.
 
+> **Full walkthrough:** [docs/youtube-setup.md](docs/youtube-setup.md) covers every
+> field, where each value comes from, and what each error message means. What
+> follows is the short version.
+
 **1. Create an OAuth client.** In the [Google Cloud console](https://console.cloud.google.com/),
 enable the *YouTube Data API v3*, then create an OAuth client of type **Desktop app**. Add
 `http://127.0.0.1:8766/` as an authorised redirect URI. Download the JSON.

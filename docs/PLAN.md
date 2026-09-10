@@ -933,6 +933,54 @@ job; quota consumption is bounded and displayed; nothing runs without a human tr
 
 ---
 
+#### Phase 12 — Many channels → *toward v0.4.0*
+
+**Goal.** One ClipForge, several channels with different content, without the
+operator holding which-is-which in their head.
+
+**Already done, deliberately.** The data model was built for this before it was
+needed: `channels/{channelId}` is a collection, a `Publication` records the
+`channelId` it went to, and a PUBLISH job carries `publishOptions.channelId`.
+That was not speculative generality — it is the difference between adding a
+channel later and migrating every publication record to work out where it went.
+
+**In scope**
+
+- Several `Channel` documents, each with its own label, defaults and connection
+  state; one marked `isDefault`.
+- **Per-channel credentials on the worker.** Today's single token file becomes
+  one per channel (`youtube-token-{channelId}.enc`). The client can be shared or
+  separate; separate is cleaner and costs a second OAuth client.
+- Channel picker on the publish page, defaulting to `isDefault`.
+- Per-channel publish defaults, so a cooking channel and a tech channel get
+  different tags and categories without editing either every time.
+- Channel-aware review: filter the queue by intended channel, since a clip is
+  usually *for* somewhere.
+
+**The awkward part, stated up front.** YouTube quota is per **Google Cloud
+project**, not per channel — 10,000 units a day shared across every channel
+authorised through the same OAuth client. Six uploads total, not six each. Either
+each channel gets its own Cloud project (more setup, independent quota) or they
+share and the UI must show a *pooled* budget. The second is simpler and honest;
+the first is what someone actually publishing daily will want. This phase should
+support both and default to sharing.
+
+**Explicitly out of scope.** Cross-posting one clip to several channels at once,
+and any per-channel scoring or model tuning — that is Phase 9's business once it
+has evidence.
+
+**Exit criteria**
+
+1. Two channels are connected and a clip publishes to the chosen one, verified by
+   the video appearing on that channel and not the other.
+2. Revoking one channel's authorisation leaves the other publishing.
+3. Quota is reported per Cloud project with the pooling made explicit, so "six
+   uploads" is never silently six each.
+4. A publication written before this phase still resolves to a channel, rather
+   than becoming an orphan.
+
+---
+
 ### M5 — Release
 
 #### Phase 11 — Open-source hardening
@@ -949,13 +997,13 @@ with the §1 thesis.
 they are consolidated here because they share one blocker — they all need real accounts, real
 hardware in someone's hand, or a served build, and none of them can be satisfied by a test:
 
-| Item | From | Blocked on |
+| Item | From | Status, 2026-09-10 |
 | --- | --- | --- |
-| The physical-phone review demo | 7 | A real Firebase project with Auth and FCM enabled |
-| A Lighthouse PWA audit | 7 | A served build; worth running with the phone demo |
-| `v0.1.0` not yet tagged | 7 | The two items above |
-| A real upload appearing on a real channel | 8 | The operator's Google account and an OAuth client |
-| FCM push on job completion | 7 | Nothing — it was simply never built. Needs a VAPID key from the console once it is |
+| The physical-phone review demo | 7 | **Unblocked.** The project is deployed at `bytepic-clipforge.web.app` with Auth enabled. Needs doing, not building |
+| A Lighthouse PWA audit | 7 | **Unblocked.** There is a served build with a real service worker |
+| `v0.1.0` not yet tagged | 7 | **Unblocked** by the two above |
+| A real upload appearing on a real channel | 8 | Still blocked: needs an OAuth client and the operator's Google account. `docs/youtube-setup.md` is the walkthrough |
+| FCM push on job completion | 7 | Still absent. Never built; needs a VAPID key from the console once it is |
 
 The first four do not gate the code: everything each one exercises is built and tested up to the
 point where the real account or the real device begins, and what is unverified is precisely that last
@@ -1031,21 +1079,36 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 
 ## 8. Immediate next actions
 
-**Milestones M0, M1 and M2 are complete, and M3 is half complete** (2026-09-09). Phases 0 through 8
-have met their exit criteria, with four items honestly outstanding and consolidated into Phase 11
-(see the table there). The pipeline runs end to end on the free tier: a YouTube URL becomes a
-transcript, a ranked set of candidates, a rendered vertical clip with captions, a phone review, a
-recorded rights basis, and an unlisted upload.
+**Milestones M0, M1 and M2 are complete, and M3 is half complete** (2026-09-10). Phases 0 through 8
+have met their exit criteria, with five items consolidated into Phase 11 — three of which the
+deployment work has since unblocked (see the table there). The pipeline runs end to end on the free
+tier: a YouTube URL becomes a transcript, a ranked set of candidates, a rendered vertical clip with
+captions, a phone review, a recorded rights basis, and an unlisted upload.
+
+**It is also deployed and in use**, which the phases never covered because none of them asked for it.
+Recorded here rather than retrofitted into a phase it did not belong to:
+
+| Landed outside the plan | What it is |
+| --- | --- |
+| Firebase deployment | A hosting target, `tools/deploy.ps1` that cannot deploy to the wrong project, rules and indexes live at `bytepic-clipforge.web.app` |
+| The service worker | Closed a Phase 7 gap that had been recorded as complete and was not |
+| Branding and theming | Icons generated from `logo.png`; light and dark themes on semantic tokens, with contrast checked rather than assumed |
+| The desktop shell | Tauri wrapping the same Angular build, so clips can actually be *watched* — the one thing a phone cannot do |
+| Accounts and approval | Email/password sign-in, and access gated on an admin approving the account rather than merely authenticating it |
+| The local control API | Loopback-only, token-authenticated, so a YouTube client secret can be typed into the app and still never leave the machine ([ADR-0011](adr/0011-local-control-api.md)) |
+
+Two of those were corrections rather than additions, and both are worth keeping visible: the service
+worker had been signed off without existing, and FCM still has not been built.
 
 Current test coverage, all runnable from a clean clone with no GPU and no network except where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 329 | nothing |
+| Worker unit | 342 | nothing |
 | Worker integration | 74 | Firestore emulator |
-| Security rules | 62 | Auth + Firestore + Storage emulators |
-| Web unit | 28 | nothing |
-| Playwright E2E | 20 | Auth + Firestore emulators, stubbed worker |
+| Security rules | 86 | Auth + Firestore + Storage emulators |
+| Web unit | 32 | nothing |
+| Playwright E2E | 36 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 12 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

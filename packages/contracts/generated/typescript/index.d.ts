@@ -17,6 +17,10 @@ export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH';
  */
 export type JobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 /**
+ * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
+ */
+export type PublishPrivacy = 'private' | 'unlisted' | 'public';
+/**
  * Ordered pipeline steps. ECHO_* belong to the ECHO job type only.
  */
 export type StageName =
@@ -86,9 +90,9 @@ export type PublishPlatform = 'YOUTUBE';
  */
 export type PublicationState = 'PENDING' | 'UPLOADING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED';
 /**
- * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
+ * Whether the worker can currently publish to this channel. NOT_CONFIGURED means no OAuth client has been supplied; NEEDS_AUTH means one has but nobody has authorised it, or the refresh token expired — which it does every 7 days while the consent screen is in Testing mode.
  */
-export type PublishPrivacy = 'private' | 'unlisted' | 'public';
+export type ChannelConnection = 'NOT_CONFIGURED' | 'NEEDS_AUTH' | 'CONNECTED' | 'ERROR';
 /**
  * ADMIN can approve other users and change roles. MEMBER can use the app for their own data and nothing else. There is no third level because there is no third thing to protect.
  */
@@ -114,6 +118,7 @@ export interface ClipForgeContracts {
   clip?: Clip;
   clipPreview?: ClipPreview;
   publication?: Publication;
+  channel?: Channel;
   userProfile?: UserProfile;
   workerHeartbeat?: WorkerHeartbeat;
   llmClipResponse?: LlmClipResponse;
@@ -142,6 +147,10 @@ export interface Job {
    */
   clipId?: string | null;
   /**
+   * Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
+   */
+  publishOptions?: PublishOptions | null;
+  /**
    * The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first.
    */
   notBefore?: string | null;
@@ -166,6 +175,15 @@ export interface Job {
   updatedAt: string;
   startedAt?: string | null;
   endedAt?: string | null;
+}
+/**
+ * What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
+ */
+export interface PublishOptions {
+  channelId?: string | null;
+  privacy?: PublishPrivacy | null;
+  categoryId?: string | null;
+  tags?: string[];
 }
 /**
  * One idempotent, checkpointed step of a job.
@@ -424,6 +442,10 @@ export interface Publication {
    */
   externalId?: string | null;
   externalUrl?: string | null;
+  /**
+   * Which channel this went to. Recorded on the attempt because a clip published today and re-published elsewhere next month must not look like it went to the same place.
+   */
+  channelId?: string | null;
   privacy?: PublishPrivacy | null;
   title?: string | null;
   description?: string | null;
@@ -444,6 +466,56 @@ export interface Publication {
   publishAt?: string | null;
   createdAt: string;
   publishedAt?: string | null;
+}
+/**
+ * A publishing destination, at channels/{channelId}. Modelled as a collection from the outset even though the UI manages one: adding a second channel is then a document and a second `youtube-auth`, not a schema migration and a rewrite of every publication record. Deliberately holds NO credentials — the client secret and refresh token live on the worker (docs/adr/0010-worker-held-publishing-credentials.md).
+ */
+export interface Channel {
+  id: string;
+  uid: string;
+  platform: PublishPlatform;
+  /**
+   * What the operator calls it. Free text, because 'the cooking one' is more useful at 6am than a channel id.
+   */
+  label: string;
+  isDefault?: boolean;
+  externalChannelId?: string | null;
+  /**
+   * Read back from YouTube after authorising, so the app can show which account was actually connected rather than which one was intended.
+   */
+  externalChannelTitle?: string | null;
+  connection: ChannelConnection;
+  /**
+   * Why the connection is not CONNECTED, in words the operator can act on.
+   */
+  connectionMessage?: string | null;
+  authorisedAt?: string | null;
+  checkedAt?: string | null;
+  defaults: PublishDefaults;
+  quotaDay?: string | null;
+  quotaUsedUnits?: number | null;
+  uploadsRemainingToday?: number | null;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+/**
+ * What a publish uses when the clip does not say otherwise. Editable from the app because none of it is secret — unlike the credentials, which never leave the worker.
+ */
+export interface PublishDefaults {
+  privacy: PublishPrivacy;
+  /**
+   * YouTube category id. 22 is People & Blogs, which is the safe default for talking-head clips.
+   */
+  categoryId?: string;
+  tags?: string[];
+  /**
+   * Appended to every title, for a channel handle or series marker. Truncation still applies: YouTube rejects titles over 100 characters.
+   */
+  titleSuffix?: string | null;
+  /**
+   * Appended to every description. Where a standing credit, licence note or link block belongs.
+   */
+  descriptionTemplate?: string | null;
 }
 /**
  * A person with an account, at users/{uid}. The document id IS the Firebase Auth uid, which is what lets security rules resolve a caller's status with one get() and no join.

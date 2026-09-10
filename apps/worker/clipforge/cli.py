@@ -37,11 +37,14 @@ def run(
     are returned to the queue so another worker can take them immediately, and
     the heartbeat flips to OFFLINE.
     """
+    from clipforge.localapi import LocalControlApi, read_or_create_token
     from clipforge.localserver import LocalFileServer
     from clipforge.media.workspace import Workspace
+    from clipforge.publish.channels import ChannelRoutes
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
     from clipforge.store.blobs import build_blob_store
+    from clipforge.store.channels import ChannelStore
     from clipforge.store.firestore import (
         CandidateStore,
         ClipStore,
@@ -96,6 +99,25 @@ def run(
             typer.echo(f"local file server could not start: {exc}", err=True)
             file_server = None
 
+    # The desktop app's way of handing over a YouTube client secret without it
+    # ever reaching Firestore. Loopback only, bearer-token authenticated.
+    # See docs/adr/0011-local-control-api.md.
+    control: LocalControlApi | None = None
+    if settings.local_api_enabled:
+        routes = ChannelRoutes(settings, ChannelStore(client, settings)).table()
+        control = LocalControlApi(
+            routes,
+            token=read_or_create_token(settings.local_api_token_file),
+            port=settings.local_api_port,
+        )
+        try:
+            control.start()
+        except OSError as exc:
+            # A port clash must not stop the worker doing its actual job, the
+            # same reasoning as the file server above.
+            typer.echo(f"local control API could not start: {exc}", err=True)
+            control = None
+
     if once:
         finished = worker.run_once()
         typer.echo(
@@ -108,6 +130,8 @@ def run(
     finally:
         if file_server is not None:
             file_server.stop()
+        if control is not None:
+            control.stop()
 
 
 @app.command()

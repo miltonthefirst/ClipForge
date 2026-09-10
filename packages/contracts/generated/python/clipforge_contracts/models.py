@@ -125,59 +125,6 @@ class Stage(BaseModel):
     error: StageError | None = None
 
 
-class Job(BaseModel):
-    """
-    One pipeline run over one source. Stored at jobs/{jobId}.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-    )
-    id: str = Field(..., min_length=1)
-    uid: str = Field(..., min_length=1)
-    """
-    Owning user. Every security rule keys off this field.
-    """
-    type: JobType
-    status: JobStatus
-    source_id: str | None = Field(None, alias="sourceId")
-    """
-    Set by the DOWNLOAD stage once ingestion resolves the submission to a source. Null until then.
-    """
-    submission: str | None = None
-    """
-    What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected.
-    """
-    clip_id: str | None = Field(None, alias="clipId")
-    """
-    The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
-    """
-    not_before: AwareDatetime | None = Field(None, alias="notBefore")
-    """
-    The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first.
-    """
-    stages: list[Stage] = Field(..., min_length=1)
-    """
-    Ordered. Executed front to back; DONE stages are skipped on retry.
-    """
-    worker_id: str | None = Field(None, alias="workerId")
-    lease_expires_at: AwareDatetime | None = Field(None, alias="leaseExpiresAt")
-    """
-    Set on claim, extended by heartbeat. A RUNNING job whose lease is in the past is reclaimable by the reaper.
-    """
-    attempts: int = Field(..., ge=0)
-    max_attempts: int = Field(..., alias="maxAttempts", ge=1)
-    error: StageError | None = None
-    """
-    The failure that terminated the job, copied from the failing stage.
-    """
-    created_at: AwareDatetime = Field(..., alias="createdAt")
-    updated_at: AwareDatetime = Field(..., alias="updatedAt")
-    started_at: AwareDatetime | None = Field(None, alias="startedAt")
-    ended_at: AwareDatetime | None = Field(None, alias="endedAt")
-
-
 class JobEventKind(StrEnum):
     CREATED = "CREATED"
     CLAIMED = "CLAIMED"
@@ -400,6 +347,17 @@ class RightsBasis(StrEnum):
     PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
 
 
+class ChannelConnection(StrEnum):
+    """
+    Whether the worker can currently publish to this channel. NOT_CONFIGURED means no OAuth client has been supplied; NEEDS_AUTH means one has but nobody has authorised it, or the refresh token expired — which it does every 7 days while the consent screen is in Testing mode.
+    """
+
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    NEEDS_AUTH = "NEEDS_AUTH"
+    CONNECTED = "CONNECTED"
+    ERROR = "ERROR"
+
+
 class UserRole(StrEnum):
     """
     ADMIN can approve other users and change roles. MEMBER can use the app for their own data and nothing else. There is no third level because there is no third thing to protect.
@@ -606,6 +564,10 @@ class Publication(BaseModel):
     The platform's id for the uploaded video. Null until the upload completes.
     """
     external_url: str | None = Field(None, alias="externalUrl")
+    channel_id: str | None = Field(None, alias="channelId")
+    """
+    Which channel this went to. Recorded on the attempt because a clip published today and re-published elsewhere next month must not look like it went to the same place.
+    """
     privacy: PublishPrivacy | None = None
     title: str | None = None
     description: str | None = None
@@ -712,6 +674,142 @@ class LlmClipResponse(BaseModel):
     clips: list[LlmClipProposal]
 
 
+class PublishDefaults(BaseModel):
+    """
+    What a publish uses when the clip does not say otherwise. Editable from the app because none of it is secret — unlike the credentials, which never leave the worker.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    privacy: PublishPrivacy
+    category_id: str | None = Field("22", alias="categoryId")
+    """
+    YouTube category id. 22 is People & Blogs, which is the safe default for talking-head clips.
+    """
+    tags: list[str] | None = []
+    title_suffix: str | None = Field(None, alias="titleSuffix")
+    """
+    Appended to every title, for a channel handle or series marker. Truncation still applies: YouTube rejects titles over 100 characters.
+    """
+    description_template: str | None = Field(None, alias="descriptionTemplate")
+    """
+    Appended to every description. Where a standing credit, licence note or link block belongs.
+    """
+
+
+class Channel(BaseModel):
+    """
+    A publishing destination, at channels/{channelId}. Modelled as a collection from the outset even though the UI manages one: adding a second channel is then a document and a second `youtube-auth`, not a schema migration and a rewrite of every publication record. Deliberately holds NO credentials — the client secret and refresh token live on the worker (docs/adr/0010-worker-held-publishing-credentials.md).
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    platform: PublishPlatform
+    label: str = Field(..., min_length=1)
+    """
+    What the operator calls it. Free text, because 'the cooking one' is more useful at 6am than a channel id.
+    """
+    is_default: bool | None = Field(False, alias="isDefault")
+    external_channel_id: str | None = Field(None, alias="externalChannelId")
+    external_channel_title: str | None = Field(None, alias="externalChannelTitle")
+    """
+    Read back from YouTube after authorising, so the app can show which account was actually connected rather than which one was intended.
+    """
+    connection: ChannelConnection
+    connection_message: str | None = Field(None, alias="connectionMessage")
+    """
+    Why the connection is not CONNECTED, in words the operator can act on.
+    """
+    authorised_at: AwareDatetime | None = Field(None, alias="authorisedAt")
+    checked_at: AwareDatetime | None = Field(None, alias="checkedAt")
+    defaults: PublishDefaults
+    quota_day: str | None = Field(None, alias="quotaDay")
+    quota_used_units: int | None = Field(None, alias="quotaUsedUnits", ge=0)
+    uploads_remaining_today: int | None = Field(
+        None, alias="uploadsRemainingToday", ge=0
+    )
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    updated_at: AwareDatetime | None = Field(None, alias="updatedAt")
+
+
+class PublishOptions(BaseModel):
+    """
+    What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    channel_id: str | None = Field(None, alias="channelId")
+    privacy: PublishPrivacy | None = None
+    category_id: str | None = Field(None, alias="categoryId")
+    tags: list[str] | None = []
+
+
+class Job(BaseModel):
+    """
+    One pipeline run over one source. Stored at jobs/{jobId}.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    """
+    Owning user. Every security rule keys off this field.
+    """
+    type: JobType
+    status: JobStatus
+    source_id: str | None = Field(None, alias="sourceId")
+    """
+    Set by the DOWNLOAD stage once ingestion resolves the submission to a source. Null until then.
+    """
+    submission: str | None = None
+    """
+    What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected.
+    """
+    clip_id: str | None = Field(None, alias="clipId")
+    """
+    The clip a PUBLISH job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+    """
+    publish_options: PublishOptions | None = Field(None, alias="publishOptions")
+    """
+    Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
+    """
+    not_before: AwareDatetime | None = Field(None, alias="notBefore")
+    """
+    The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first.
+    """
+    stages: list[Stage] = Field(..., min_length=1)
+    """
+    Ordered. Executed front to back; DONE stages are skipped on retry.
+    """
+    worker_id: str | None = Field(None, alias="workerId")
+    lease_expires_at: AwareDatetime | None = Field(None, alias="leaseExpiresAt")
+    """
+    Set on claim, extended by heartbeat. A RUNNING job whose lease is in the past is reclaimable by the reaper.
+    """
+    attempts: int = Field(..., ge=0)
+    max_attempts: int = Field(..., alias="maxAttempts", ge=1)
+    error: StageError | None = None
+    """
+    The failure that terminated the job, copied from the failing stage.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    updated_at: AwareDatetime = Field(..., alias="updatedAt")
+    started_at: AwareDatetime | None = Field(None, alias="startedAt")
+    ended_at: AwareDatetime | None = Field(None, alias="endedAt")
+
+
 class ClipForgeContracts(BaseModel):
     """
     The complete ClipForge wire protocol. The PWA and the worker are two independent implementations of the types defined here; both are generated from this file, so neither can drift from it. See docs/adr/0005-single-source-contracts.md. Every timestamp is an ISO 8601 date-time string, NOT a Firestore Timestamp: the store adapters convert at the boundary, which keeps this document language-neutral and lets the unit tier compare documents as plain JSON with no emulator running.
@@ -732,6 +830,7 @@ class ClipForgeContracts(BaseModel):
     clip: Clip | None = None
     clip_preview: ClipPreview | None = Field(None, alias="clipPreview")
     publication: Publication | None = None
+    channel: Channel | None = None
     user_profile: UserProfile | None = Field(None, alias="userProfile")
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")

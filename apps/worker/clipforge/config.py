@@ -119,6 +119,17 @@ class Settings(BaseSettings):
     # configurable rather than picked at random.
     youtube_auth_port: int = Field(default=8766, ge=1024, le=65535)
 
+    # ── Local control API ────────────────────────────────────────────────────
+    # A loopback-only surface the desktop app uses to hand the worker a YouTube
+    # client secret, so it can be typed into a form instead of a terminal and
+    # still never leave the machine. Bound to 127.0.0.1 unconditionally — unlike
+    # the file server's host, this one is not configurable, because there is no
+    # version of exposing it that is a supported mode.
+    # See docs/adr/0011-local-control-api.md.
+    local_api_enabled: bool = True
+    local_api_port: int = Field(default=8767, ge=1024, le=65535)
+    local_api_token_file: Path = Path("./.clipforge/local-api-token")
+
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "console"

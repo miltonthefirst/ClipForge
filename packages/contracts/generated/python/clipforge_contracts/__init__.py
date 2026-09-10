@@ -11,6 +11,8 @@
 
 from clipforge_contracts.models import (
     Candidate as Candidate,
+    Channel as Channel,
+    ChannelConnection as ChannelConnection,
     Clip as Clip,
     ClipForgeContracts as ClipForgeContracts,
     ClipLocation as ClipLocation,
@@ -27,6 +29,8 @@ from clipforge_contracts.models import (
     LlmClipResponse as LlmClipResponse,
     Publication as Publication,
     PublicationState as PublicationState,
+    PublishDefaults as PublishDefaults,
+    PublishOptions as PublishOptions,
     PublishPlatform as PublishPlatform,
     PublishPrivacy as PublishPrivacy,
     ReviewState as ReviewState,
@@ -53,6 +57,8 @@ from clipforge_contracts.models import (
 
 __all__ = [
     "Candidate",
+    "Channel",
+    "ChannelConnection",
     "Clip",
     "ClipForgeContracts",
     "ClipLocation",
@@ -69,6 +75,8 @@ __all__ = [
     "LlmClipResponse",
     "Publication",
     "PublicationState",
+    "PublishDefaults",
+    "PublishOptions",
     "PublishPlatform",
     "PublishPrivacy",
     "ReviewState",
