@@ -133,14 +133,26 @@ export class LocalApiService {
     const handshake = await this.connect();
     if (!handshake.available || !handshake.origin || !handshake.token) return null;
 
-    const response = await fetch(`${handshake.origin}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${handshake.token}`,
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${handshake.origin}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${handshake.token}`,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch {
+      // fetch rejects with a bare "Failed to fetch" when nothing is listening,
+      // which is true and useless. There is only one thing that serves this
+      // API, and it not running is the answer every single time — most often
+      // after a restart, when nothing has started it again yet.
+      throw new Error(
+        'The ClipForge worker is not running on this machine, so its settings ' +
+          'cannot be read. Start it, then press Recheck.',
+      );
+    }
 
     if (!response.ok) {
       // The worker sends its reason in the body, and it is the useful half —

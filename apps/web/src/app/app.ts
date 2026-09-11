@@ -17,6 +17,16 @@ interface NavItem {
   readonly path: string;
   readonly label: string;
   readonly adminOnly?: boolean;
+  /**
+   * Whether this link highlights only on its own URL.
+   *
+   * Derived rather than declared: `routerLinkActive` matches by prefix, so
+   * /settings stays lit while you are on /settings/youtube and two items in the
+   * sidebar look selected at once. Exactness cannot simply be switched on for
+   * everything either — /review would then go dark on /review/:id, which is
+   * where you spend the most time.
+   */
+  readonly exact: boolean;
 }
 
 @Component({
@@ -52,7 +62,7 @@ export class App {
   protected readonly themeChoice = this.theme.choice;
 
   protected readonly navigation = computed<NavItem[]>(() => {
-    const items: NavItem[] = [
+    const items: Omit<NavItem, 'exact'>[] = [
       { path: '/review', label: 'Review' },
       { path: '/publish', label: 'Publish' },
       { path: '/jobs', label: 'Jobs' },
@@ -62,7 +72,14 @@ export class App {
     if (this.isAdmin()) {
       items.push({ path: '/admin/users', label: 'People', adminOnly: true });
     }
-    return items;
+    // An item that is the parent of another item in this list must match
+    // exactly; everything else keeps prefix matching so a detail page still
+    // lights its section. Deriving it means adding a child route later cannot
+    // forget to update a flag.
+    return items.map((item) => ({
+      ...item,
+      exact: items.some((other) => other.path.startsWith(`${item.path}/`)),
+    }));
   });
 
   /** What to call the person, in order of how much they chose it. */
