@@ -92,6 +92,23 @@ export class ClipPage implements OnDestroy {
    * player appears and this has nothing left to say.
    */
   protected readonly uploadRequested = signal(false);
+
+  /**
+   * Whether this clip would be unplayable on a device that is not this one.
+   *
+   * Deliberately not "can I play it here". Playing locally is the case where
+   * offering the upload matters most: you are at the desk, it plays fine, and
+   * the phone you will actually review on cannot reach the worker at all. Tying
+   * the offer to what *this* screen can show hid it from exactly the person
+   * standing next to the machine that could fix it.
+   */
+  protected readonly needsCloudCopy = computed(() => {
+    const clip = this.clip();
+    if (!clip) return false;
+    // A `playbackUrl` is a URL any browser can fetch, wherever it came from.
+    if (this.source().kind === 'remote') return false;
+    return !this.playback.bucketCopyLive(clip);
+  });
   protected readonly localAvailable = signal(false);
 
   protected readonly error = signal<string | null>(null);

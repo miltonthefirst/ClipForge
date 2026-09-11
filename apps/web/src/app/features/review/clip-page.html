@@ -48,18 +48,34 @@
         }
       </div>
 
-      @if (source().kind === 'poster') {
+      @if (source().kind === 'local') {
+        <p class="mt-2 text-xs text-ink-subtle">Playing from the worker on this machine.</p>
+      }
+
+      <!-- Offered whenever no copy exists that another device could fetch —
+           including while this one is playing it locally. That is the case
+           where it matters most: the clip plays here because this is the
+           machine that rendered it, and the phone it will be reviewed on
+           cannot reach that file at all. -->
+      @if (needsCloudCopy()) {
         <div class="mt-2 rounded-lg border border-line bg-panel/60 px-3 py-2 text-xs text-ink-muted">
           @if (uploadRequested()) {
             <p>
-              Upload queued. The worker has to be running to pick it up; this turns into a player by
-              itself the moment the clip lands.
+              Upload queued. The worker has to be running to pick it up; this becomes playable
+              everywhere the moment the clip lands.
             </p>
           } @else {
-            <p>
-              No cloud copy of this one — it plays on the machine that rendered it. You can still
-              review it from the poster, the hook and the score.
-            </p>
+            @if (source().kind === 'poster') {
+              <p>
+                No cloud copy of this one, and this device cannot reach the machine that rendered
+                it. You can still review it from the poster, the hook and the score.
+              </p>
+            } @else {
+              <p>
+                No cloud copy of this one. It plays here because this is the machine that rendered
+                it — a phone cannot reach that.
+              </p>
+            }
             <button
               type="button"
               class="mt-2 rounded-lg border border-line-strong px-3 py-1.5 text-xs font-medium text-ink hover:bg-line disabled:opacity-50"
@@ -70,8 +86,6 @@
             </button>
           }
         </div>
-      } @else if (source().kind === 'local') {
-        <p class="mt-2 text-xs text-ink-subtle">Playing from the worker on this machine.</p>
       }
 
       @if (filmstripSrc(); as strip) {
