@@ -4,7 +4,8 @@
 > hardware, cut high-potential vertical clips, review them from your phone, publish, and learn from
 > what actually performed.
 
-**Status:** Milestone M0 complete (Phases 0-2) · **Target of record:** v0.1.0 · **Owner:** @miltonthefirst
+**Status** (2026-09-11): M0, M1 and M2 complete · M3 half complete — Phase 8 shipped, Phase 9 next
+**Target of record:** v0.2.0, with v0.1.0 built but not yet tagged · **Owner:** @miltonthefirst
 **Supersedes:** [`initial-plan.md`](../initial-plan.md) (kept for provenance)
 
 ---
@@ -246,8 +247,15 @@ minutes it took to download and transcribe.
 | **M1 — Pipeline** | 3, 4, 5, 6 | URL in, rendered vertical clip on disk. No UI |
 | **M2 — Product** | 7 | **v0.1.0** — the phone review loop |
 | **M3 — Feedback loop** | 8, 9 | **v0.2.0** — publish and measure |
-| **M4 — Autonomy** | 10 | **v0.3.0** — trend-driven sourcing |
+| **M4 — Autonomy** | 10, 12 | **v0.3.0** — trend-driven sourcing, then **v0.4.0** — several channels |
 | **M5 — Release** | 11 | Public open-source launch |
+| **M6 — Synthesis** | 13, 14 | **v0.6.0** — an idea becomes a finished video |
+| **M7 — Reach** | 15 | **v0.7.0** — every platform, correctly labelled |
+| **M8 — Cadence** | 16 | **v0.8.0** — a few a week, without being asked |
+| **M9 — Calibration** | 17 | **v0.9.0** — one rubric over both kinds of content |
+
+M6 onwards is [the synthesis track](#the-synthesis-track--m6-to-m9), and **none of it starts until M5
+is done**.
 
 ---
 
@@ -1031,6 +1039,289 @@ as a known limitation; CI badges are green; the repository is made public.
 
 ---
 
+### The synthesis track — M6 to M9
+
+**Gate: none of this begins until M5 is done and the repository is public.** Everything below assumes
+Phases 9, 10, 11 and 12 have shipped. It is written down now, well ahead of being needed, for two
+reasons: the research behind it is perishable — platform policies and API terms surveyed in September
+2026 will have moved by the time the track starts — and three of its conclusions change decisions
+*inside* the current plan, which is far cheaper to know now than to retrofit later (see §8).
+
+**The thesis, in one sentence.** ClipForge harvests clips out of video that already exists; the tools
+it would otherwise be compared against — AutoShorts, Faceless.so, Autopostr, Viibeo — synthesise video
+that does not. That difference is one new pipeline, not a new product. Script, narrate, gather
+visuals, assemble; everything from assembly onwards is already built and already tested.
+
+#### The design volume, and why it decides almost everything
+
+**3 to 7 videos a week.** Not a day. This is a personal, open-source project, and that number is a
+deliberate ceiling rather than a starting point to grow out of. Most of what the commercial platforms
+are architected for simply evaporates at that volume:
+
+| At ~60 videos/month — their design point | At 12–30 videos/month — ours |
+| --- | --- |
+| Review is the bottleneck; batch approval is mandatory | One or two clips a day. The Phase 7 review screen is already enough |
+| Auto-publish is the product | Auto-publish is never needed, and is **explicitly out of scope** |
+| Posting must be automated or the product does not work | Manual upload is a few taps a day and costs nothing |
+| Throughput per video is the metric | **Quality** per video is the metric. Spend the machine time |
+| YouTube's ~6 uploads/day is a hard ceiling | It is roughly 6× more headroom than this plan needs |
+
+The fourth row is the one that changes engineering decisions. Five videos a week is about half an hour
+of machine time, which means the *expensive* option is affordable everywhere: write three candidate
+scripts and keep the best, generate stills rather than settle for whatever stock returns, spend a few
+pounds a month on an API-generated hero shot when one is worth it. The constraint stops being capacity
+and becomes **ideas worth making a video about** — which is Phase 10's business, and raises its value
+rather than lowering it.
+
+#### What the hardware will and will not do
+
+Measured against §2's budget — the same 5.4 GB, the same broker, the same two lanes:
+
+| Component | Verdict | Cost here | Note |
+| --- | --- | --- | --- |
+| Script and planning | **Local** | ~3.4 GB VRAM | `qwen3.5:4b`, already pulled and already brokered. A 4B is weak at holistic judgement over a whole transcript — hence D6 — but strong at generating 250 words against a rubric |
+| Narration (TTS) | **Local, CPU** | 0 GB VRAM | Kokoro-82M: 82M parameters, Apache 2.0, 54 voices, faster than real time on CPU. It never touches the broker. Chatterbox (MIT, ~0.5B) is the GPU upgrade if a cloned voice ever becomes the point |
+| Caption timing | **Local** | ~1.6 GB, ~5 s | Transcribe *our own* narration to recover word timings, then feed `build_ass` unchanged. No new alignment dependency, and captions match what was said rather than what was scripted |
+| Stock b-roll | **Local** | £0 + network | Pexels and Pixabay are free for commercial use, no attribution, monetisation permitted. Neither may be resold *as* stock, and identifiable people must not be made to imply endorsement |
+| Generated stills | **Local** | ~5–6 GB, 8–15 s/image | Fits, but contends with Whisper and the LLM for the same budget, so it is a third **broker-managed model class**, never a stage that grabs VRAM behind the scheduler's back |
+| Generated video | ❌ **Not on this card** | 8 GB+, minutes/shot | Wan 2.2's 5B GGUF wants ~8 GB even with offloading; LTX is the fastest open model and still measures in minutes per shot on a 3050. Viable as a *garnish* through an API, budgeted per series — never as the body of a video |
+| Talking-head avatar | Deferred | mid-range card | Wav2Lip runs on consumer hardware and MuseTalk is near real time; LatentSync, the one that looks good, wants an A10 or 4090. Least load-bearing, most likely to look cheap. Not in this track |
+| Generated music | Licence-gated | — | MusicGen's *output* is CC BY-NC — self-hosting does not launder a licence. ACE-Step and YuE are Apache 2.0. The `MUSIC` job already accepts a track from anywhere, so a curated library is the zero-risk default |
+
+The single most useful finding: **narration and stock gathering both sit on the CPU lane**, so the
+synthesis pipeline barely competes with `CLIP` for the GPU at all.
+
+#### Decisions, taken now
+
+Continuing the numbering from §3.1.
+
+| # | Decision | Why |
+| --- | --- | --- |
+| D10 | **`COMPOSE` is a new job type**, not extra `CLIP` stages | A job's `stages` array is authoritative for its whole life. Bolting synthesis onto `CLIP` would give every harvest job stages it can never run. `PUBLISH` and `MUSIC` already set this pattern |
+| D11 | **Narration runs on the CPU lane** | Kokoro is 82M parameters and faster than real time on 24 cores. Putting it on the GPU lane would serialise it behind Whisper for no gain |
+| D12 | **Delivery, not posting**, for any platform we cannot authorise | See below. This is the decision that unblocks the whole track |
+| D13 | **Generated scripts are scored by `RUBRIC_MAXIMA`** — the clip rubric, unchanged | It is the only thing that makes Phase 17 an experiment rather than two unrelated dashboards |
+| D14 | **Licence-clean generators only** | Kokoro (Apache 2.0) and Chatterbox (MIT) in, XTTS v2 (CPML) and F5-TTS (CC BY-NC) out on licence rather than on quality; MusicGen out entirely. An open-source project cannot ship a pipeline whose output its users may not use |
+| D15 | **No auto-publish, at any volume this plan targets** | One or two clips a day is not a queue that needs automating, and the human approval is precisely what YouTube's inauthentic-content policy rewards. Naming it here so it can be refused later |
+| D16 | **The critic loop lives *inside* the `SCRIPT` stage** | The pipeline is a linear ordered list of stages with no branching, so "rewrite and try again" cannot be a stage that jumps backwards. It is a bounded loop inside one stage, checkpointing each attempt so a crash mid-loop resumes rather than restarting |
+
+ADRs will be written for D10, D12, D13 and D16 when the phase implementing each begins.
+
+#### D12 in full: why we deliver rather than post
+
+Generating for every platform is easy. *Posting* to every platform is five separate app reviews.
+
+| Platform | Route | What stands in the way |
+| --- | --- | --- |
+| YouTube | **Direct, working** | Nothing new. Quota is ~6 uploads/day pooled per Cloud project — 6× the headroom this plan needs |
+| TikTok | Gated | `video.publish` (Direct Post) needs explicit approval beyond developer access; until audited an app may only post private/self-only. Two-step chunked upload, no native scheduling, and `creator_info` must be queried first so the creator's privacy, duet and stitch settings are honoured |
+| Instagram / Facebook | Gated | Graph API, a Business or Creator account linked to a Page, and app review for content publishing. Reels eligibility is 5–90 s at 9:16; outside that it silently posts as a plain video |
+| X, LinkedIn, Threads | Gated | Four more reviews, four more token lifecycles, four more sets of media constraints |
+
+The commercial answer is an aggregator — upload-post at ~$16–24/mo, Blotato at ~$29/mo — which holds
+the approvals so you never file for them. **We are not taking it**, for three reasons that all point
+the same way: at 3–7 videos a week it is a subscription per upload that a human could perform in
+thirty seconds; an open-source project should not require a paid third-party account to be usable from
+a clean clone; and it would put a metered cloud dependency at the centre of a project whose entire
+thesis (§1) is that the expensive parts run locally.
+
+So the default for every platform we cannot authorise is a **delivery handoff**: the worker produces
+the correctly-sized file, the caption written for that platform, and the list of disclosure toggles
+that must be set by hand — and the operator uploads it. The aggregator adapter stays a named,
+refusable option behind the same port, reconsidered only if volume passes roughly 150 posts a month or
+manual upload becomes genuinely annoying. Direct TikTok and Instagram adapters land if and when those
+approvals are ever granted, and nothing above them has to change when they do.
+
+The part that makes this more than a download button is §M7's `AWAITING_MANUAL` state. A manual upload
+that is never recorded is a hole in the experiment log exactly where most of the content went — so the
+handoff is not complete until the operator pastes the published URL back, which gives `Publication`
+its join key and keeps Phase 9 and Phase 17 whole.
+
+---
+
+### M6 — Synthesis
+
+#### Phase 13 — The synthesis spine → **v0.5.0**
+
+**Goal.** A sentence typed on the phone becomes a finished, captioned, narrated vertical video in the
+review queue — with every *judgement* in it still made by a human.
+
+**In scope**
+
+- A `COMPOSE` job type and a `Brief` contract — hook, promise, payoff, audience, call to action —
+  typed by hand at this stage. No model decides what the video is about yet.
+- `NARRATE` on the CPU lane, behind a `SpeechSynth` port. Kokoro adapter first; the port exists so
+  Chatterbox is an adapter later rather than a rewrite.
+- `ALIGN` on the GPU lane, reusing the existing Whisper loader against the generated narration and
+  feeding `build_ass` unchanged.
+- `GATHER` on the CPU lane behind a `StockProvider` port (Pexels first), recording licence, author and
+  source URL for every asset it takes — the asset library is an attestation surface, not a cache.
+- `IMAGINE` on the GPU lane for generated stills, as a broker-managed model class (D11's sibling).
+  The job's stage list is built from the brief's visual mode at creation time, so a stock-visual job
+  carries no `IMAGINE` stage at all rather than carrying one that is skipped.
+- `ASSEMBLE` on the CPU lane — a Ken Burns and shot-sequence filtergraph alongside the existing
+  crop-and-caption one, deterministic to the same standard `render.py` already meets.
+- An asset library with its own quota and GC, separate from the source/clip workspace.
+
+**Explicitly out of scope.** Any model choosing the topic, the angle or the script (Phase 14); any
+platform beyond the existing YouTube path (Phase 15); anything unattended (Phase 16); avatars and
+lip-sync, permanently.
+
+**Exit criteria**
+
+1. A 45-second video composes end to end with no network call except the stock fetch.
+2. It appears in the review queue with poster and filmstrip, and plays in the desktop shell.
+3. Re-composing from the same brief and seed produces byte-identical output.
+4. Every asset in the finished video carries a recorded licence and source.
+5. A crash during any stage resumes without re-narrating or re-fetching.
+
+**Risks.** The Ken Burns assembly is a new filtergraph and filtergraphs are wrong in ways you find
+after a two-minute encode — so the plan is a value and unit-tested before ffmpeg ever sees it, exactly
+as `media/music.py` already does it.
+
+---
+
+#### Phase 14 — The editorial chain → **v0.6.0**
+
+**Goal.** The brief stops being typed and starts being argued for, by models that are allowed to say
+no.
+
+**In scope**
+
+- `PLAN` and `SCRIPT` as prompt *roles* over one resident 4B, each with its own `promptVersion` and a
+  schema-validated output. Chaining roles rather than weights is what makes this viable on 6 GB: a
+  prompt swap is free, a model swap is a broker lease and a reload.
+- The critic inside `SCRIPT` (D16): write → score against `RUBRIC_MAXIMA` → rewrite, bounded, with
+  every attempt checkpointed and the best-scoring attempt retained.
+- **Best-of-N rather than first-acceptable**, because at 3–7 videos a week we can afford to generate
+  three and discard two. This is the single place where the low volume buys real quality.
+- An optional larger second opinion — `qwen3.5:9b` on the CPU, outside the broker lease — for
+  installs that want a harsher judge and have the cores to spare.
+- Shot-list generation: script → per-shot visual prompts and stock query terms, so `GATHER` and
+  `IMAGINE` stop guessing.
+
+**Explicitly out of scope.** Fine-tuning anything; per-series prompt tuning (that needs Phase 17's
+evidence); and any model with a licence that restricts commercial output (D14).
+
+**Exit criteria**
+
+1. Given only a topic, the chain produces a scored script.
+2. Scripts below the floor are visibly rejected and rewritten rather than rendered — observable in the
+   job event log, not merely asserted.
+3. Every candidate carries the `modelVersion` and `promptVersion` that produced it.
+4. A prompt change does not silently rescore history.
+5. Best-of-N is demonstrable: three attempts recorded, one rendered, the scores explaining why.
+
+**Risks.** **A 4B writes bland scripts.** This is the real quality risk of the whole track and it
+cannot be settled before the phase runs. The hedges are the critic loop, best-of-N, prompt versioning,
+and a cheap escape hatch to a larger model on the CPU lane. If all four fail, the honest outcome is a
+documented limitation, not a louder prompt.
+
+---
+
+### M7 — Reach
+
+#### Phase 15 — Delivery to every platform → **v0.7.0**
+
+**Goal.** One approved clip reaches every platform it is meant for, at the right aspect ratio, with
+the right caption and the right AI disclosure — by whichever route that platform actually allows.
+
+**In scope**
+
+- A `PublishTarget` port with two adapters: **`direct`** (YouTube, unchanged) and **`manual`** (D12).
+  `PublishPlatform` grows beyond `YOUTUBE`; `Publication` gains `deliveryMethod` so analytics can tell
+  a hand-upload from an API one.
+- `PublicationState` gains `AWAITING_MANUAL`. The handoff card in the PWA offers the file, the
+  caption, and a checklist of the toggles the operator must set in that app by hand; pasting the
+  published URL back completes the record.
+- Per-platform variants as **derived clips** — `derivedFromClipId` already exists for exactly this —
+  rather than re-rendering from source. Instagram's 5–90 s Reels window is enforced here, not
+  discovered after posting.
+- Per-platform metadata: title, description and hashtags to each platform's conventions and limits.
+- A `synthesis` provenance record on `Clip` — which of script, voice, visuals and music were
+  machine-made, and the model and prompt version for each — written by the stages that did the work,
+  never ticked by a human afterwards. It sits beside `RightsAttestation`, which already established
+  the pattern of recording *why* a publish was permitted.
+- Disclosure derived from that record: YouTube's altered-content declaration, TikTok's AIGC label,
+  Meta's label. **A publish whose provenance record is unset fails closed.**
+
+**Explicitly out of scope.** The aggregator adapter (D12 — named so it can be refused); direct TikTok
+and Instagram adapters until those approvals exist; auto-publish (D15).
+
+**Exit criteria**
+
+1. One approval produces correct deliverables for YouTube plus at least two manual platforms.
+2. YouTube still publishes directly, with quota reported as before.
+3. Every deliverable carries the correct AI disclosure, derived from the provenance record.
+4. A publication left in `AWAITING_MANUAL` is visible as unfinished business, not silently lost.
+5. Pasting a URL back completes the record with an `externalUrl` Phase 17 can join on.
+6. A clip whose remote copy has expired can still be delivered — see the lifecycle risk in §7.
+
+---
+
+### M8 — Cadence
+
+#### Phase 16 — Series → **v0.8.0**
+
+**Goal.** The machine proposes the week's videos. A human approves them over coffee.
+
+**In scope**
+
+- `series/{seriesId}` — topic, persona, voice, render profile, target platforms, cadence and a
+  monthly spend cap for any paid shot. The thing the commercial tools charge extra for, or only allow
+  one of.
+- An **inventory target** per series ("keep three approved clips ahead") driving job creation, rather
+  than a cron that generates regardless of backlog. At this volume a cron would produce a queue nobody
+  asked for.
+- Publish times as `notBefore` on `PUBLISH` jobs — the existing mechanism (§3.3), no second scheduler
+  that could disagree with the first.
+- **Rotation as a functional requirement**: voice, hook structure, render profile and pacing vary
+  across a series by construction. This is not polish — "generic, repetitive or template-based" is the
+  exact language of the policy that demonetises channels, and rotation is the mechanical answer to it.
+- A kill switch that halts in-flight work from the phone.
+
+**Explicitly out of scope.** Auto-publish (D15, again, deliberately). Per-series model or prompt
+tuning, which needs Phase 17's evidence first. Cross-posting one clip to every series.
+
+**Exit criteria**
+
+1. Two or three series run different formats concurrently at 3–7 videos a week combined.
+2. A week's content is produced unattended and reviewed in a sitting.
+3. Generation stops on its own when the inventory target is met.
+4. Rotation is observable across a week's output rather than asserted.
+5. The kill switch demonstrably stops in-flight work.
+
+---
+
+### M9 — Calibration
+
+#### Phase 17 — One rubric over both kinds of content → **v0.9.0**
+
+**Goal.** Find out whether any of it worked — on one rubric, across harvested and synthesised alike.
+
+This phase **extends Phase 9 rather than repeating it.** Phase 9 built the machinery; this points it
+at a second kind of content and asks whether the scores ever predicted anything.
+
+**In scope**
+
+- Metrics for manually delivered publications, not only API-published ones — which is what the
+  `AWAITING_MANUAL` paste-back exists to make possible.
+- Harvested versus synthesised on one leaderboard, which only works because D13 made them share a
+  rubric.
+- Rubric reweighting against outcomes, with historical scores preserved rather than overwritten — the
+  warning in §8 applies here unchanged and with more force, since there are now two populations to
+  confound.
+- Series-level retirement: a format that stops earning attention stops earning GPU time.
+
+**Exit criteria**
+
+1. Every publication has metrics attached, whichever route it took.
+2. A recalibration changes future scores without rewriting past ones.
+3. The leaderboard can answer "is synthesised content earning its machine time" with evidence.
+4. At least one format or series is retired on evidence rather than on taste.
+
+---
+
 ## 5. Repository layout
 
 ```text
@@ -1089,7 +1380,14 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 | **No Cloud Storage on Spark**, so no remote clip playback | **Certain** | Medium | Clips stay local behind a `BlobStore` port; poster frame in Firestore; playback precedence resolves `playbackUrl` → local server → poster. Enabling Blaze is one adapter ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)) | 6, 7 |
 | A large transcript exceeds Firestore's 1 MiB document limit | Medium | Medium | Transcripts live on the worker; Firestore holds a `TranscriptRef` only | 4 |
 | The local file server becomes an unauthenticated file-read surface | Low | High | Bind `127.0.0.1` only, read-only, every path confined to the workspace root; never bind `0.0.0.0` without adding auth first | 7 |
-| Scope creep into "autonomous viral agent" | **High** | High | Every phase names what it explicitly excludes; Phase 10 is gated on Phase 9 evidence | all |
+| Synthesised content demonetised as "inauthentic" | Medium | **High** | The human approval gate stays mandatory (D15); disclosure is derived from a provenance record rather than a checkbox; rotation across a series is a build requirement, not polish | 15, 16 |
+| TikTok and Instagram never approve direct posting | **High** | **Low** — by design | D12 makes this cost a few taps a day rather than a capability. The direct adapters are additive if approval ever lands | 15 |
+| A manual upload is never recorded, so the feedback loop has a hole where most of the content went | **High** without mitigation | High | `AWAITING_MANUAL` plus a paste-back that completes the `Publication`; unfinished deliveries stay visible as unfinished business | 15, 17 |
+| The 5-day Storage lifecycle deletes a clip still waiting to be uploaded by hand | Medium | Medium | The local copy is authoritative and outlives the remote one; delivery re-uploads on demand rather than assuming `playbackUrl` still resolves. Local retention must exceed the longest expected manual delay | 15 |
+| A licence-restricted model's output reaches a published video | Low | **High** | D14 is enforced as an allowlist in code, not a note in a doc — self-hosting does not launder CC BY-NC | 13, 14 |
+| A 4B writes bland *scripts* — distinct from bland selections | Medium | High | Critic loop inside `SCRIPT`, best-of-N (affordable only because the volume is low), prompt versioning, and an escape hatch to a larger model on the CPU lane | 14 |
+| The asset library outgrows the disk alongside sources and clips | Medium | Medium | Its own quota and GC, separate from `CLIPFORGE_WORKSPACE_MAX_GB`; 148 GB free on P: is the number to watch | 13 |
+| Scope creep into "autonomous viral agent" | **High** | High | Every phase names what it explicitly excludes; Phase 10 is gated on Phase 9 evidence; the synthesis track caps itself at 3–7 videos a week and refuses auto-publish outright (D15) | all |
 
 ## 8. Immediate next actions
 
@@ -1190,3 +1488,24 @@ from whichever stage implementations its caller happened to construct. Both were
 suite that assembled its own pipelines. The pipeline's shape is now declared once, in `CLIP_PIPELINE`,
 and asserted against the runnable stages — and a phase that adds a stage should extend that
 declaration first.
+
+### Three things the synthesis track asks of the phases still to come
+
+[The synthesis track](#the-synthesis-track--m6-to-m9) is gated behind M5 and starts no earlier. But it
+is cheap to keep three doors open while building Phases 9, 10 and 12, and expensive to reopen them
+afterwards. None of these is a scope change; each is a shape to prefer where the choice is free.
+
+1. **Phase 9 — do not assume a publication was made through an API.** Keep the metrics fetch keyed on
+   whatever `externalId` the `Publication` carries, without caring how it got there. Phase 15 adds
+   publications the operator created by hand, and they must be able to join the same way or most of
+   the evidence Phase 17 needs will be missing precisely where the new content is.
+2. **Phase 12 — resist making `Channel` YouTube-shaped.** It already carries `platform`, which is the
+   hard part. The trap is per-channel *credentials*: a manual-delivery platform has none at all, so
+   `ChannelConnection` should tolerate a channel that is configured and usable without ever having
+   been authorised.
+3. **Phase 10 — the opportunity scorer becomes an input, not just a queue.** What it ranks for a human
+   to promote is the same signal `PLAN` will later consume. Building it as a YouTube-search-only
+   scorer would mean rewriting it; keeping the source behind a port would not.
+
+The research these come from was done on 2026-09-11 and is summarised inline above rather than linked,
+because a link to a survey of platform pricing and API terms ages into a liability.
