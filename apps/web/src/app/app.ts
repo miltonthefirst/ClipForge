@@ -67,6 +67,7 @@ export class App {
       { path: '/publish', label: 'Publish' },
       { path: '/jobs', label: 'Jobs' },
       { path: '/settings', label: 'Settings' },
+      { path: '/settings/worker', label: 'Worker' },
       { path: '/settings/youtube', label: 'YouTube' },
     ];
     if (this.isAdmin()) {

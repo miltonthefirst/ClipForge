@@ -9,9 +9,9 @@
  */
 
 /**
- * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched.
+ * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else.
  */
-export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC';
+export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC' | 'UPLOAD';
 /**
  * Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.
  */
@@ -34,7 +34,7 @@ export type RightsBasis =
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
 /**
- * Ordered pipeline steps. ECHO_* belong to the ECHO job type only.
+ * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it.
  */
 export type StageName =
   | 'ECHO_ONE'
@@ -45,7 +45,8 @@ export type StageName =
   | 'ANALYZE'
   | 'RENDER'
   | 'PUBLISH'
-  | 'MUSIC';
+  | 'MUSIC'
+  | 'UPLOAD';
 /**
  * Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).
  */

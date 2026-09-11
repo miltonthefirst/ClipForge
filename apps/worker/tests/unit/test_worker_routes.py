@@ -40,16 +40,26 @@ def routes(worker: FakeWorker, *, pid: int = 4242) -> WorkerRoutes:
 # ── The routing table ────────────────────────────────────────────────────────
 
 
-def test_the_table_offers_exactly_the_two_routes_it_documents() -> None:
-    """Read and stop, and nothing that could change how the worker behaves.
-
-    A control surface that grows write routes quietly is one whose threat model
-    (docs/adr/0011-local-control-api.md) has stopped describing it.
-    """
+def test_the_table_offers_exactly_the_routes_it_documents() -> None:
+    """Reads, and one stop. Nothing else that could change how the worker behaves."""
     assert set(routes(FakeWorker()).table()) == {
         ("GET", "/worker"),
+        ("GET", "/worker/settings"),
         ("POST", "/worker/shutdown"),
     }
+
+
+def test_stopping_is_the_only_thing_this_surface_can_do() -> None:
+    """The property the route list is really guarding.
+
+    Read routes may grow — describing the worker more fully is the point of it.
+    A second way to *change* the worker is what would make the threat model in
+    docs/adr/0011-local-control-api.md stop describing this surface, so that is
+    what is pinned, rather than a count that has to be edited every time
+    something new becomes visible.
+    """
+    writes = {path for method, path in routes(FakeWorker()).table() if method != "GET"}
+    assert writes == {"/worker/shutdown"}
 
 
 # ── Status ───────────────────────────────────────────────────────────────────

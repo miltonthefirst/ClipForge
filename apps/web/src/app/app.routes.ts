@@ -43,6 +43,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),
   },
   {
+    path: 'settings/worker',
+    title: 'Worker · ClipForge',
+    loadComponent: () => import('./features/worker/worker-page').then((m) => m.WorkerPage),
+  },
+  {
     path: 'settings/youtube',
     title: 'YouTube · ClipForge',
     loadComponent: () => import('./features/settings/youtube-page').then((m) => m.YouTubePage),

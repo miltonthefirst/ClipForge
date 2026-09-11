@@ -29,13 +29,14 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     """
-    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched.
+    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else.
     """
 
     ECHO = "ECHO"
     CLIP = "CLIP"
     PUBLISH = "PUBLISH"
     MUSIC = "MUSIC"
+    UPLOAD = "UPLOAD"
 
 
 class StageStatus(StrEnum):
@@ -52,7 +53,7 @@ class StageStatus(StrEnum):
 
 class StageName(StrEnum):
     """
-    Ordered pipeline steps. ECHO_* belong to the ECHO job type only.
+    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it.
     """
 
     ECHO_ONE = "ECHO_ONE"
@@ -64,6 +65,7 @@ class StageName(StrEnum):
     RENDER = "RENDER"
     PUBLISH = "PUBLISH"
     MUSIC = "MUSIC"
+    UPLOAD = "UPLOAD"
 
 
 class Lane(StrEnum):

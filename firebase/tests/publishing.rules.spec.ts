@@ -95,6 +95,18 @@ function musicJob(uid: string, overrides: Record<string, unknown> = {}) {
   });
 }
 
+/** An upload job as the review page would create it from a phone. */
+function uploadJob(uid: string, overrides: Record<string, unknown> = {}) {
+  return queuedJob(uid, {
+    id: 'job-upload-1',
+    type: 'UPLOAD',
+    clipId: 'clip-1',
+    notBefore: null,
+    stages: [{ name: 'UPLOAD', lane: 'CPU', status: 'PENDING' }],
+    ...overrides,
+  });
+}
+
 describe('the rights gate on publish jobs', () => {
   it('accepts a publish job for an approved, attested clip', async () => {
     await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
@@ -469,5 +481,50 @@ describe('publishing a clip that has music', () => {
     );
 
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+  });
+});
+
+describe('upload jobs', () => {
+  it('lets a reviewer ask for a clip they cannot play', async () => {
+    // The whole case: reviewing on a phone, the clip is on the worker's disk
+    // only, and the reviewer is nowhere near that machine. No approval is
+    // required — being unable to watch it is precisely why it has not been
+    // reviewed yet.
+    await seed('clips/clip-1', pendingClip(ALICE, { rights: null }));
+
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-upload-1'), uploadJob(ALICE)));
+  });
+
+  it('lets any approved member ask, not only whoever submitted it', async () => {
+    // One shared workspace: whoever is holding a phone is the reviewer.
+    await seed('clips/clip-1', pendingClip(ALICE));
+
+    await assertSucceeds(
+      setDoc(doc(bobDb(), 'jobs/job-upload-1'), uploadJob(BOB)),
+    );
+  });
+
+  it('refuses one that names no clip', async () => {
+    // The worker would claim it, fail, and burn attempts reporting a request
+    // that could never have been satisfied.
+    await assertFails(
+      setDoc(doc(aliceDb(), 'jobs/job-upload-1'), uploadJob(ALICE, { clipId: null })),
+    );
+  });
+
+  it('refuses one that names a clip that does not exist', async () => {
+    await assertFails(
+      setDoc(doc(aliceDb(), 'jobs/job-upload-1'), uploadJob(ALICE, { clipId: 'no-such-clip' })),
+    );
+  });
+
+  it('refuses one that arrives already claimed', async () => {
+    // The generic guard, restated for this type: a job may only be created in
+    // the one state that means "not yet started".
+    await seed('clips/clip-1', pendingClip(ALICE));
+
+    await assertFails(
+      setDoc(doc(aliceDb(), 'jobs/job-upload-1'), uploadJob(ALICE, { workerId: 'worker-1' })),
+    );
   });
 });

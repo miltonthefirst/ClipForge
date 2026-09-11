@@ -48,14 +48,17 @@ __all__ = [
     "CLIP_PIPELINE",
     "MUSIC_PIPELINE",
     "PUBLISH_PIPELINE",
+    "UPLOAD_PIPELINE",
     "build_clip_registry",
     "build_clip_stages",
     "build_publish_registry",
     "build_registry_factory",
+    "build_upload_registry",
     "clip_stages",
     "new_clip_job",
     "new_music_job",
     "new_publish_job",
+    "new_upload_job",
 ]
 
 
@@ -83,6 +86,8 @@ PUBLISH_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.PUBLISH, Lane
 # analysis is numpy arithmetic and the mix is ffmpeg, neither of which wants the
 # GPU that Whisper and the model are contending over.
 MUSIC_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.MUSIC, Lane.CPU),)
+
+UPLOAD_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.UPLOAD, Lane.CPU),)
 
 
 def build_clip_stages(
@@ -289,6 +294,62 @@ def new_music_job(
     )
 
 
+def build_upload_registry(*, settings: Settings, clips: ClipStore) -> StageRegistry:
+    """The one-stage registry for UPLOAD jobs.
+
+    Builds its own bucket-backed store rather than taking the worker's. The
+    worker's is chosen by ``CLIPFORGE_BLOB_STORE``, which is ``local`` on a
+    machine that deliberately keeps routine renders off the network — and an
+    UPLOAD job is precisely the exception to that: someone reviewing on a phone
+    has asked for this one clip. Honouring the routine setting here would mean
+    the request could only be granted on a worker that did not need it.
+
+    With no bucket configured there is nothing to fall back to, so the ordinary
+    store is used and the stage refuses with a message naming the two settings.
+    """
+    from clipforge.stages.upload import UploadStage
+    from clipforge.store.blobs import FirebaseBlobStore, LocalBlobStore, build_blob_store
+
+    local = LocalBlobStore(settings.workspace_dir)
+    blobs: BlobStore = (
+        FirebaseBlobStore(
+            local,
+            bucket=settings.firebase_storage_bucket,
+            retention_days=settings.clip_retention_days,
+            timeout_s=settings.upload_timeout_seconds,
+        )
+        if settings.firebase_storage_bucket
+        else build_blob_store(settings)
+    )
+
+    registry = StageRegistry()
+    registry.register(UploadStage(clips=clips, blobs=blobs))
+    return registry
+
+
+def new_upload_job(
+    *,
+    uid: str,
+    clip_id: str,
+    job_id: str | None = None,
+    max_attempts: int = 3,
+) -> Job:
+    """Build an UPLOAD job for one clip a reviewer cannot currently play."""
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.UPLOAD,
+        status=JobStatus.QUEUED,
+        clip_id=clip_id,
+        stages=clip_stages(UPLOAD_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def build_publish_registry(
     *,
     settings: Settings,
@@ -361,6 +422,8 @@ def build_registry_factory(
         settings=settings, clips=clips, publications=publications, channels=channels
     )
 
+    upload = build_upload_registry(settings=settings, clips=clips)
+
     music = build_music_registry(
         settings=settings,
         clips=clips,
@@ -379,6 +442,8 @@ def build_registry_factory(
             return publish
         if job_type is JobType.MUSIC:
             return music
+        if job_type is JobType.UPLOAD:
+            return upload
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")
 
     return factory

@@ -62,6 +62,7 @@ class WorkerRoutes:
     def table(self) -> dict[tuple[str, str], Any]:
         return {
             ("GET", "/worker"): self.status,
+            ("GET", "/worker/settings"): self.settings,
             ("POST", "/worker/shutdown"): self.shutdown,
         }
 
@@ -95,6 +96,91 @@ class WorkerRoutes:
             # has ever reported in" while a healthy worker is running beside it.
             "useEmulators": settings.use_emulators,
             "projectId": settings.firebase_project_id,
+        }
+
+    def settings(self, _payload: dict[str, Any]) -> dict[str, Any]:
+        """What this worker is configured with, in groups the app can just render.
+
+        Returned as labelled rows rather than a field map, so the page does not
+        carry a second copy of the settings model that goes stale the moment one
+        is added here. The app renders what it is handed.
+
+        Paths are included; contents never are. A path to a credential file is
+        the thing an operator needs when it is pointed at the wrong one, and it
+        is exactly what `doctor` prints — but nothing here reads a secret, and
+        the values below are the same ones the worker logs at startup.
+        """
+        s = get_settings()
+
+        def group(title: str, rows: list[tuple[str, Any]]) -> dict[str, Any]:
+            return {
+                "title": title,
+                "rows": [{"label": label, "value": str(value)} for label, value in rows],
+            }
+
+        return {
+            "groups": [
+                group(
+                    "Where it writes",
+                    [
+                        ("Project", s.firebase_project_id),
+                        ("Database", "local emulators" if s.use_emulators else "live"),
+                        ("Clip storage", s.blob_store),
+                        ("Bucket", s.firebase_storage_bucket or "—"),
+                        ("Clip retention", f"{s.clip_retention_days} days"),
+                    ],
+                ),
+                group(
+                    "This machine",
+                    [
+                        ("Worker id", s.worker_id or "(hostname)"),
+                        ("Workspace", s.workspace_dir),
+                        ("Workspace cap", f"{s.workspace_max_gb} GB"),
+                        ("File server", s.local_server_origin if s.local_server_enabled else "off"),
+                        ("Control API", f"127.0.0.1:{s.local_api_port}"),
+                    ],
+                ),
+                group(
+                    "Models",
+                    [
+                        ("Whisper", f"{s.whisper_model} on {s.whisper_device}"),
+                        ("Compute type", s.whisper_compute_type),
+                        ("Ollama", s.ollama_host),
+                        ("Analysis model", s.ollama_model),
+                        ("VRAM held back", f"{s.vram_reserve_mb} MiB"),
+                    ],
+                ),
+                group(
+                    "Media",
+                    [
+                        ("ffmpeg", s.ffmpeg_bin),
+                        ("Encoder", s.video_encoder),
+                        ("Render profile", s.render_profile),
+                        ("Loudness target", f"{s.loudness_target_lufs} LUFS"),
+                        ("Longest source", f"{int(s.max_source_duration_sec // 60)} min"),
+                    ],
+                ),
+                group(
+                    "Scheduling",
+                    [
+                        ("GPU lane", f"{s.gpu_lane_depth} job at a time"),
+                        ("CPU lanes", f"{s.cpu_lane_depth} jobs at a time"),
+                        ("Lease", f"{s.lease_seconds}s"),
+                        ("Heartbeat", f"{s.heartbeat_seconds}s"),
+                        ("Attempts before giving up", s.max_attempts),
+                    ],
+                ),
+                group(
+                    "Publishing",
+                    [
+                        ("Enabled", "yes" if s.publishing_enabled else "no"),
+                        ("Default privacy", s.youtube_default_privacy),
+                        ("OAuth client file", s.youtube_client_secrets),
+                        ("Token file", s.youtube_token_store),
+                        ("Authorisation port", s.youtube_auth_port),
+                    ],
+                ),
+            ]
         }
 
     def shutdown(self, _payload: dict[str, Any]) -> dict[str, Any]:

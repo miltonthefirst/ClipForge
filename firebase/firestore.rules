@@ -290,6 +290,19 @@ service cloud.firestore {
                               && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
                               && musicOptionsOk()
                             )
+                       )
+                    // An UPLOAD job asks the worker to put one clip in the
+                    // bucket so a phone can play it. Like MUSIC it does not
+                    // require approval — being unable to watch a clip is
+                    // precisely why it has not been reviewed yet — but it must
+                    // name a clip that exists, or the worker claims a job it
+                    // can only fail.
+                    && (
+                         request.resource.data.type != 'UPLOAD'
+                         || (
+                              request.resource.data.clipId is string
+                              && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                            )
                        );
 
       // The only state transition a user may drive is cancellation. Everything

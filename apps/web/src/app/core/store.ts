@@ -427,6 +427,45 @@ export class ClipForgeStore {
   }
 
   /**
+   * Ask the worker to put a clip in the bucket so this device can play it.
+   *
+   * The reason this is a job and not a request to the worker: the worker's
+   * control API answers on 127.0.0.1, which on a phone is the phone. The queue
+   * is the only channel that reaches it from the sofa, and it already handles
+   * leases, retries and reporting — so the button writes a document and the
+   * clip's own `storagePath` arriving is the answer.
+   *
+   * `maxAttempts` is 2. The failures worth retrying are network ones; the rest
+   * — no local copy, no bucket configured — are refused by the stage without
+   * burning an attempt, so a higher number would only slow down the message.
+   */
+  async requestUpload(uid: string, clipId: string): Promise<string> {
+    const reference = doc(collection(this.firebase.db, 'jobs'));
+    const now = new Date().toISOString();
+    await setDoc(reference, {
+      id: reference.id,
+      uid,
+      type: 'UPLOAD',
+      status: 'QUEUED',
+      submission: null,
+      sourceId: null,
+      clipId,
+      notBefore: null,
+      stages: [{ name: 'UPLOAD', lane: 'CPU', status: 'PENDING' }],
+      workerId: null,
+      leaseExpiresAt: null,
+      attempts: 0,
+      maxAttempts: 2,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      endedAt: null,
+    });
+    return reference.id;
+  }
+
+  /**
    * Ask the worker to score a clip with a track.
    *
    * Creates a job, not a render — same shape as `requestPublish`, and for the

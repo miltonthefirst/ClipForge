@@ -84,6 +84,14 @@ export class ClipPage implements OnDestroy {
   protected readonly publications = signal<Publication[]>([]);
   protected readonly channels = signal<Channel[]>([]);
   protected readonly source = signal<PlaybackSource>({ kind: 'poster' });
+  /**
+   * An UPLOAD job has been asked for and the clip is still unplayable.
+   *
+   * Cleared by the clip document itself rather than by a timer: the page is
+   * already watching it, so the moment the worker stamps a storage path the
+   * player appears and this has nothing left to say.
+   */
+  protected readonly uploadRequested = signal(false);
   protected readonly localAvailable = signal(false);
 
   protected readonly error = signal<string | null>(null);
@@ -136,6 +144,7 @@ export class ClipPage implements OnDestroy {
         id,
         (clip) => {
           this.clip.set(clip);
+          if (clip?.storagePath) this.uploadRequested.set(false);
           if (clip) void this.hydrate(clip);
         },
         (err) => this.error.set(err.message),
@@ -330,6 +339,29 @@ export class ClipPage implements OnDestroy {
 
   protected tagsValue(): string {
     return this.draftTags() ?? '';
+  }
+
+  /**
+   * Ask the worker to put this clip in the bucket.
+   *
+   * For the case this page exists to serve: reviewing on a phone, finding a
+   * clip with nothing to play, and being nowhere near the machine that has it.
+   * The worker is unreachable from here — its file server answers on
+   * 127.0.0.1 — so the request goes through the queue, and the clip document
+   * this page is already watching is what reports the result.
+   *
+   * Nothing has to be polled and nothing has to be dismissed: when the storage
+   * path arrives, the player replaces the poster on its own.
+   */
+  protected async askForUpload(): Promise<void> {
+    const clip = this.clip();
+    const uid = this.session.uid;
+    if (!clip || !uid) return;
+
+    await this.run('Upload queued — it will start playing here when it lands', async () => {
+      await this.store.requestUpload(uid, clip.id);
+      this.uploadRequested.set(true);
+    });
   }
 
   /**

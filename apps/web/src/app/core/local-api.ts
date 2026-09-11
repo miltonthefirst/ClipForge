@@ -48,6 +48,11 @@ export interface WorkerSelfReport {
   readonly projectId: string;
 }
 
+export interface WorkerSettingsGroup {
+  readonly title: string;
+  readonly rows: readonly { readonly label: string; readonly value: string }[];
+}
+
 export interface AuthoriseResult {
   readonly ok: boolean;
   /** Already authorised, so nothing was opened. */
@@ -122,6 +127,17 @@ export class LocalApiService {
    */
   async workerSelfReport(): Promise<WorkerSelfReport | null> {
     return this.request<WorkerSelfReport>('GET', '/worker');
+  }
+
+  /**
+   * What the worker is configured with.
+   *
+   * Labelled rows rather than a typed field map on purpose: the worker decides
+   * what is worth showing, and the page renders whatever it is handed, so a new
+   * setting appears without a matching change on this side.
+   */
+  async workerSettings(): Promise<{ groups: WorkerSettingsGroup[] } | null> {
+    return this.request<{ groups: WorkerSettingsGroup[] }>('GET', '/worker/settings');
   }
 
   async status(): Promise<YouTubeStatus | null> {
