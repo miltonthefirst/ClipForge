@@ -118,12 +118,32 @@ describe('PlaybackService', () => {
     expect(source).toEqual({ kind: 'poster' });
   });
 
-  it('probes the local server only once per session', async () => {
+  it('does not probe once per clip while resolving a queue', async () => {
     // Asked per clip; a failed fetch per card would be slow and noisy.
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
     await service.probeLocalServer(fetchImpl as unknown as typeof fetch);
     await service.probeLocalServer(fetchImpl as unknown as typeof fetch);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets an absent file server once the worker is started', async () => {
+    // The bug this replaced: the answer was cached for the life of the page, so
+    // opening the app before starting a worker meant every clip showed a poster
+    // until the whole app was reloaded — including the clips you started the
+    // worker in order to watch.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ service: 'clipforge-local-file-server' }), { status: 200 }),
+      );
+
+    expect(await service.probeLocalServer(fetchImpl as unknown as typeof fetch)).toBe(false);
+
+    service.invalidateLocalProbe();
+
+    expect(await service.probeLocalServer(fetchImpl as unknown as typeof fetch)).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('treats an unreachable server as simply unavailable', async () => {

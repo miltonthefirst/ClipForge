@@ -1,4 +1,5 @@
 import { Injectable, NgZone, inject, signal } from '@angular/core';
+import { PlaybackService } from './playback';
 
 /**
  * Starting and stopping the worker on this machine.
@@ -62,6 +63,7 @@ interface TauriGlobal {
 @Injectable({ providedIn: 'root' })
 export class WorkerControlService {
   private readonly zone = inject(NgZone);
+  private readonly playback = inject(PlaybackService);
 
   readonly status = signal<WorkerProcessStatus | null>(null);
   readonly busy = signal(false);
@@ -136,10 +138,14 @@ export class WorkerControlService {
    */
   async start(emulators: boolean): Promise<void> {
     await this.run('worker_start', { emulators });
+    // The file server comes up with the worker, and what playback believes
+    // about it is now out of date by exactly one button press.
+    this.playback.invalidateLocalProbe();
   }
 
   async stop(): Promise<void> {
     await this.run('worker_stop');
+    this.playback.invalidateLocalProbe();
   }
 
   /** Tell the shell where the checkout is, when it could not work it out. */

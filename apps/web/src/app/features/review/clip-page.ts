@@ -167,6 +167,36 @@ export class ClipPage implements OnDestroy {
   ngOnDestroy(): void {
     this.stopClip?.();
     this.stopChannels?.();
+    if (this.retryPlayback) clearInterval(this.retryPlayback);
+  }
+
+  /**
+   * Keep asking, but only while there is nothing to play.
+   *
+   * Two things can make an unplayable clip playable without its document
+   * changing in any way this page would notice: the worker being started, which
+   * brings its file server up, and an UPLOAD job landing. Without this the
+   * poster stays a poster until the whole app is reloaded, and the person who
+   * just pressed Start has no way to know it worked.
+   *
+   * Stops itself the moment something plays, so the common case costs nothing.
+   */
+  private retryPlayback: ReturnType<typeof setInterval> | null = null;
+
+  private watchForPlayback(): void {
+    if (this.retryPlayback) return;
+    this.retryPlayback = setInterval(() => {
+      const clip = this.clip();
+      if (!clip || this.source().kind !== 'poster') {
+        if (this.retryPlayback) clearInterval(this.retryPlayback);
+        this.retryPlayback = null;
+        return;
+      }
+      void this.playback.probeLocalServer().then(async (ok) => {
+        this.localAvailable.set(ok);
+        this.source.set(await this.playback.resolve(clip, ok));
+      });
+    }, 5_000);
   }
 
   /**
@@ -177,6 +207,7 @@ export class ClipPage implements OnDestroy {
    */
   private async hydrate(clip: Clip): Promise<void> {
     this.source.set(await this.playback.resolve(clip, this.localAvailable()));
+    if (this.source().kind === 'poster') this.watchForPlayback();
 
     if (!this.preview()) {
       this.preview.set(await this.store.loadPreview(clip.id).catch(() => null));

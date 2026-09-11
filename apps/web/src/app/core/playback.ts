@@ -10,6 +10,14 @@ import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
  * side that says so.
  */
 const IDENTITY_PATH = '/__clipforge';
+/**
+ * How long an answer about the file server stays believable.
+ *
+ * Short, because starting and stopping the worker is a thing people do from
+ * inside this app; long enough that resolving a queue of clips costs one probe
+ * rather than one each.
+ */
+const PROBE_TTL_MS = 5_000;
 const IDENTITY_SERVICE = 'clipforge-local-file-server';
 
 /** Where a clip can be played from, and why. */
@@ -49,6 +57,7 @@ export class PlaybackService {
   private readonly config = inject(CLIPFORGE_CONFIG);
   private readonly firebase = inject(FirebaseService);
   private localReachable: boolean | null = null;
+  private probedAt = 0;
 
   /**
    * Probe the worker's file server once per session.
@@ -68,19 +77,41 @@ export class PlaybackService {
    * open in a way the user would notice.
    */
   async probeLocalServer(fetchImpl: typeof fetch = fetch): Promise<boolean> {
-    if (this.localReachable !== null) return this.localReachable;
+    // Cached for a few seconds, not for the life of the page. The old cache
+    // was permanent, which made "no worker was running when you opened the
+    // app" a verdict rather than an observation: start one from the Worker
+    // page and every clip went on showing a poster until the whole app was
+    // reloaded, with nothing saying why. The worker is a process someone starts
+    // and stops, so its absence has to be a fact with an expiry date.
+    if (this.localReachable !== null && Date.now() - this.probedAt < PROBE_TTL_MS) {
+      return this.localReachable;
+    }
     try {
       const response = await fetchImpl(`${this.config.localServerOrigin}${IDENTITY_PATH}`, {
         signal: AbortSignal.timeout(1500),
       });
       const body = (await response.json()) as { service?: string };
       this.localReachable = response.ok && body.service === IDENTITY_SERVICE;
+      this.probedAt = Date.now();
     } catch {
       // Not listening, not ClipForge, or not answering JSON. All the same
       // answer: do not build local URLs.
       this.localReachable = false;
+      this.probedAt = Date.now();
     }
     return this.localReachable;
+  }
+
+  /**
+   * Forget what we knew about the file server.
+   *
+   * Called when the worker is started or stopped from inside the app, so the
+   * next clip resolved reflects what the operator just did rather than what was
+   * true a moment before they did it.
+   */
+  invalidateLocalProbe(): void {
+    this.localReachable = null;
+    this.probedAt = 0;
   }
 
   /** Whether the bucket still holds a playable copy of this clip. */
