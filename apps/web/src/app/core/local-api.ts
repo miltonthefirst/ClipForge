@@ -36,6 +36,18 @@ export interface YouTubeStatus {
   readonly authError: string | null;
 }
 
+export interface WorkerSelfReport {
+  readonly pid: number;
+  readonly workerId: string;
+  readonly version: string;
+  readonly startedAt: string;
+  readonly uptimeSeconds: number;
+  readonly activeJobIds: readonly string[];
+  /** Which database this worker is talking to, as the worker sees it. */
+  readonly useEmulators: boolean;
+  readonly projectId: string;
+}
+
 export interface AuthoriseResult {
   readonly ok: boolean;
   /** Already authorised, so nothing was opened. */
@@ -100,6 +112,16 @@ export class LocalApiService {
       // succeed on a retry, and caching it would strand the page until reload.
       return { available: false, reason };
     }
+  }
+
+  /**
+   * Ask the worker on this machine what it is, including which database it is
+   * using. Unlike the Firestore heartbeat this answers even when the worker is
+   * writing somewhere the app is not reading — which is the one failure a
+   * heartbeat cannot report, because it looks exactly like no worker at all.
+   */
+  async workerSelfReport(): Promise<WorkerSelfReport | null> {
+    return this.request<WorkerSelfReport>('GET', '/worker');
   }
 
   async status(): Promise<YouTubeStatus | null> {

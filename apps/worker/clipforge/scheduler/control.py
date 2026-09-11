@@ -36,6 +36,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from clipforge.config import get_settings
 from clipforge.observability import get_logger
 from clipforge.version import __version__
 
@@ -78,6 +79,7 @@ class WorkerRoutes:
         heartbeat looks identical to a worker that is not running.
         """
         started = self._worker.started_at
+        settings = get_settings()
         return {
             "pid": self._pid,
             "workerId": self._worker.worker_id,
@@ -85,6 +87,14 @@ class WorkerRoutes:
             "startedAt": started.isoformat(),
             "uptimeSeconds": int((datetime.now(UTC) - started).total_seconds()),
             "activeJobIds": self._worker.active_job_ids(),
+            # Which database this worker is actually talking to. The app spawns
+            # workers with its own mode pinned, so these agree by construction —
+            # but a worker started from a terminal takes whatever .env says, and
+            # a mismatch is otherwise invisible: the app reads one database and
+            # the worker writes the other, so the worker panel shows "no worker
+            # has ever reported in" while a healthy worker is running beside it.
+            "useEmulators": settings.use_emulators,
+            "projectId": settings.firebase_project_id,
         }
 
     def shutdown(self, _payload: dict[str, Any]) -> dict[str, Any]:

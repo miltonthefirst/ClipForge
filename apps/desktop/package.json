@@ -6,6 +6,7 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
+    "stage": "npm --prefix ../web run build && node scripts/stage-frontend.mjs",
     "build": "tauri build"
   },
   "devDependencies": {

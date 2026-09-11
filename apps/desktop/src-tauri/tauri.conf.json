@@ -5,7 +5,8 @@
   "identifier": "dev.bytepic.clipforge",
   "build": {
     "frontendDist": "../frontend",
-    "devUrl": "http://127.0.0.1:4300"
+    "devUrl": "http://127.0.0.1:4300",
+    "beforeBuildCommand": "npm run stage"
   },
   "app": {
     "windows": [

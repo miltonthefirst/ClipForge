@@ -12,6 +12,7 @@ import { FormsModule } from '@angular/forms';
 import type { WorkerHeartbeat } from '@clipforge/contracts';
 
 import { CLIPFORGE_CONFIG } from '../../core/firebase';
+import { LocalApiService, type WorkerSelfReport } from '../../core/local-api';
 import { ClipForgeStore } from '../../core/store';
 import { WorkerControlService } from '../../core/worker-control';
 
@@ -46,6 +47,7 @@ import { WorkerControlService } from '../../core/worker-control';
 export class WorkerPanel implements OnDestroy {
   private readonly store = inject(ClipForgeStore);
   private readonly config = inject(CLIPFORGE_CONFIG);
+  private readonly local = inject(LocalApiService);
   protected readonly control = inject(WorkerControlService);
 
   /** How many jobs are waiting, so the panel can say what that means. */
@@ -54,6 +56,28 @@ export class WorkerPanel implements OnDestroy {
   private stopWatching: (() => void) | null = null;
   private stopHeartbeat: (() => void) | null = null;
   private ticker: ReturnType<typeof setInterval> | null = null;
+
+  /** What the worker on this machine says about itself, if one answers. */
+  protected readonly selfReport = signal<WorkerSelfReport | null>(null);
+
+  /**
+   * A worker is running, but against the other database.
+   *
+   * The app spawns workers with its own mode pinned, so this cannot happen by
+   * that route — but a worker started from a terminal takes whatever .env says,
+   * and then the app reads one database while the worker writes the other. The
+   * heartbeat cannot report it: a worker writing somewhere else looks exactly
+   * like no worker at all, which is the most misleading state the panel has.
+   */
+  protected readonly modeMismatch = computed(() => {
+    const report = this.selfReport();
+    if (!report) return null;
+    if (report.useEmulators === this.config.useEmulators) return null;
+    return {
+      worker: report.useEmulators ? 'the local emulators' : `the live project (${report.projectId})`,
+      app: this.config.useEmulators ? 'the local emulators' : 'the live project',
+    };
+  });
 
   protected readonly heartbeats = signal<WorkerHeartbeat[] | null>(null);
   protected readonly heartbeatError = signal<string | null>(null);
@@ -124,13 +148,26 @@ export class WorkerPanel implements OnDestroy {
     });
 
     this.stopWatching = this.control.watch();
-    this.ticker = setInterval(() => this.now.set(Date.now()), 5_000);
+    void this.refreshSelfReport();
+    this.ticker = setInterval(() => {
+      this.now.set(Date.now());
+      void this.refreshSelfReport();
+    }, 5_000);
   }
 
   ngOnDestroy(): void {
     this.stopWatching?.();
     this.stopHeartbeat?.();
     if (this.ticker) clearInterval(this.ticker);
+  }
+
+  /** Silent on failure: no worker answering is the normal case here. */
+  private async refreshSelfReport(): Promise<void> {
+    try {
+      this.selfReport.set(await this.local.workerSelfReport());
+    } catch {
+      this.selfReport.set(null);
+    }
   }
 
   protected async start(): Promise<void> {

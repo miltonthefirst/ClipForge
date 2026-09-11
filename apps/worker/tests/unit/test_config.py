@@ -14,10 +14,30 @@ from clipforge.config import Settings
 from pydantic import ValidationError
 
 
+def _factory_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Settings as shipped, with nothing this machine happens to have set.
+
+    `Settings()` reads the repository's .env, so a bare `Settings()` would
+    assert what the developer configured rather than what the code defaults to —
+    passing or failing depending on whose checkout it ran in, and breaking the
+    moment someone legitimately points their worker at the live project. The
+    tests below exist precisely to pin the safe defaults, so they have to ignore
+    both the file and the environment.
+    """
+    for name in (
+        "CLIPFORGE_USE_EMULATORS",
+        "CLIPFORGE_BLOB_STORE",
+        "CLIPFORGE_PUBLISHING_ENABLED",
+        "CLIPFORGE_YOUTUBE_DEFAULT_PRIVACY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return Settings(_env_file=None)
+
+
 @pytest.mark.unit
-def test_the_defaults_run_against_the_emulator() -> None:
+def test_the_defaults_run_against_the_emulator(monkeypatch: pytest.MonkeyPatch) -> None:
     """Routine development must not touch — or cost anything on — a real project."""
-    settings = Settings()
+    settings = _factory_settings(monkeypatch)
     assert settings.use_emulators is True
     assert settings.blob_store == "local"
 
@@ -106,20 +126,6 @@ def test_the_gpu_lane_cannot_be_widened() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Publishing
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _factory_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    """Settings as shipped, with nothing this machine happens to have set.
-
-    `Settings()` reads the repository's .env, so a bare `Settings()` here would
-    assert what the developer configured rather than what the code defaults to —
-    and would pass or fail depending on whose checkout it ran in. These two
-    tests exist precisely to pin the safe default, so they have to ignore both
-    the file and the environment.
-    """
-    for name in ("CLIPFORGE_PUBLISHING_ENABLED", "CLIPFORGE_YOUTUBE_DEFAULT_PRIVACY"):
-        monkeypatch.delenv(name, raising=False)
-    return Settings(_env_file=None)
 
 
 @pytest.mark.unit

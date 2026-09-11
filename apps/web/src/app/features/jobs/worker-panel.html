@@ -6,6 +6,13 @@
   class="rounded-xl border bg-panel p-4"
   [class]="stalled() ? 'border-warn-ink/40' : 'border-line'"
 >
+  @if (modeMismatch(); as mismatch) {
+    <p class="mb-3 rounded-lg border border-warn-ink/40 bg-warn-bg px-3 py-2 text-xs text-warn-ink">
+      A worker is running on this machine, but against <b>{{ mismatch.worker }}</b> while this app
+      reads <b>{{ mismatch.app }}</b>. Nothing it does will appear here. It was started outside the
+      app — stop it and press Start, which always uses this app's database.
+    </p>
+  }
   <div class="flex flex-wrap items-start gap-3">
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
