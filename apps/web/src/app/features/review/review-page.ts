@@ -57,6 +57,22 @@ export class ReviewPage implements OnDestroy {
     (this.cards() ?? []).some((card) => card.source.kind === 'poster'),
   );
 
+  /**
+   * Why the queue cannot fetch clips that are demonstrably uploaded.
+   *
+   * Surfaced on the queue and not only on the clip page because this is a
+   * project-wide condition — if one clip is refused, every clip is — and the
+   * queue is where someone notices that nothing plays. Reported once for the
+   * whole list rather than per card, since it is one fact about access rather
+   * than a property of any clip.
+   */
+  protected readonly blockedReason = computed(() => {
+    for (const card of this.cards() ?? []) {
+      if (card.source.kind === 'blocked') return card.source.reason;
+    }
+    return null;
+  });
+
   constructor() {
     void this.playback.probeLocalServer().then((ok) => {
       this.localAvailable.set(ok);

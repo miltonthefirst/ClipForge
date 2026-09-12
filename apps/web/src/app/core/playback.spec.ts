@@ -1,6 +1,20 @@
 import { TestBed } from '@angular/core/testing';
 import type { Clip } from '@clipforge/contracts';
+import { getDownloadURL } from 'firebase/storage';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Only the bucket branch needs the SDK, and what it needs is the ability to
+// fail on demand: the interesting cases here are refusals, and a real client
+// cannot be asked for one.
+vi.mock('firebase/storage', () => ({
+  getDownloadURL: vi.fn(),
+  ref: vi.fn((_storage: unknown, path: string) => ({ fullPath: path })),
+}));
+
+/** A Firebase Storage error, which carries its reason in `code`. */
+function storageError(code: string): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
+}
 
 import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
 import { PlaybackService } from './playback';
@@ -149,5 +163,68 @@ describe('PlaybackService', () => {
   it('treats an unreachable server as simply unavailable', async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('connection refused'));
     expect(await service.probeLocalServer(fetchImpl as unknown as typeof fetch)).toBe(false);
+  });
+
+  it('plays from the bucket when that is the only copy this device can reach', async () => {
+    vi.mocked(getDownloadURL).mockResolvedValueOnce('https://firebasestorage.example/clip.mp4');
+
+    const source = await service.resolve(
+      clip({ storagePath: 'clips/user-1/clip-1.mp4', playbackExpiresAt: '2099-01-01T00:00:00Z' }),
+      false,
+    );
+
+    expect(source).toEqual({ kind: 'bucket', url: 'https://firebasestorage.example/clip.mp4' });
+  });
+
+  it('says a bucket copy was refused rather than pretending there is none', async () => {
+    // The failure that cost a release. storage.rules asks Firestore whether the
+    // viewer is approved, and that cross-service lookup needs an IAM grant no
+    // deploy makes — so every bucket read returned 403. Swallowed into a poster,
+    // it was indistinguishable from a clip that had never been uploaded, and the
+    // review page duly offered an upload the worker skipped as already done.
+    vi.mocked(getDownloadURL).mockRejectedValueOnce(storageError('storage/unauthorized'));
+
+    const source = await service.resolve(
+      clip({ storagePath: 'clips/user-1/clip-1.mp4', playbackExpiresAt: '2099-01-01T00:00:00Z' }),
+      false,
+    );
+
+    expect(source.kind).toBe('blocked');
+    expect(source.kind === 'blocked' && source.reason).toMatch(/refused this device access/);
+    // The reason has to carry the fix, because nothing in the app can discover
+    // it: the clip is there, the account is approved, and Storage still says no.
+    expect(source.kind === 'blocked' && source.reason).toMatch(/firebaserules/);
+  });
+
+  it('still shows a poster when the lifecycle rule collected the object early', async () => {
+    // The one case the old bare `catch` was right about. Nothing is wrong, the
+    // expiry and the rule simply disagreed by a little, and a poster is honest.
+    vi.mocked(getDownloadURL).mockRejectedValueOnce(storageError('storage/object-not-found'));
+
+    const source = await service.resolve(
+      clip({ storagePath: 'clips/user-1/clip-1.mp4', playbackExpiresAt: '2099-01-01T00:00:00Z' }),
+      false,
+    );
+
+    expect(source).toEqual({ kind: 'poster' });
+  });
+
+  it('trusts the storage path over an expiry it cannot read', () => {
+    // The shape of the bug that made every uploaded clip look un-uploaded. A
+    // Firestore Timestamp reaching `Date.parse` gives NaN, and `NaN > now` is
+    // false, so a clip sitting in the bucket reported no bucket copy — and the
+    // review page answered that with an upload button the worker then skipped.
+    //
+    // `core/documents.ts` stops the Timestamp getting this far. This asserts the
+    // second line of defence: `storagePath` is the fact, the expiry is a hint,
+    // and an unreadable hint must not overrule the fact.
+    expect(
+      service.bucketCopyLive(
+        clip({
+          storagePath: 'clips/user-1/clip-1.mp4',
+          playbackExpiresAt: 'not a date' as unknown as string,
+        }),
+      ),
+    ).toBe(true);
   });
 });

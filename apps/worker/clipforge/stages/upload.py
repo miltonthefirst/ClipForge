@@ -25,7 +25,7 @@ from clipforge_contracts import ClipLocation, Lane, StageName
 
 from clipforge.observability import get_logger
 from clipforge.stages.base import StageContext, StageOutcome
-from clipforge.store.blobs import BlobStore
+from clipforge.store.blobs import BlobStore, BlobUploadError
 from clipforge.store.firestore import ClipStore
 
 log = get_logger(__name__)
@@ -109,19 +109,29 @@ class UploadStage:
                 code="LOCAL_FILE_MISSING",
             )
 
-        ref = self._blobs.put(f"clips/{clip.uid}/{clip_id}.mp4", source, content_type="video/mp4")
-
-        if not (ref.playback_url or ref.storage_path):
-            # A local blob store accepted the file and put it back on disk. That
-            # is a configuration answer, not an upload, and saying so beats a
-            # job that reports success while the phone still has nothing.
-            raise UploadStageError(
-                "this worker has no bucket configured, so the clip cannot be made "
-                "reachable from a phone. Set CLIPFORGE_BLOB_STORE=firebase and "
-                "CLIPFORGE_FIREBASE_STORAGE_BUCKET, then restart the worker.",
-                retryable=False,
-                code="NO_BUCKET",
+        try:
+            # `required=True` is the whole difference between this and a render's
+            # upload. A render may end with a local-only copy and still have done
+            # its job; this job *is* the copy. Without it the store degraded a
+            # refused or timed-out upload into a local BlobRef, and the only
+            # thing left to infer from was an empty `storage_path` — which is
+            # also what an unconfigured bucket looks like. Every upload failure
+            # was therefore reported as "no bucket configured", non-retryably,
+            # to an operator whose bucket was configured correctly.
+            ref = self._blobs.put(
+                f"clips/{clip.uid}/{clip_id}.mp4",
+                source,
+                content_type="video/mp4",
+                required=True,
             )
+        except BlobUploadError as exc:
+            # A missing bucket will not appear between now and the retry; a
+            # refused or interrupted upload often will not repeat.
+            raise UploadStageError(
+                str(exc),
+                retryable=exc.cause_code != "NO_BUCKET",
+                code=exc.cause_code,
+            ) from exc
 
         self._clips.save(
             clip.model_copy(

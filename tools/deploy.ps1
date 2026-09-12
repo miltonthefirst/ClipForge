@@ -43,6 +43,24 @@
     -DryRun exits before the build, so this is the only way to see what would
     actually be published.
 
+.PARAMETER GrantStorageRulesAccess
+    Grant Cloud Storage's service agent permission to read Firestore, then stop.
+
+    firebase/storage.rules decides access by asking Firestore whether the
+    signed-in account is APPROVED. That is a **cross-service** rule, and it does
+    not work merely by being deployed: Cloud Storage evaluates it as its own
+    service agent, and that agent has no access to Firestore until someone
+    grants it. Until then every cross-service rule denies — silently, with a
+    plain 403 that looks exactly like a rule that said no on purpose.
+
+    Deploying the rules does not make this grant, so `-Only storage` succeeding
+    proves nothing about whether clips can be read. Saving the same rules from
+    the Firebase console does make it, which is why this can appear to work on
+    one project and not another that was deployed from a terminal.
+
+    Needs gcloud and a caller who may set IAM policy on the project (Owner, or
+    Project IAM Admin). Safe to re-run: granting a role twice is a no-op.
+
 .PARAMETER Yes
     Skip the confirmation prompt. For CI; think twice interactively.
 
@@ -63,6 +81,7 @@ param(
 
     [switch] $DryRun,
     [switch] $BuildOnly,
+    [switch] $GrantStorageRulesAccess,
     [switch] $Yes
 )
 
@@ -123,6 +142,109 @@ if ([string]::IsNullOrWhiteSpace($projectId)) {
 # assumption that eventually fails.
 if ($projectId -eq 'miltongore') {
     Fail "CLIPFORGE_FIREBASE_PROJECT_ID is 'miltongore', which is a live production site. Refusing."
+}
+
+# ── Cross-service rules: the grant that deploying does not make ──────────────
+#
+# firebase/storage.rules asks Firestore whether the caller is APPROVED. Cloud
+# Storage runs that lookup as its own service agent, and that agent cannot read
+# Firestore until it is told it may. Deploying the rules does not tell it.
+#
+# The failure mode is why this is a first-class switch rather than a line in the
+# README. Nothing reports it: the deploy succeeds, the rules are live and
+# correct, the clip is in the bucket, the account is approved — and every read
+# returns 403. From the app it is indistinguishable from a clip that was never
+# uploaded, which is exactly how it was read for a release: reviewers pressed
+# "ask the worker to upload it", the worker found the clip already there and
+# skipped, and nothing ever changed.
+
+if ($GrantStorageRulesAccess) {
+    Write-Step 'Granting Cloud Storage permission to read Firestore'
+
+    # The project number, which is what names the service agent. Read from the
+    # web app id rather than asked of gcloud: the id is already in .env and has
+    # the number as its second field ("1:871720866960:web:..."), so the manual
+    # instructions below can name the exact account even on a machine with no
+    # gcloud at all. That matters — without gcloud those instructions are the
+    # only route, and an address with <PROJECT_NUMBER> left in it is a puzzle
+    # rather than a step.
+    $projectNumber = $null
+    $appIdParts = ($config['CLIPFORGE_WEB_APP_ID'] -split ':')
+    if ($appIdParts.Count -ge 2 -and $appIdParts[1] -match '^\d+$') {
+        $projectNumber = $appIdParts[1]
+    }
+
+    if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+        $agentHint = if ($projectNumber) {
+            "service-$projectNumber@gcp-sa-firebasestorage.iam.gserviceaccount.com"
+        } else {
+            'service-<PROJECT_NUMBER>@gcp-sa-firebasestorage.iam.gserviceaccount.com'
+        }
+        Fail @"
+gcloud is not on PATH, and this grant is an IAM change the Firebase CLI cannot make.
+
+The quickest route needs no gcloud at all. Open firebase/storage.rules in the
+Firebase console and press Publish:
+  https://console.firebase.google.com/project/$projectId/storage/rules
+The console notices the cross-service firestore.get() call and offers the grant. That
+is also why this is easy to miss: a project set up through the console has it,
+and one deployed from a terminal does not.
+
+Or grant it directly:
+  https://console.cloud.google.com/iam-admin/iam?project=$projectId
+  Principal: $agentHint
+  Role:      Firebase Rules Firestore Service Agent
+
+Either way, existing clips become playable immediately. Nothing needs
+re-uploading — the files are already in the bucket.
+"@
+    }
+
+    if (-not $projectNumber) {
+        $projectNumber = (gcloud projects describe $projectId --format='value(projectNumber)' 2>$null)
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($projectNumber)) {
+            Fail "Could not read the project number for $projectId. Is gcloud authenticated (gcloud auth login) and pointed at the right account?"
+        }
+        $projectNumber = $projectNumber.Trim()
+    }
+
+    # The service agent is created the first time Cloud Storage for Firebase is
+    # used, so on a project that has never had a bucket this name will not
+    # resolve — which is itself the answer, and gcloud says so clearly.
+    $agent = "service-$projectNumber@gcp-sa-firebasestorage.iam.gserviceaccount.com"
+    Write-Host "   agent  $agent"
+    Write-Host "   role   roles/firebaserules.firestoreServiceAgent"
+    Write-Host ''
+
+    if ($DryRun) {
+        Write-Host '  Would run:' -ForegroundColor White
+        Write-Host "    gcloud projects add-iam-policy-binding $projectId --member=serviceAccount:$agent --role=roles/firebaserules.firestoreServiceAgent"
+        Write-Host ''
+        Write-Host '  (dry run, nothing was granted)' -ForegroundColor Yellow
+        exit 0
+    }
+
+    gcloud projects add-iam-policy-binding $projectId `
+        --member="serviceAccount:$agent" `
+        --role='roles/firebaserules.firestoreServiceAgent' `
+        --condition=None | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail @"
+The grant failed. The usual cause is that your account may deploy but may not set
+IAM policy — that needs Owner or Project IAM Admin.
+
+Someone with those rights can run:
+  gcloud projects add-iam-policy-binding $projectId ``
+    --member=serviceAccount:$agent ``
+    --role=roles/firebaserules.firestoreServiceAgent
+"@
+    }
+
+    Write-Host ''
+    Write-Host '  Granted. Cross-service storage.rules can now read Firestore.' -ForegroundColor Green
+    Write-Host '  Existing clips become playable immediately; nothing needs re-uploading.'
+    Write-Host ''
+    exit 0
 }
 
 # ── The PWA's client config ──────────────────────────────────────────────────

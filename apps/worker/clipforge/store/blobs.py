@@ -44,6 +44,7 @@ log = get_logger(__name__)
 __all__ = [
     "BlobRef",
     "BlobStore",
+    "BlobUploadError",
     "FirebaseBlobStore",
     "LocalBlobStore",
     "UnsafeBlobKeyError",
@@ -53,6 +54,25 @@ __all__ = [
 
 class UnsafeBlobKeyError(ValueError):
     """A key resolved outside the workspace root."""
+
+
+class BlobUploadError(RuntimeError):
+    """A bucket copy was required and could not be made.
+
+    Raised only when the caller passed ``required=True``. The default remains
+    best-effort, because for a render the bucket copy is a convenience and the
+    local file is the artefact — see :meth:`FirebaseBlobStore.put`.
+
+    ``cause_code`` separates "there is no bucket to upload to", which no amount
+    of retrying fixes, from "the upload was refused or timed out", which is
+    frequently transient. The stage turns that into the job's retry decision,
+    so getting it wrong either burns attempts on a hopeless job or gives up on
+    a recoverable one.
+    """
+
+    def __init__(self, message: str, *, cause_code: str = "UPLOAD_FAILED") -> None:
+        self.cause_code = cause_code
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -83,8 +103,22 @@ class BlobRef:
 class BlobStore(Protocol):
     """Somewhere to put a finished artefact."""
 
-    def put(self, key: str, source: Path, *, content_type: str | None = None) -> BlobRef:
-        """Move or copy a produced file into the store under ``key``."""
+    def put(
+        self,
+        key: str,
+        source: Path,
+        *,
+        content_type: str | None = None,
+        required: bool = False,
+    ) -> BlobRef:
+        """Move or copy a produced file into the store under ``key``.
+
+        ``required`` says the caller needs a copy something other than this
+        worker can fetch, and would rather have an exception than a BlobRef that
+        quietly describes a local file. An UPLOAD job is the whole of that case:
+        a reviewer on a phone asked for this clip specifically because they
+        cannot reach the worker.
+        """
         ...
 
     def forget(self, key: str) -> None:
@@ -128,8 +162,27 @@ class LocalBlobStore:
             raise UnsafeBlobKeyError(f"blob key escapes the workspace root: {key!r}")
         return candidate
 
-    def put(self, key: str, source: Path, *, content_type: str | None = None) -> BlobRef:
+    def put(
+        self,
+        key: str,
+        source: Path,
+        *,
+        content_type: str | None = None,
+        required: bool = False,
+    ) -> BlobRef:
         del content_type  # Meaningful only to a remote store.
+        if required:
+            # There is no bucket here and there never will be, so this is the
+            # one honest answer. Saying it at the store rather than inferring it
+            # from an empty BlobRef upstream is what keeps "no bucket" distinct
+            # from "the upload failed" — those were the same message for a
+            # while, and the wrong one was shown far more often.
+            raise BlobUploadError(
+                "this worker has no bucket configured, so the clip cannot be made "
+                "reachable from a phone. Set CLIPFORGE_BLOB_STORE=firebase and "
+                "CLIPFORGE_FIREBASE_STORAGE_BUCKET, then restart the worker.",
+                cause_code="NO_BUCKET",
+            )
         target = self.path_for(key)
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -219,8 +272,16 @@ class FirebaseBlobStore:
     def path_for(self, key: str) -> Path:
         return self._local.path_for(key)
 
-    def put(self, key: str, source: Path, *, content_type: str | None = None) -> BlobRef:
-        # Local first, and unconditionally.
+    def put(
+        self,
+        key: str,
+        source: Path,
+        *,
+        content_type: str | None = None,
+        required: bool = False,
+    ) -> BlobRef:
+        # Local first, and unconditionally. Never `required` — this call is the
+        # local copy, which cannot be the thing a caller wanted a bucket for.
         ref = self._local.put(key, source, content_type=content_type)
 
         # An upload that fails must not cost the render — and saying so in a
@@ -240,14 +301,30 @@ class FirebaseBlobStore:
                 content_type=content_type,
                 timeout=self._timeout_s,
             )
-        except Exception as exc:  # noqa: BLE001 - any upload failure degrades the same way
+        except Exception as exc:  # any upload failure degrades the same way
             log.warning(
                 "blob.upload_failed",
                 key=key,
                 size_mb=round(ref.size_bytes / 1_048_576, 2),
                 error=str(exc),
-                consequence="clip stays local-only; review it on this machine",
+                required=required,
+                consequence=(
+                    "the job that asked for this will fail and say why"
+                    if required
+                    else "clip stays local-only; review it on this machine"
+                ),
             )
+            if required:
+                # The caller asked for a copy a phone can fetch. Degrading to a
+                # local-only BlobRef here is what made an upload failure
+                # indistinguishable from an unconfigured bucket: the stage saw
+                # an empty `storage_path`, concluded "no bucket", and told the
+                # operator to set two environment variables that were already
+                # set. The exception carries the real reason instead.
+                raise BlobUploadError(
+                    f"uploading {key} to {self._bucket_name} failed: {exc}",
+                    cause_code="UPLOAD_FAILED",
+                ) from exc
             return ref
 
         log.info("blob.uploaded", key=key, size_mb=round(ref.size_bytes / 1_048_576, 2))

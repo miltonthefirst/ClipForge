@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ALICE,
   BOB,
+  agentReport,
   candidate,
   createTestEnvironment,
   heartbeat,
@@ -438,6 +439,80 @@ describe('sources', () => {
   it('denies mutating a source once ingested', async () => {
     await seed('sources/src-1', source(ALICE));
     await assertFails(updateDoc(doc(aliceDb(), 'sources/src-1'), { title: 'renamed' }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agents: the one thing a client may say about what runs on the machine.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('the agent document', () => {
+  const WISH = { desired: 'RUNNING', requestedBy: ALICE, requestedAt: '2026-09-12T09:00:00.000Z' };
+
+  beforeEach(async () => {
+    await seed('agents/tower', agentReport());
+  });
+
+  it('lets any approved member start the worker, from anywhere', async () => {
+    // The entire point of the collection: a phone can do more than queue work.
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), WISH));
+    await assertSucceeds(
+      updateDoc(doc(bobDb(), 'agents/tower'), { ...WISH, desired: 'STOPPED', requestedBy: BOB }),
+    );
+  });
+
+  it('denies anyone who is not approved', async () => {
+    await assertFails(updateDoc(doc(anonDb(), 'agents/tower'), WISH));
+    await assertFails(getDoc(doc(anonDb(), 'agents/tower')));
+  });
+
+  it('denies filing the request under somebody else', async () => {
+    // A shared workspace can afford anyone starting the worker. It cannot
+    // afford not knowing who did.
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, requestedBy: BOB }));
+  });
+
+  it('denies a wish that is not one of the two things it can be', async () => {
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, desired: 'PAUSED' }));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, desired: 7 }));
+  });
+
+  it('requires the request to be dated', async () => {
+    // Pressing Start on a worker that is already wanted is how a person clears
+    // an agent that has given up. Without a fresh timestamp that press is
+    // indistinguishable from the wish simply still being RUNNING.
+    const { requestedAt, ...undated } = WISH;
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), undated));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, requestedAt: 12345 }));
+  });
+
+  it('denies writing what the agent reports about itself', async () => {
+    // `desired` is a wish. Everything describing what is actually happening
+    // belongs to the agent, and a client that could write `state` could claim a
+    // worker was running while the machine was off.
+    for (const forged of [
+      { state: 'RUNNING' },
+      { workerPid: 99 },
+      { lastExitCode: 0 },
+      { log: ['all fine'] },
+      { lastSeenAt: '2026-09-12T09:00:00.000Z' },
+    ]) {
+      await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, ...forged }));
+    }
+  });
+
+  it('denies conjuring a machine that has never run an agent', async () => {
+    // "No document" means no agent has ever run there, which is a different
+    // problem from "the agent is not reporting right now". A client that could
+    // create one would make a phone offer Start for a machine with nothing
+    // listening.
+    await assertFails(setDoc(doc(aliceDb(), 'agents/laptop'), agentReport({ agentId: 'laptop' })));
+    await assertFails(deleteDoc(doc(aliceDb(), 'agents/tower')));
+  });
+
+  it('lets a member see every machine, so "which PC?" is answerable', async () => {
+    await assertSucceeds(getDoc(doc(bobDb(), 'agents/tower')));
+    await assertSucceeds(getDocs(collection(bobDb(), 'agents')));
   });
 });
 

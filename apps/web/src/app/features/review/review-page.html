@@ -17,6 +17,20 @@
   </p>
 }
 
+@if (blockedReason(); as reason) {
+  <!-- Above the queue rather than on a card: being refused the bucket is one
+       fact about the project, not a property of any one clip. Shown here
+       because the queue is where someone notices that nothing plays, and
+       because the alternative — a row of posters offering an upload that
+       silently skips — is what made this look like a broken worker. -->
+  <div
+    class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    <p class="font-medium">Clips are uploaded, but this device cannot fetch them.</p>
+    <p class="mt-1 leading-relaxed">{{ reason }}</p>
+  </div>
+}
+
 @if (error(); as message) {
   <p
     class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
@@ -82,6 +96,11 @@
             {{ card.clip.durationSec | number: '1.0-0' }}s
             @if (card.source.kind === 'poster') {
               · <span class="text-warn-ink">no cloud copy</span>
+            } @else if (card.source.kind === 'blocked') {
+              <!-- Not "no cloud copy": there is one, and it was refused. Saying
+                   the former sent people to the upload button, which cannot
+                   help with a clip that is already uploaded. -->
+              · <span class="text-danger-ink">cloud copy refused</span>
             }
           </p>
 

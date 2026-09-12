@@ -22,12 +22,13 @@ has its own Firebase project — see docs/adr/0004-dedicated-firebase-project.md
 from __future__ import annotations
 
 import os
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 from clipforge_contracts import (
+    AgentReport,
     Candidate,
     Clip,
     ClipPreview,
@@ -50,6 +51,7 @@ from clipforge.scheduler.lease import Transition
 
 JOBS = "jobs"
 WORKERS = "workers"
+AGENTS = "agents"
 SOURCES = "sources"
 CANDIDATES = "candidates"
 CLIPS = "clips"
@@ -79,6 +81,7 @@ def firestore_client(settings: Settings) -> firestore.Client:
 def _to_document(
     model: Job
     | WorkerHeartbeat
+    | AgentReport
     | Source
     | TranscriptRef
     | Candidate
@@ -337,9 +340,7 @@ class JobStore:
                 raise
             return None
 
-    def reap(
-        self, *, now: datetime | None = None, skip: Collection[str] = ()
-    ) -> list[Job]:
+    def reap(self, *, now: datetime | None = None, skip: Collection[str] = ()) -> list[Job]:
         """Reclaim every job whose worker stopped heartbeating.
 
         This is the reaper. It is bound to a periodic worker task rather than a
@@ -408,9 +409,7 @@ class SourceStore:
             return None
         return Source.model_validate(snapshot.to_dict() or {})
 
-    def find_by_external_id(
-        self, *, provider: SourceProvider, external_id: str
-    ) -> Source | None:
+    def find_by_external_id(self, *, provider: SourceProvider, external_id: str) -> Source | None:
         """Dedupe *before* downloading.
 
         Re-submitting a known video must not re-fetch two gigabytes, so this is
@@ -643,6 +642,85 @@ class WorkerStore:
             WorkerHeartbeat.model_validate(doc.to_dict() or {})
             for doc in self._db.collection(WORKERS).stream()
         ]
+
+
+class AgentStore:
+    """The wish and the report at ``agents/{agentId}``.
+
+    One document, two writers, and a line between them that is the whole reason
+    this collection exists. The PWA — a phone, usually — writes ``desired`` and
+    nothing else. The agent writes everything else and never writes ``desired``,
+    so a Start pressed while the agent was mid-heartbeat is not quietly undone by
+    a report that was assembled before the press. That is what ``merge=True``
+    with the wish removed buys, and it is cheaper and easier to reason about than
+    a transaction around a document written every minute.
+
+    The one exception is creation. The rules forbid the client from creating this
+    document, precisely so that "no agent has ever run here" stays distinguishable
+    from "the agent is not reporting right now" — so the agent creates it, and
+    that first write is the only one that may say what is wanted (``STOPPED``: a
+    freshly installed agent must not start a worker nobody asked for).
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    @property
+    def agent_id(self) -> str:
+        """One agent per machine, named like the worker it supervises.
+
+        Sharing `worker_id` is deliberate: an operator reading `agents/tower`
+        beside `workers/tower` should not have to be told they are the same
+        machine.
+        """
+        return self._settings.worker_id
+
+    def _ref(self) -> Any:
+        return self._db.collection(AGENTS).document(self.agent_id)
+
+    def read(self) -> dict[str, Any] | None:
+        """The raw document, or ``None`` if this machine has never reported.
+
+        Deliberately *not* parsed into :class:`AgentReport`. The caller wants
+        three fields out of it, and validating the whole model here would mean a
+        document written by a newer agent — one field this build has never heard
+        of — could stop an older one from reading the wish. A supervisor that
+        refuses to notice "stop" because it failed to parse a field it does not
+        use is the worst possible failure mode for this class.
+        """
+        snapshot = self._ref().get()
+        if not snapshot.exists:
+            return None
+        return snapshot.to_dict() or {}
+
+    def publish(self, report: AgentReport, *, claim: bool = False) -> None:
+        """Write what the agent knows, leaving what the client owns alone."""
+        document = _to_document(report)
+        if not claim:
+            for owned_by_the_client in ("desired", "requestedBy", "requestedAt"):
+                document.pop(owned_by_the_client, None)
+        self._ref().set(document, merge=True)
+
+    def watch(self, on_change: Callable[[dict[str, Any] | None], None]) -> Callable[[], None]:
+        """Call ``on_change`` whenever the document changes, until unsubscribed.
+
+        A listener rather than a poll, for responsiveness and for cost in that
+        order: tapping Start on a phone should not wait out a poll interval, and
+        Firestore bills a read per *delivered* document — an idle listener
+        delivers nothing, while a poll pays whether or not anything happened.
+
+        The callback arrives on a background thread owned by the client library.
+        It must not block, which is why the agent uses it only to record the
+        latest wish and wake its own loop.
+        """
+
+        def _callback(snapshots: Any, _changes: Any, _read_time: Any) -> None:
+            for snapshot in snapshots:
+                on_change(snapshot.to_dict() if snapshot.exists else None)
+
+        watch = self._ref().on_snapshot(_callback)
+        return watch.unsubscribe  # type: ignore[no-any-return]
 
 
 def iter_all_jobs(client: firestore.Client) -> Iterator[Job]:
