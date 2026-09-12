@@ -336,6 +336,10 @@ def remake(
         default=False, help="Keep the original audio ducked under the narration."
     ),
     script: str = typer.Option("", help="Say this instead of the clip's own words."),
+    hide: bool = typer.Option(
+        default=False,
+        help="Find logos, watermarks and burnt-in text in the footage and cover them.",
+    ),
     start: float = typer.Option(0.0, help="Move the cut's start, in seconds. Negative is earlier."),
     end: float = typer.Option(0.0, help="Move the cut's end, in seconds. Positive is later."),
     uid: str = typer.Option("cli", help="Who is asking. Recorded on the job."),
@@ -352,6 +356,7 @@ def remake(
     from clipforge_contracts import (
         Framing,
         FramingMode,
+        ObscureOptions,
         RemakeOptions,
         SpeechMode,
         VoiceCaptions,
@@ -408,16 +413,22 @@ def remake(
         voice=voice_option,
         start_delta_sec=start,
         end_delta_sec=end,
+        # Only ever the search here. A rectangle is a thing you point at, and a
+        # terminal cannot show you the frame to point at — so the flag asks the
+        # worker to look, and what it finds is recorded on the clip where it can
+        # be seen and kept.
+        obscure=ObscureOptions(auto=True) if hide else None,
     )
     if (
         options.notes is None
         and framing_option is None
         and voice_option is None
+        and not hide
         and not start
         and not end
     ):
         typer.echo(
-            "nothing to change: give a note, a framing, a language or a nudge.",
+            "nothing to change: give a note, a framing, a language, --hide or a nudge.",
             err=True,
         )
         raise typer.Exit(code=2)

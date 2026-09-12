@@ -148,3 +148,81 @@ def test_a_note_that_says_nothing_about_hiding_changes_nothing() -> None:
     )
     assert applied.options.obscure is None
     assert applied.absorbed == []
+
+
+# ── The two gates the first real note went through ───────────────────────────
+
+
+def test_the_note_s_own_words_let_a_reading_through_a_missing_topic() -> None:
+    """Measured on the reviewer's real note, against the real model.
+
+    "Blur the canal+ in the screen" came back with `obscure: ANYWHERE` and a
+    summary saying so — and `topics: [FRAMING]`, so the topic gate discarded
+    the one field that was right and the clip came back with the logo on it for
+    the fourth time. Requiring the word makes the gate a conjunction of a
+    deterministic signal and the model's reading, the same shape the crop gate
+    already had.
+    """
+    applied = apply_interpretation(
+        RemakeOptions(notes="Blur the canal+ in the screen"),
+        reading(topics=[NoteTopic.FRAMING], obscure=NoteObscure.ANYWHERE),
+    )
+    assert applied.options.obscure is not None
+    assert applied.options.obscure.auto is True
+
+
+def test_the_word_alone_is_not_enough() -> None:
+    """It stays a conjunction: the model must have read it that way too.
+
+    A note complaining that the blurred background behind a FIT picture is too
+    strong contains the word and is not a request to hide anything.
+    """
+    applied = apply_interpretation(
+        RemakeOptions(notes="the blur behind the picture is too strong"),
+        reading(topics=[NoteTopic.FRAMING], framing_mode=NoteFraming.FIT),
+    )
+    assert applied.options.obscure is None
+
+
+def test_a_bare_as_rendered_is_not_a_framing_instruction() -> None:
+    """It is what the model answers when the note says nothing about framing.
+
+    The field is required and AS_RENDERED reads like "leave it", so a 4B
+    answers it constantly — it did on the reviewer's note about a logo. Acting
+    on it is not harmless: applied to a clip rendered with TRACK it silently
+    un-tracks it, and the reviewer gets a differently-framed clip in answer to
+    a note about a watermark.
+    """
+    applied = apply_interpretation(
+        RemakeOptions(notes="Blur the canal+ in the screen"),
+        reading(
+            topics=[NoteTopic.FRAMING, NoteTopic.OBSCURE],
+            framing_mode=NoteFraming.AS_RENDERED,
+            obscure=NoteObscure.ANYWHERE,
+        ),
+    )
+    assert applied.options.framing is None
+    assert applied.changes == ["looked for a fixed mark to hide"]
+
+
+def test_as_rendered_with_an_anchor_is_still_an_instruction() -> None:
+    """Naming a side is a decision about where the window points."""
+    applied = apply_interpretation(
+        RemakeOptions(notes="keep it to the left of frame"),
+        reading(
+            topics=[NoteTopic.FRAMING],
+            framing_mode=NoteFraming.AS_RENDERED,
+            crop=NoteCrop("left"),
+        ),
+    )
+    assert applied.options.framing is not None
+    assert applied.options.framing.crop == "left"
+
+
+def test_a_real_framing_mode_is_untouched_by_the_bare_as_rendered_rule() -> None:
+    applied = apply_interpretation(
+        RemakeOptions(notes="it keeps losing the ball"),
+        reading(topics=[NoteTopic.FRAMING], framing_mode=NoteFraming.TRACK),
+    )
+    assert applied.options.framing is not None
+    assert applied.options.framing.mode == "TRACK"

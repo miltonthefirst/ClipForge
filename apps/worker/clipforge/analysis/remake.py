@@ -315,6 +315,16 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
         else None
     )
 
+    # A bare AS_RENDERED is not a framing instruction. It is what the model
+    # answers when the note says nothing about framing at all — which it does
+    # constantly, because the field is required and AS_RENDERED reads like
+    # "leave it". Acting on it is not harmless: applied to a clip that was
+    # rendered with TRACK or FIT, it silently un-tracks it, and the reviewer
+    # gets back a differently-framed clip in answer to a note about a logo.
+    # With an anchor named it IS an instruction, which is why `crop` survives.
+    if mode is FramingMode.AS_RENDERED and crop is None:
+        mode = None
+
     # ── Framing ──────────────────────────────────────────────────────────────
     if updated.framing is None and (mode is not None or crop is not None):
         resolved_mode = mode or FramingMode.AS_RENDERED
@@ -390,7 +400,8 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
     # refusing it is what makes the feature work on a note written the old way.
     unsupported = set(answer.unsupported or ())
     misfiled = unsupported & {UnsupportedAsk.REMOVE_WATERMARK, UnsupportedAsk.REMOVE_OVERLAY_TEXT}
-    by_topic = NoteTopic.OBSCURE in topics and answer.obscure is not NoteObscure.NOT_MENTIONED
+    asked_to_hide = NoteTopic.OBSCURE in topics or _asks_to_hide(options.notes)
+    by_topic = asked_to_hide and answer.obscure is not NoteObscure.NOT_MENTIONED
 
     obscure_where: str | None = None
     absorbed: list[UnsupportedAsk] = []
@@ -453,6 +464,46 @@ def describe(answer: LlmRemakeNote | None, applied: Applied) -> str:
 
 
 _SIDE_WORDS = ("left", "right", "centre", "center", "middle", "side")
+
+
+_HIDING_WORDS = (
+    "blur",
+    "blurred",
+    "hide",
+    "hidden",
+    "cover",
+    "censor",
+    "pixelate",
+    "obscure",
+    "watermark",
+    "logo",
+    "bug",
+)
+
+
+def _asks_to_hide(note: str | None) -> bool:
+    """Does the note itself use a word about hiding something?
+
+    The same device `_names_a_side` uses, and it is here for the mirror-image
+    reason. That one exists because the model volunteers a setting the note
+    never mentioned; this one exists because the model answers the right
+    setting and forgets to declare the topic that lets it through.
+
+    It was measured on the reviewer's own note. *"Blur the canal+ in the
+    screen"* came back with `obscure: ANYWHERE` and a summary saying so — and
+    with `topics: [FRAMING]`, so the topic gate discarded the one field that
+    was right. Requiring the word rather than trusting `topics` alone makes the
+    gate a conjunction of a deterministic signal and the model's reading, which
+    is what the crop gate already is.
+
+    It is still a conjunction: the model must also have read the note as asking
+    to hide something. A note complaining that *the blur behind the picture is
+    too strong* contains the word and gets NOT_MENTIONED, and nothing happens.
+    """
+    if not note:
+        return False
+    lowered = note.lower()
+    return any(word in lowered for word in _HIDING_WORDS)
 
 
 def _names_a_side(note: str | None) -> bool:

@@ -284,7 +284,7 @@ def propose_obscure(
             return []
 
     where = " and ".join(describe_region(region) for region in novel[:3])
-    mark = "mark" if len(novel) == 1 else "marks"
+    mark, them = ("mark", "it") if len(novel) == 1 else ("marks", "them")
     return [
         Preference(
             id=uuid.uuid4().hex,
@@ -294,7 +294,7 @@ def propose_obscure(
             category=NoteTopic.OBSCURE,
             lesson=(
                 f"This source burns {len(novel)} fixed {mark} into the picture "
-                f"— {where} — so hide them on every clip cut from it."
+                f"— {where} — so hide {them} on every clip cut from it."
             )[:400],
             defaults=RemakeDefaults(
                 obscure=ObscureOptions(

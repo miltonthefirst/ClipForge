@@ -759,3 +759,63 @@ def test_a_corner_hint_does_not_leak_from_one_remake_to_the_next(tmp_path: Path)
     stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
 
     assert stage._obscure_where is None
+
+
+# ── Leaving the framing alone means leaving it alone ─────────────────────────
+
+
+def fitted(tmp_path: Path) -> Clip:
+    """A clip that was already reframed, the way a second correction finds it."""
+    return clip(
+        tmp_path,
+        remake=AppliedRemake(framing_mode=FramingMode.FIT, start_sec=100.0, end_sec=108.0),
+    )
+
+
+def test_a_correction_about_something_else_keeps_the_framing_it_found(tmp_path: Path) -> None:
+    """`framing=None` used to reach the renderer as the profile's centre crop.
+
+    Correct for a clip RENDER made and wrong for one already reframed, and
+    nearly unreachable until hiding existed — a re-cut only happened when
+    someone asked for a different framing. Now "blur the logo" re-cuts too, and
+    without this a reviewer asking about a watermark gets back a FIT clip
+    silently cropped to its middle third. Which is what happened, on the first
+    real note.
+    """
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path, the_clip=fitted(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+
+    stage.run(context(job(RemakeOptions(start_delta_sec=-1.0))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.framing_mode is FramingMode.FIT
+
+
+def test_a_stated_framing_still_wins_over_the_one_it_found(tmp_path: Path) -> None:
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path, the_clip=fitted(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+
+    stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.TRACK)))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.framing_mode is FramingMode.TRACK
+
+
+def test_a_clip_render_made_still_gets_the_profiles_own_crop(tmp_path: Path) -> None:
+    """There is nothing to inherit, and AS_RENDERED is what it actually has."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+
+    stage.run(context(job(RemakeOptions(end_delta_sec=1.0))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.framing_mode is FramingMode.AS_RENDERED

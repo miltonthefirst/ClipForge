@@ -221,6 +221,11 @@ class _Picture:
 
     path: Path
     keyframes: list[PanKeyframe]
+    # The framing this picture actually has, which is not always the framing
+    # the request named — a request that says nothing inherits the parent's.
+    # Recorded from here rather than re-derived in `_publish`, because the two
+    # disagreeing is exactly the bug this field exists to stop.
+    mode: FramingMode
     # Empty when nothing was hidden, which includes the voice-only path — that
     # copies the reviewed picture wholesale, so whatever was hidden in it was
     # hidden by an earlier job and is not this remake's to claim.
@@ -324,6 +329,7 @@ class RemakeStage:
                 interpretation=interpretation,
                 keyframes=picture.keyframes,
                 obscured=picture.obscured,
+                framing_mode=picture.mode,
                 voice=voice,
                 cut=cut,
                 scratch=scratch,
@@ -749,13 +755,25 @@ class RemakeStage:
                     f"the clip's file is gone from this machine ({existing.name}), and this "
                     "remake does not re-cut from the source, so there is nothing to work from."
                 )
-            return _Picture(path=existing, keyframes=[], obscured=[])
+            return _Picture(
+                path=existing, keyframes=[], obscured=[], mode=_inherited_mode(original)
+            )
 
         source = self._source_media(original)
         media = probe(source, ffprobe_bin=self._settings.ffprobe_bin)
 
+        # **A remake that says nothing about framing must not change it.**
+        # `framing=None` reaches `build_video_chain` as AS_RENDERED, which is
+        # the profile's fixed centre crop — correct for a clip RENDER made, and
+        # wrong for one that was already reframed. Before hiding existed this
+        # was nearly unreachable, because a re-cut only happened when someone
+        # asked for a different framing. Now "blur the logo" re-cuts too, and
+        # without this a reviewer asking about a watermark gets back a FIT clip
+        # silently cropped to its middle third.
+        framing = options.framing if options.framing is not None else _inherited_framing(original)
+
         obscure = self._hide(options, original, source, cut)
-        keyframes = self._keyframes(options, source, cut, media)
+        keyframes = self._keyframes(framing, source, cut, media)
         subtitles = self._subtitles(
             options, original, cut, profile, scratch, voice, spoken_text, context
         )
@@ -765,7 +783,7 @@ class RemakeStage:
             graph = build_video_chain(
                 media=media,
                 profile=profile,
-                framing=options.framing,
+                framing=framing,
                 keyframes=keyframes,
                 subtitles_expr=_subtitles_filter(subtitles),
                 obscure=obscure,
@@ -799,6 +817,7 @@ class RemakeStage:
             path=destination,
             keyframes=keyframes,
             obscured=list(obscure.regions or []) if obscure is not None else [],
+            mode=framing.mode if framing is not None else FramingMode.AS_RENDERED,
         )
 
     # ── What to hide ─────────────────────────────────────────────────────────
@@ -881,10 +900,13 @@ class RemakeStage:
         ]
 
     def _keyframes(
-        self, options: RemakeOptions, source: Path, cut: _Cut, media: MediaInfo
+        self, framing: Framing | None, source: Path, cut: _Cut, media: MediaInfo
     ) -> list[PanKeyframe]:
-        """The window's path, from the reviewer or from the footage."""
-        framing = options.framing
+        """The window's path, from the reviewer or from the footage.
+
+        Takes the *resolved* framing rather than the request, because a remake
+        that inherited TRACK from its parent still has to track.
+        """
         if framing is None or framing.mode is not FramingMode.TRACK:
             return resolve_keyframes(framing)
 
@@ -1094,6 +1116,7 @@ class RemakeStage:
         interpretation: NoteInterpretation | None,
         keyframes: list[PanKeyframe],
         obscured: list[ObscureRegion],
+        framing_mode: FramingMode,
         voice: AppliedVoice | None,
         cut: _Cut,
         scratch: Path,
@@ -1118,7 +1141,7 @@ class RemakeStage:
             images = None
 
         now = datetime.now(UTC)
-        mode = options.framing.mode if options.framing is not None else FramingMode.AS_RENDERED
+        mode = framing_mode
         remade = Clip(
             id=clip_id,
             uid=context.job.uid,
@@ -1263,6 +1286,36 @@ class RemakeStage:
             model=self._settings.ollama_model,
             num_ctx=self._settings.ollama_num_ctx,
         )
+
+
+def _inherited_framing(original: Clip) -> Framing | None:
+    """The framing a re-cut should use when the request did not name one.
+
+    None means the profile's fixed crop, which is the right answer for a clip
+    RENDER made — that IS what it has. For one that was reframed, the answer is
+    whatever it was reframed to, so a correction about something else does not
+    quietly undo it.
+
+    FIT's fill and zoom are not recorded on `AppliedRemake`, so an inherited FIT
+    comes back with the defaults. That is a real if small loss of fidelity and
+    is worth less than the alternative, which is an inherited FIT that is not
+    FIT at all.
+    """
+    applied = original.remake
+    if applied is None or applied.framing_mode is FramingMode.AS_RENDERED:
+        return None
+    return Framing(
+        mode=applied.framing_mode,
+        # Only PAN reads them. TRACK re-runs the tracker over the cut, which is
+        # the more correct answer when the trim moved, and the same answer when
+        # it did not.
+        keyframes=list(applied.keyframes or []) if applied.framing_mode is FramingMode.PAN else [],
+    )
+
+
+def _inherited_mode(original: Clip) -> FramingMode:
+    """What the copied picture is framed as, for the record on the new clip."""
+    return original.remake.framing_mode if original.remake is not None else FramingMode.AS_RENDERED
 
 
 def _prefill(
