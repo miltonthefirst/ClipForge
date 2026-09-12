@@ -5,7 +5,19 @@
 *serviceAccount*.json
 *service-account*.json
 firebase/**/serviceAccount*.json
+# The Firebase console names downloaded Admin SDK keys
+# "<project>-firebase-adminsdk-<id>-<hash>.json", which matched none of the
+# patterns above — so one arrived at the repo root untracked and unignored, a
+# single `git add -A` away from being published. Matched three ways now.
+*firebase-adminsdk*
+*-adminsdk-*.json
+*adminsdk*.json
 apps/worker/.clipforge/
+# Wherever the worker is started from — the token store is a relative path by
+# default, so a run from the repo root puts it here instead.
+.clipforge/
+*youtube-token*
+*client_secret*.json
 **/credentials/
 *.pem
 *.key
@@ -23,6 +35,13 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# --- Tauri desktop shell ---
+# `frontend/` is a staged copy of the Angular build with desktop config injected;
+# `target/` is Rust's build output and is measured in gigabytes.
+/apps/desktop/frontend/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/
 
 # --- Node / Angular ---
 node_modules/
@@ -50,6 +69,13 @@ apps/worker/workspace/
 *.wav
 !apps/worker/assets/fixtures/**/*.wav
 !apps/worker/assets/fixtures/**/*.mp4
+!apps/worker/assets/fixtures/**/*.mp3
+
+# Your own voice recording, if you add one. Deliberately NOT committed: a test
+# needing a fixture is no reason for your voice to end up in a public repo.
+# See apps/worker/assets/fixtures/speech/SOURCES.md.
+apps/worker/assets/fixtures/speech/custom/*
+!apps/worker/assets/fixtures/speech/custom/.gitkeep
 
 # --- Editors ---
 # `.vscode/*` contains a slash, so it anchors to this file's directory only.

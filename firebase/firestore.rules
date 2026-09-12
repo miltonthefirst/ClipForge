@@ -1,0 +1,426 @@
+rules_version = '2';
+
+// ClipForge Firestore security rules.
+//
+// These rules are production code. Every change needs a corresponding emulator
+// test in the same PR (docs/PLAN.md Phase 1, "Risks").
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// A note on what these rules can and cannot do.
+//
+// The worker authenticates with the Admin SDK, which BYPASSES these rules
+// entirely. So nothing here constrains the worker — it is the PWA's boundary,
+// not the worker's. That asymmetry is deliberate and is why ClipForge lives in
+// its own Firebase project rather than sharing one: rules could not have
+// protected a neighbouring app's data from a worker bug.
+// See docs/adr/0004-dedicated-firebase-project.md.
+//
+// The design rule that follows: the PWA may CREATE work and REVIEW results, but
+// may never write pipeline state. Anything the worker owns is read-only here,
+// so a compromised or buggy client cannot forge a COMPLETED job, invent a
+// candidate, or rewrite an event log.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // ── Access is approval, not merely authentication ────────────────────────
+    //
+    // Registration is open: anyone with the URL can create an account. What a
+    // new account can *see* is nothing at all until an admin approves it, so a
+    // stray sign-up is an inert row rather than a foothold.
+    //
+    // This costs one document read per rule evaluation. At this project's scale
+    // that is a rounding error against the free tier's daily allowance, and the
+    // alternative — custom claims on the token — would put approval on a delay
+    // measured in token lifetimes and route it through the worker. Approval
+    // should take effect on the next request, not the next hour.
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApproved() {
+      return signedIn()
+             && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+             && profile().status == 'APPROVED';
+    }
+
+    function isAdmin() {
+      return isApproved() && profile().role == 'ADMIN';
+    }
+
+    // ── One workspace, not one per person ────────────────────────────────────
+    //
+    // ClipForge is a single shared system: one machine, one clip library, a
+    // small group of trusted people. Access is therefore decided by *approval*,
+    // not by ownership — an approved member sees and acts on everything.
+    //
+    // It was built the other way first, with every collection scoped to the
+    // uid that created it, and that turned out to describe something nobody
+    // wanted: two private workspaces that happened to share a worker. A job
+    // submitted from a phone was invisible on the desktop next to it, and a
+    // clip rendered by one account could not be reviewed by the other.
+    //
+    // `uid` stays on every document, and still has a job — it records who
+    // submitted the work, so the audit trail survives. It is deliberately no
+    // longer the access control.
+    //
+    // The consequence, stated plainly because it is the whole security model:
+    // registration is open, so *approving* an account is what hands over the
+    // entire library. Approval is the gate. There is nothing behind it.
+    //
+    // What has NOT changed is the other half of the design — the PWA may create
+    // work and review results, and may never write pipeline state. Sharing
+    // widens who can read and decide; it does not let a client forge a
+    // COMPLETED job, invent a candidate, or rewrite an event log.
+
+    // The document being written must be stamped with the caller's own uid.
+    // Kept even though reads are shared: attribution is only worth having if a
+    // client cannot file work under somebody else's name.
+    function ownsIncoming() {
+      return isApproved() && request.resource.data.uid == request.auth.uid;
+    }
+
+    // Which fields an update actually touched.
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // ── Accounts ─────────────────────────────────────────────────────────────
+    //
+    // The one collection that cannot gate on approval, because it is where
+    // approval is recorded. A signed-in user may always read their own row —
+    // otherwise a pending account could not be told it is pending.
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+
+      // Register yourself, as yourself, with no say in your own access. Role
+      // and status are dictated here rather than trusted from the client: a
+      // sign-up that could choose 'ADMIN'/'APPROVED' would make the whole gate
+      // decorative.
+      allow create: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.uid == uid
+                    && request.resource.data.role == 'MEMBER'
+                    && request.resource.data.status == 'PENDING'
+                    && request.resource.data.decidedAt == null
+                    && request.resource.data.decidedBy == null;
+
+      // Your own profile: the cosmetic fields only.
+      allow update: if signedIn()
+                    && request.auth.uid == uid
+                    && changed().hasOnly(['displayName', 'photoUrl']);
+
+      // An admin decides access. They may not change their own, which stops the
+      // last admin from locking everyone out — including themselves — with one
+      // mistaken tap.
+      allow update: if isAdmin()
+                    && request.auth.uid != uid
+                    && changed().hasOnly(['role', 'status', 'decidedAt', 'decidedBy'])
+                    && request.resource.data.status in ['PENDING', 'APPROVED', 'REJECTED', 'DISABLED']
+                    && request.resource.data.role in ['ADMIN', 'MEMBER']
+                    && request.resource.data.decidedBy == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // ── Workers ──────────────────────────────────────────────────────────────
+    // Heartbeats are written by the worker through the Admin SDK. The PWA reads
+    // them to show whether a worker is online and why a job might be stalled.
+    //
+    // This was the first rule to be scoped by approval rather than ownership,
+    // and it was scoped that way because the ownership version was not merely
+    // wrong but inert: the worker announces itself with a placeholder uid
+    // rather than a Firebase account, so it matched nobody and the heartbeat
+    // was unreadable by every client. A job stuck at QUEUED then looked
+    // identical to a job nobody had explained.
+    //
+    // `heartbeat.uid` records who runs the worker, not who may look at it.
+    match /workers/{workerId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
+    // ── The rights gate, client half ─────────────────────────────────────────
+    //
+    // The worker enforces this too, in clipforge/publish/rights.py. The
+    // duplication is deliberate and neither copy is redundant: the worker uses
+    // the Admin SDK, which bypasses these rules entirely, so rules alone would
+    // protect nothing on the path that actually uploads. Conversely a rule is
+    // the only thing that stops a client enqueueing publish work at all.
+    // Phase 8 exit criterion 2 requires both, tested independently.
+
+    function clipOf(clipId) {
+      return get(/databases/$(database)/documents/clips/$(clipId)).data;
+    }
+
+    // An attestation must exist, name a basis, name who made it, and be dated.
+    // A block with a basis and nobody's name against it cannot answer the one
+    // question an audit log exists to answer.
+    function hasAttestation(clip) {
+      return clip.rights != null
+             && clip.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
+                                      'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
+             && clip.rights.attestedBy is string
+             && clip.rights.attestedBy.size() > 0
+             && clip.rights.attestedAt != null;
+    }
+
+    // Note what is *not* checked: who owns the clip. In a shared workspace any
+    // approved member may publish any clip that has been approved and attested.
+    // The attestation still names whoever made it, so "who said this was ours
+    // to publish" remains answerable — which is the question that matters here,
+    // and it is not the same question as "who submitted the job".
+    // A clip with music has two things in it that a claim could be made
+    // against, so it has to answer for both. The video's attestation covers the
+    // footage; the music's covers the track. Neither substitutes for the other,
+    // and a scored clip whose music nobody vouched for is exactly the upload
+    // this gate exists to stop.
+    function musicAttested(clip) {
+      return clip.get('music', null) == null
+             || (clip.music.get('rights', null) != null
+                 && clip.music.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
+                                                'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']);
+    }
+
+    function publishable(clipId) {
+      let clip = clipOf(clipId);
+      return clip.review == 'APPROVED'
+             && hasAttestation(clip)
+             && musicAttested(clip);
+    }
+
+    // What a MUSIC job may ask for. Validated because these values reach
+    // ffmpeg and yt-dlp on the worker, and because a job that cannot possibly
+    // succeed should fail here rather than after a download.
+    function musicOptionsOk() {
+      let options = request.resource.data.get('musicOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['source', 'mode', 'captions', 'gainDb', 'alignToBeat', 'rights'])
+             && options.source is string
+             && options.source.size() > 0
+             && options.source.size() <= 2048
+             && options.mode in ['BED', 'REPLACE']
+             && options.captions in ['KEEP', 'REMOVE']
+             && (options.get('gainDb', null) == null
+                 || (options.gainDb is number && options.gainDb >= -40 && options.gainDb <= 12))
+             && (options.get('alignToBeat', null) == null || options.alignToBeat is bool)
+             // The music's own rights, recorded at the moment the track is
+             // chosen — which is the only moment anyone knows why it is usable.
+             && options.get('rights', null) != null
+             && options.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
+                                         'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
+             && options.rights.get('attestedBy', null) == request.auth.uid;
+    }
+
+    // What the operator chose for one specific upload: title, description,
+    // privacy, category, tags, and which channel. Every field is optional and
+    // null means "use the channel's default", so this validates *shape*, not
+    // presence.
+    //
+    // Worth validating at all because these values leave the system. A title is
+    // published under the operator's own name and a privacy of 'public' is not
+    // recoverable, so a client that could write an unrecognised field here
+    // would be a client that could smuggle one past the worker's resolver. The
+    // caps are YouTube's own limits, enforced early: an oversized title fails
+    // here, before an encode and a review, instead of at the upload.
+    //
+    // `tags` is capped for a different reason — the resolver only sends the
+    // first twenty, so a longer list is document size that will never be used.
+    function publishOptionsOk() {
+      let options = request.resource.data.get('publishOptions', null);
+      return options == null
+             || (
+                  options.keys().hasOnly(
+                    ['channelId', 'title', 'description', 'privacy', 'categoryId', 'tags'])
+                  && (options.get('channelId', null) == null
+                      || options.channelId is string)
+                  && (options.get('title', null) == null
+                      || (options.title is string && options.title.size() <= 100))
+                  && (options.get('description', null) == null
+                      || (options.description is string && options.description.size() <= 4900))
+                  && (options.get('privacy', null) == null
+                      || options.privacy in ['private', 'unlisted', 'public'])
+                  && (options.get('categoryId', null) == null
+                      || options.categoryId is string)
+                  && (options.get('tags', null) == null
+                      || (options.tags is list && options.tags.size() <= 20))
+                );
+    }
+
+    // ── Jobs ─────────────────────────────────────────────────────────────────
+    match /jobs/{jobId} {
+      allow read: if isApproved();
+
+      // The PWA may enqueue work, but only as itself and only in the one state
+      // that means "not yet started". It may not create a job that is already
+      // RUNNING, already has a worker, or already holds a lease.
+      //
+      // A PUBLISH job additionally has to name a clip that is approved and
+      // attested. This costs one document read per publish request; publishing
+      // is rare — YouTube's quota allows about six a day — so that is the right
+      // place to spend one.
+      allow create: if ownsIncoming()
+                    && request.resource.data.status == 'QUEUED'
+                    && request.resource.data.workerId == null
+                    && request.resource.data.leaseExpiresAt == null
+                    && request.resource.data.attempts == 0
+                    && publishOptionsOk()
+                    && (
+                         request.resource.data.type != 'PUBLISH'
+                         || (
+                              request.resource.data.clipId is string
+                              && publishable(request.resource.data.clipId)
+                            )
+                       )
+                    // A MUSIC job names a clip and says what to do to it. It
+                    // does NOT require the clip to be approved: choosing a
+                    // track is part of deciding whether the clip is any good,
+                    // and the scored version is reviewed on its own merits.
+                    && (
+                         request.resource.data.type != 'MUSIC'
+                         || (
+                              request.resource.data.clipId is string
+                              && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                              && musicOptionsOk()
+                            )
+                       )
+                    // An UPLOAD job asks the worker to put one clip in the
+                    // bucket so a phone can play it. Like MUSIC it does not
+                    // require approval — being unable to watch a clip is
+                    // precisely why it has not been reviewed yet — but it must
+                    // name a clip that exists, or the worker claims a job it
+                    // can only fail.
+                    && (
+                         request.resource.data.type != 'UPLOAD'
+                         || (
+                              request.resource.data.clipId is string
+                              && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                            )
+                       );
+
+      // The only state transition a user may drive is cancellation. Everything
+      // else — claiming, progress, stage results — belongs to the worker.
+      //
+      // `changed().hasOnly` is what protects attribution here: `uid` is not in
+      // the writable set, so cancelling someone else's job cannot quietly
+      // reassign it to the person who cancelled it.
+      allow update: if isApproved()
+                    && request.resource.data.status == 'CANCELLED'
+                    && resource.data.status in ['QUEUED', 'RUNNING']
+                    && changed().hasOnly(['status', 'updatedAt', 'endedAt']);
+
+      allow delete: if isApproved();
+
+      // ── Job events ─────────────────────────────────────────────────────────
+      // Append-only, written by the worker. Readable so a failure can be
+      // diagnosed from the phone rather than from worker logs.
+      //
+      // This used to `get()` the parent job to compare its uid, which is now
+      // both pointless and expensive — a rule `get()` is a billed read, on
+      // every event of every log.
+      match /events/{eventId} {
+        allow read: if isApproved();
+        allow write: if false;
+      }
+    }
+
+    // ── Sources ──────────────────────────────────────────────────────────────
+    match /sources/{sourceId} {
+      allow read: if isApproved();
+      allow create: if ownsIncoming();
+      allow update, delete: if false;
+
+      // Transcripts are expensive to produce and are cached by content hash.
+      // Nothing about them is user-editable.
+      match /transcripts/{modelVersion} {
+        allow read: if isApproved();
+        allow write: if false;
+      }
+    }
+
+    // ── Channels ─────────────────────────────────────────────────────────────
+    // Publishing destinations. Written by the worker, which is the only thing
+    // that can actually reach a channel, and read by any approved user so the
+    // settings page can show connection state and quota.
+    //
+    // Deliberately holds no credentials: the client secret and refresh token
+    // stay on the worker (docs/adr/0010-worker-held-publishing-credentials.md).
+    // If a field ever appears here that could publish to a channel, this rule is
+    // the wrong shape and the field is in the wrong place.
+    match /channels/{channelId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
+    // ── Candidates ───────────────────────────────────────────────────────────
+    // Produced by the ANALYZE stage. Read-only to the client: a user who could
+    // write these could fabricate a score and corrupt the Phase 9 feedback loop.
+    match /candidates/{candidateId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
+    // ── Clips ────────────────────────────────────────────────────────────────
+    match /clips/{clipId} {
+      allow read: if isApproved();
+      allow create, delete: if false;
+
+      // Review is the decision the people own; everything else about a clip
+      // belongs to the render that produced it. Restricting the writable field
+      // set is what keeps that line: publishing is gated on `rights`, so a rule
+      // that allowed a blanket update would let a client relabel storagePath or
+      // rewrite an attestation. It also pins `uid`, so reviewing a clip never
+      // reassigns who made it.
+      //
+      // `storagePath` and `playbackExpiresAt` are writable, and only to null.
+      // They describe a *cache* — a short-lived bucket copy that exists so a
+      // phone can watch the clip — and the client is what deletes that object
+      // when a decision makes it pointless. Letting it clear the pointer in the
+      // same breath keeps the document honest about what is in the bucket. It
+      // is not an exception to "the client may not write pipeline state": the
+      // render itself is `localPath`, which stays untouchable.
+      allow update: if isApproved()
+                    && changed().hasOnly(['review', 'reviewedAt', 'reviewNote', 'rights',
+                                          'title', 'description', 'storagePath',
+                                          'playbackExpiresAt'])
+                    && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED']
+                    && (!('storagePath' in changed())
+                        || request.resource.data.storagePath == null)
+                    && (!('playbackExpiresAt' in changed())
+                        || request.resource.data.playbackExpiresAt == null);
+
+      // The poster frame and filmstrip. On the free tier this is the only part
+      // of a clip a phone can see at all, so it is read-often and must stay
+      // readable — but it is produced by the render stage, never by a client.
+      // See docs/adr/0009-spark-tier-local-artefacts.md.
+      match /preview/{previewId} {
+        allow read: if isApproved();
+        allow write: if false;
+      }
+
+      match /publications/{pubId} {
+        allow read: if isApproved();
+        allow write: if false;
+      }
+
+      match /metrics/{day} {
+        allow read: if isApproved();
+        allow write: if false;
+      }
+    }
+
+    // ── Everything else ──────────────────────────────────────────────────────
+    // Default deny. A new collection is inaccessible until it is granted access
+    // deliberately, rather than inheriting a permissive fallback.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

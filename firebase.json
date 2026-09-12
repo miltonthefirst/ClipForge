@@ -1,0 +1,71 @@
+{
+  "firestore": {
+    "rules": "firebase/firestore.rules",
+    "indexes": "firebase/firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "firebase/storage.rules"
+  },
+  "hosting": [
+    {
+      "site": "bytepic-clipforge",
+      "public": "apps/web/dist/web/browser",
+      "ignore": ["firebase.json", "**/.*", "**/node_modules/**", "**/*.map"],
+      "rewrites": [{ "source": "**", "destination": "/index.html" }],
+      "headers": [
+        { "source": "**", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+        {
+          "source": "**/*.@(js|css|woff2)",
+          "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+        },
+        { "source": "/ngsw-worker.js", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+        {
+          "source": "/safety-worker.js",
+          "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+        },
+        { "source": "/ngsw.json", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
+      ]
+    },
+    {
+      "site": "getclipforge",
+      "public": "apps/site",
+      "ignore": ["firebase.json", "**/.*", "**/node_modules/**", "**/README.md"],
+      "cleanUrls": true,
+      "trailingSlash": false,
+      "headers": [
+        {
+          "source": "**",
+          "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+        },
+        {
+          "source": "**/*.@(css|js|woff2)",
+          "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800" }]
+        },
+        {
+          "source": "**/*.@(png|ico|svg|jpg|jpeg|webp|avif)",
+          "headers": [{ "key": "Cache-Control", "value": "public, max-age=2592000" }]
+        },
+        {
+          "source": "**",
+          "headers": [
+            { "key": "X-Content-Type-Options", "value": "nosniff" },
+            { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+            { "key": "X-Frame-Options", "value": "DENY" },
+            { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), interest-cohort=()" },
+            {
+              "key": "Content-Security-Policy",
+              "value": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "emulators": {
+    "auth": { "port": 9099 },
+    "firestore": { "port": 8080 },
+    "storage": { "port": 9199 },
+    "ui": { "enabled": true, "port": 4000 },
+    "singleProjectMode": true
+  }
+}

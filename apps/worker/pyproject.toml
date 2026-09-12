@@ -20,6 +20,9 @@ dependencies = [
     "structlog>=24.4",
     "firebase-admin>=6.6",
     "google-cloud-firestore>=2.19",
+    # Direct rather than leaned on transitively through firebase-admin: the
+    # Blaze blob adapter imports it by name, so it is ours to pin.
+    "google-cloud-storage>=2.19",
     "tenacity>=9.0",
     "typer>=0.15",
     "rich>=13.9",
@@ -28,7 +31,19 @@ dependencies = [
     # degrades to "unknown" rather than failing. Needed by `doctor` and the
     # ModelBroker budget check, so it belongs in core rather than the gpu extra.
     "nvidia-ml-py>=12.560",
+    # Direct rather than transitive. The MUSIC stage's beat analysis is numpy
+    # arithmetic (clipforge/media/beats.py) and must work without the `gpu`
+    # extra, which is where numpy would otherwise arrive from.
+    "numpy>=1.26",
+    # The wire protocol, generated from packages/contracts/schemas/clipforge.json.
+    # A path dependency rather than a copied module: the PWA and the worker are
+    # two implementations of one protocol and must not be able to drift.
+    # See docs/adr/0005-single-source-contracts.md.
+    "clipforge-contracts",
 ]
+
+[tool.uv.sources]
+clipforge-contracts = { path = "../../packages/contracts", editable = true }
 
 [project.optional-dependencies]
 # Local inference. Requires an NVIDIA GPU with CUDA 12 runtime libraries.
@@ -59,6 +74,11 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
+    # Generates the Pydantic half of packages/contracts. It lives here rather
+    # than in the contracts package because this is the environment CI already
+    # provisions, and because generating into a package while installing that
+    # same package is a chicken-and-egg no one needs.
+    "datamodel-code-generator>=0.26",
 ]
 
 [project.scripts]
@@ -98,7 +118,15 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "SLF001"]
+# S101: asserts are the point of a test.
+# SLF001: tests may reach into internals.
+# S607: tests invoke ffmpeg by name. Resolving it via PATH is the project's
+#       documented dependency model — `doctor` verifies it is there — and
+#       hardcoding an absolute path would make the suite machine-specific.
+# S105/S106: the credentials tests must construct fake tokens by hand. A test
+#       that could not name a refresh token could not assert that it never
+#       reaches Firestore, which is Phase 8 exit criterion 4.
+"tests/**" = ["S101", "SLF001", "S607", "S105", "S106"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -107,13 +135,17 @@ quote-style = "double"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# Without this, mypy types a generated model's __init__ from its camelCase
+# aliases and rejects the snake_case field names the models are meant to be
+# constructed with. The plugin understands `populate_by_name` and accepts both.
+plugins = ["pydantic.mypy"]
 warn_unreachable = true
 pretty = true
 files = ["clipforge", "tests"]
 
 # Third-party packages without bundled type stubs.
 [[tool.mypy.overrides]]
-module = ["faster_whisper.*", "pynvml.*", "yt_dlp.*", "firebase_admin.*"]
+module = ["faster_whisper.*", "pynvml.*", "yt_dlp.*", "firebase_admin.*", "google.cloud.storage.*"]
 ignore_missing_imports = true
 
 # ─────────────────────────────────────────────────────────────────────────────

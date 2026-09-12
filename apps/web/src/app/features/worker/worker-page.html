@@ -1,0 +1,96 @@
+<h1 class="text-xl font-semibold">Worker</h1>
+<p class="mt-1 max-w-2xl text-sm text-ink-muted">
+  The process that does the expensive work: transcribing, analysing, cutting and
+  uploading. Nothing moves while it is not running — no job fails, they simply
+  wait.
+</p>
+
+<!-- Start, stop, uptime and the log. The same component the Jobs page uses, so
+     the two cannot disagree about what the worker is doing. -->
+<div class="mt-6">
+  <app-worker-panel />
+</div>
+
+@if (!inDesktopShell) {
+  <p class="mt-6 rounded-lg border border-line bg-panel px-4 py-3 text-sm text-ink-muted">
+    This is the browser build. Starting a worker and reading its configuration
+    both happen over loopback on the machine it runs on, so this page can only
+    show them in the desktop app. Everything else here works from anywhere.
+  </p>
+} @else {
+  <section class="mt-6 rounded-xl border border-line bg-panel p-4">
+    <div class="flex flex-wrap items-baseline justify-between gap-3">
+      <h2 class="font-medium text-ink">This process</h2>
+      <button
+        type="button"
+        class="rounded-lg border border-line-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-line disabled:opacity-50"
+        [disabled]="checking()"
+        (click)="refresh()"
+      >
+        Refresh
+      </button>
+    </div>
+
+    @if (report(); as worker) {
+      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="text-ink-subtle">Process</dt>
+        <dd class="text-ink-muted">pid {{ worker.pid }}, up {{ uptime(worker.uptimeSeconds) }}</dd>
+        <dt class="text-ink-subtle">Worker id</dt>
+        <dd class="text-ink-muted">{{ worker.workerId }}</dd>
+        <dt class="text-ink-subtle">Version</dt>
+        <dd class="text-ink-muted">{{ worker.version }}</dd>
+        <dt class="text-ink-subtle">Running jobs</dt>
+        <dd class="text-ink-muted">
+          {{ worker.activeJobIds.length ? worker.activeJobIds.join(', ') : 'none' }}
+        </dd>
+        <dt class="text-ink-subtle">Database</dt>
+        <dd [class]="mismatched() ? 'text-warn-ink' : 'text-ink-muted'">
+          {{ workerDatabase() }} ({{ worker.projectId }})
+        </dd>
+      </dl>
+
+      @if (mismatched()) {
+        <p
+          class="mt-3 rounded-lg border border-warn-ink/40 bg-warn-bg px-3 py-2 text-xs text-warn-ink"
+        >
+          This worker writes to <b>{{ workerDatabase() }}</b> while this app reads
+          <b>{{ appDatabase }}</b>. Nothing it does will appear anywhere in here. It was started
+          outside the app — stop it and press Start above, which always uses this app's database.
+        </p>
+      }
+    } @else {
+      <p class="mt-3 text-sm text-ink-muted">
+        No worker is answering on this machine. Press Start above; this fills in once it does.
+      </p>
+      @if (error(); as message) {
+        <p class="mt-2 text-xs text-ink-subtle">{{ message }}</p>
+      }
+    }
+  </section>
+
+  @if (groups(); as settingGroups) {
+    <section class="mt-6 rounded-xl border border-line bg-panel p-4">
+      <h2 class="font-medium text-ink">Configuration</h2>
+      <p class="mt-1 text-sm text-ink-muted">
+        Read from the worker itself, so this is what it is actually using rather than what a file
+        says. Change these in <code class="text-ink-subtle">.env</code> and restart it.
+      </p>
+
+      <div class="mt-4 grid gap-6 sm:grid-cols-2">
+        @for (group of settingGroups; track group.title) {
+          <div>
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+              {{ group.title }}
+            </h3>
+            <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+              @for (row of group.rows; track row.label) {
+                <dt class="text-ink-subtle">{{ row.label }}</dt>
+                <dd class="break-all text-ink-muted">{{ row.value }}</dd>
+              }
+            </dl>
+          </div>
+        }
+      </div>
+    </section>
+  }
+}

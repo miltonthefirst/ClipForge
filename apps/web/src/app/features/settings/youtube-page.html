@@ -1,0 +1,277 @@
+<h1 class="text-xl font-semibold">YouTube</h1>
+<p class="mt-2 text-sm text-ink-muted">
+  Where clips go when you publish them. <code class="text-accent-ink">docs/youtube-setup.md</code>
+  in the repository walks every field, where each value comes from, and what each error means.
+</p>
+
+@if (error(); as message) {
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    {{ message }}
+  </p>
+}
+@if (notice(); as message) {
+  <p class="mt-4 rounded-lg border border-ok-line bg-ok-bg px-4 py-3 text-sm text-ok-ink">
+    {{ message }}
+  </p>
+}
+
+<!-- ── Connection ─────────────────────────────────────────────────────────── -->
+<section class="mt-6 rounded-xl border border-line bg-panel p-4">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <h2 class="font-medium text-ink">Connection</h2>
+    @if (channel(); as ch) {
+      <span
+        class="rounded px-2 py-1 text-xs"
+        [class.bg-ok-bg]="ch.connection === 'CONNECTED'"
+        [class.text-ok-ink]="ch.connection === 'CONNECTED'"
+        [class.bg-danger-bg]="ch.connection !== 'CONNECTED'"
+        [class.text-danger-ink]="ch.connection !== 'CONNECTED'"
+        >{{ ch.connection }}</span
+      >
+    }
+  </div>
+
+  @if (checkingLocal()) {
+    <p class="mt-3 text-sm text-ink-subtle">Looking for the worker on this machine…</p>
+  } @else if (!localAvailable()) {
+    <!-- The honest statement of where this can be done, in the one place
+         someone would otherwise wonder why the form is missing. -->
+    <p class="mt-3 rounded-lg border border-line bg-panel-soft p-3 text-sm text-ink-muted">
+      {{ localReason() }}
+    </p>
+    @if (channel(); as ch) {
+      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="text-ink-subtle">Channel</dt>
+        <dd class="text-ink-muted">{{ ch.externalChannelTitle || ch.label }}</dd>
+        @if (ch.connectionMessage) {
+          <dt class="text-ink-subtle">Note</dt>
+          <dd class="text-ink-muted">{{ ch.connectionMessage }}</dd>
+        }
+        @if (ch.uploadsRemainingToday !== null) {
+          <dt class="text-ink-subtle">Uploads left today</dt>
+          <dd class="text-ink-muted">{{ ch.uploadsRemainingToday }}</dd>
+        }
+      </dl>
+    }
+  } @else {
+    @if (status(); as st) {
+      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="text-ink-subtle">Publishing</dt>
+        <dd class="text-ink-muted">{{ st.publishingEnabled ? 'enabled' : 'DISABLED' }}</dd>
+        <dt class="text-ink-subtle">OAuth client</dt>
+        <dd class="text-ink-muted">{{ st.hasClient ? 'saved' : 'not set' }}</dd>
+        <dt class="text-ink-subtle">Authorised</dt>
+        <dd class="text-ink-muted">
+          {{ st.hasToken ? 'yes' : 'no' }}
+          @if (st.tokenAgeDays !== null) {
+            <span [class.text-warn-ink]="tokenExpiringSoon()">
+              ({{ st.tokenAgeDays }} days ago)
+            </span>
+          }
+        </dd>
+        <dt class="text-ink-subtle">Stored at</dt>
+        <dd class="break-all text-ink-subtle">{{ st.clientSecretsPath }}</dd>
+      </dl>
+
+      @if (tokenExpiringSoon()) {
+        <p class="mt-3 rounded-lg border border-line bg-panel-soft p-3 text-sm text-warn-ink">
+          While the OAuth consent screen is in Testing mode Google expires refresh tokens after
+          <strong>7 days</strong>. Re-run <code>clipforge-worker youtube-auth</code> before the next
+          publish.
+        </p>
+      }
+
+      @if (nextStep(); as step) {
+        <p class="mt-3 rounded-lg border border-line bg-panel-soft p-3 text-sm text-ink-muted">
+          <strong class="text-ink">Next:</strong> {{ step }}
+        </p>
+      }
+    }
+
+    <!-- ── Credentials, desktop only ──────────────────────────────────────── -->
+    <div class="mt-5 border-t border-line pt-4">
+      <h3 class="text-sm font-medium text-ink">OAuth client</h3>
+      <p class="mt-1 text-xs text-ink-subtle">
+        From the Google Cloud console:
+        <strong>APIs &amp; Services → Credentials → Create credentials → OAuth client ID</strong>,
+        application type <strong>Desktop app</strong>. Enable the YouTube Data API v3 first, and add
+        your own Google account under <strong>OAuth consent screen → Test users</strong> or sign-in
+        is refused.
+      </p>
+      <p class="mt-2 text-xs text-ink-subtle">
+        These go to the worker on this machine and are never written to Firestore.
+      </p>
+
+      <label class="mt-3 block text-sm">
+        <span class="text-ink-muted">Client ID</span>
+        <input
+          type="text"
+          placeholder="123456789-abc.apps.googleusercontent.com"
+          autocomplete="off"
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+          [value]="clientId()"
+          (input)="clientId.set($any($event.target).value)"
+        />
+      </label>
+      <label class="mt-2 block text-sm">
+        <span class="text-ink-muted">Client secret</span>
+        <input
+          type="password"
+          autocomplete="off"
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+          [value]="clientSecret()"
+          (input)="clientSecret.set($any($event.target).value)"
+        />
+      </label>
+
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          class="rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+          [disabled]="!canSaveClient()"
+          (click)="saveClient()"
+        >
+          Save to this machine
+        </button>
+        @if (status()?.hasClient) {
+          <button
+            type="button"
+            class="rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="authorise()"
+          >
+            @if (authorising()) {
+              Waiting for the browser…
+            } @else if (status()?.hasToken) {
+              Re-authorise
+            } @else {
+              Authorise
+            }
+          </button>
+        }
+        @if (status()?.hasToken) {
+          <button
+            type="button"
+            class="rounded-lg border border-line-strong px-4 py-2 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="disconnect()"
+          >
+            Sign out of YouTube
+          </button>
+        }
+        <button
+          type="button"
+          class="rounded-lg border border-line-strong px-4 py-2 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+          [disabled]="busy()"
+          (click)="refresh()"
+        >
+          Recheck
+        </button>
+      </div>
+    </div>
+  }
+</section>
+
+<!-- ── Publish defaults ───────────────────────────────────────────────────── -->
+<section class="mt-6 rounded-xl border border-line bg-panel p-4">
+  <h2 class="font-medium text-ink">Publish defaults</h2>
+  <p class="mt-1 text-sm text-ink-muted">
+    What an upload uses unless the clip says otherwise. None of this is secret, so it lives in
+    Firestore and can be read from anywhere.
+  </p>
+  <p class="mt-2 text-sm text-ink-subtle">
+    <!-- Said here because this is where someone looks when they want to change
+         one upload and are about to change every future one instead. -->
+    Changing one upload rather than all of them?
+    <a class="text-accent-ink underline" routerLink="/publish">Publish</a> → Options, on that clip's
+    card.
+  </p>
+
+  <label class="mt-4 block max-w-xs text-sm">
+    <span class="text-ink-muted">Privacy</span>
+    <select
+      class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+      [value]="privacy()"
+      (change)="draftPrivacy.set($any($event.target).value)"
+    >
+      <option value="private">Private</option>
+      <option value="unlisted">Unlisted</option>
+      <option value="public">Public</option>
+    </select>
+    <span class="mt-1 block text-xs text-ink-subtle">
+      Unlisted by default: publishing to the world by accident is not recoverable the way an
+      unlisted upload is.
+    </span>
+  </label>
+
+  <label class="mt-4 block max-w-xs text-sm">
+    <span class="text-ink-muted">Category</span>
+    <select
+      class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+      [value]="category()"
+      (change)="draftCategory.set($any($event.target).value)"
+    >
+      @for (option of categories; track option.id) {
+        <option [value]="option.id">{{ option.label }}</option>
+      }
+    </select>
+  </label>
+
+  <label class="mt-4 block text-sm">
+    <span class="text-ink-muted">Tags</span>
+    <input
+      type="text"
+      placeholder="ai, local-first, video"
+      class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+      [value]="tags()"
+      (input)="draftTags.set($any($event.target).value)"
+    />
+    <span class="mt-1 block text-xs text-ink-subtle">
+      Comma separated. YouTube keeps the first 20 and ignores the rest.
+    </span>
+  </label>
+
+  <label class="mt-4 block text-sm">
+    <span class="text-ink-muted">Title suffix</span>
+    <input
+      type="text"
+      placeholder="#shorts"
+      class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+      [value]="titleSuffix()"
+      (input)="draftSuffix.set($any($event.target).value)"
+    />
+    <span class="mt-1 block text-xs text-ink-subtle">
+      Appended to every title. Titles are still cut at 100 characters, which YouTube enforces.
+    </span>
+  </label>
+
+  <label class="mt-4 block text-sm">
+    <span class="text-ink-muted">Description footer</span>
+    <textarea
+      rows="3"
+      placeholder="Made with ClipForge. Source: …"
+      class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+      [value]="descriptionTemplate()"
+      (input)="draftDescription.set($any($event.target).value)"
+    ></textarea>
+    <span class="mt-1 block text-xs text-ink-subtle">
+      Appended to every description — a standing credit, licence note or link block.
+    </span>
+  </label>
+
+  <button
+    type="button"
+    class="mt-4 rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+    [disabled]="busy() || !localAvailable()"
+    (click)="saveDefaults()"
+  >
+    Save defaults
+  </button>
+  @if (!localAvailable()) {
+    <p class="mt-2 text-xs text-ink-subtle">
+      Saving defaults goes through the worker, so it needs the desktop app for now.
+    </p>
+  }
+</section>

@@ -15,6 +15,49 @@ permissions:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
+  # Contracts.
+  #
+  # The PWA and the worker are two implementations of one protocol, generated
+  # from packages/contracts/schemas/clipforge.json. This job regenerates both
+  # halves and fails if the committed output differs — so a schema edit cannot
+  # land without its regenerated types (docs/PLAN.md Phase 1, exit criterion 4).
+  #
+  # It runs first because a stale contract makes the worker and web results
+  # meaningless: they would be testing against types nobody will ship.
+  # ───────────────────────────────────────────────────────────────────────────
+  contracts:
+    name: contracts (codegen is current)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: packages/contracts/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install generators
+        run: |
+          npm ci --no-fund --no-audit --prefix packages/contracts
+          uv sync --locked --project apps/worker
+
+      - name: TypeScript contracts are current
+        run: npm --prefix packages/contracts run check
+
+      - name: Pydantic contracts are current
+        run: uv run --project apps/worker python packages/contracts/scripts/generate_python.py --check
+
+  # ───────────────────────────────────────────────────────────────────────────
   # Python worker.
   #
   # Installs CORE dependencies only — no `--extra gpu`. Runners have no NVIDIA
@@ -39,6 +82,12 @@ jobs:
       - name: Install Python 3.12
         run: uv python install 3.12
 
+      # ffmpeg is a hard dependency of the media stages, and ffprobe is what the
+      # ingest adapters use to decide whether a file is usable at all. Without it
+      # the entire Phase 3 test surface would silently skip.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Sync dependencies (core + dev)
         run: uv sync --locked
 
@@ -51,8 +100,74 @@ jobs:
       - name: Type check
         run: uv run mypy
 
-      - name: Test (unit + integration; gpu deselected)
-        run: uv run pytest -m "not gpu" --cov=clipforge --cov-report=term-missing
+      # Unit tier only: no GPU, no network, no emulator. The integration tier
+      # needs the Emulator Suite and runs in the `emulator` job below.
+      - name: Test (unit tier)
+        run: uv run pytest -m unit --cov=clipforge --cov-report=term-missing
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Emulator-backed tiers: security rules, and the transactional lease protocol.
+  #
+  # Everything here runs against a `demo-` prefixed project id, which puts the
+  # Emulator Suite in fully offline mode — no credentials, no billing, no real
+  # Firebase project, no network. That is what lets these run on a PR from a
+  # fork with no secrets at all.
+  # ───────────────────────────────────────────────────────────────────────────
+  emulator:
+    name: emulator (rules · lease protocol)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: firebase/tests/package-lock.json
+
+      # The Firestore and Storage emulators are Java processes.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install
+        run: |
+          npm ci --no-fund --no-audit --prefix firebase/tests
+          uv sync --locked --project apps/worker
+
+      - name: Cache emulator binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}
+
+      # Phase 1, exit criterion 1: per-user isolation on read, write and list,
+      # for both Firestore and Storage.
+      - name: Security rules
+        working-directory: firebase/tests
+        run: npm test
+
+      # Phase 1, exit criteria 2 and 3: exactly one worker wins a contested
+      # claim, and an expired lease is reclaimed with attempts incremented.
+      - name: Lease protocol
+        working-directory: apps/worker
+        run: >
+          ../../firebase/tests/node_modules/.bin/firebase emulators:exec
+          --config ../../firebase.json --project demo-clipforge --only firestore
+          "uv run pytest -m integration -q"
 
   # ───────────────────────────────────────────────────────────────────────────
   # Angular PWA. Tests run under Vitest + jsdom, so no browser is needed.
@@ -91,6 +206,67 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # End-to-end: the review loop, in a real browser, against the Emulator Suite.
+  #
+  # Phase 7, exit criterion 2. The worker is stubbed by writing documents
+  # directly rather than run — what this asserts is the PWA's half of the
+  # contract, and a real pipeline would be slow, GPU-dependent and
+  # non-deterministic without proving anything more about the UI.
+  #
+  # Separate from the `web` job because it needs a browser and Java, both of
+  # which are wasted on lint and unit tests.
+  # ───────────────────────────────────────────────────────────────────────────
+  e2e:
+    name: e2e (review loop)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NG_CLI_ANALYTICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # The Firestore and Auth emulators are Java processes.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install
+        run: npm ci --no-fund --no-audit
+
+      # Headless shell only: a full Chrome download is several times the size
+      # and nothing here needs a head.
+      - name: Install browser
+        run: npx playwright install --with-deps chromium --only-shell
+
+      - name: Cache emulator binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}
+
+      - name: Review loop
+        run: >
+          npx firebase-tools emulators:exec
+          --config ../../firebase.json --project demo-clipforge --only auth,firestore
+          "npx playwright test"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: apps/web/test-results/
+          retention-days: 7
 
   # ───────────────────────────────────────────────────────────────────────────
   # Parse `tools/doctor.ps1` on a real Windows PowerShell host.

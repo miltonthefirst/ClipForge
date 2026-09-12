@@ -1,0 +1,84 @@
+name: yt-dlp canary
+
+# yt-dlp breaks whenever YouTube changes, and it breaks *silently* from our side:
+# the pinned version keeps working until it doesn't, and the first person to find
+# out is whoever submits a URL. This job finds out first instead.
+#
+# Deliberately NOT part of CI:
+#
+# - It needs the network and reaches a third-party service, so it is inherently
+#   flaky in a way that must never block a pull request.
+# - It tests an upstream dependency, not our code. A red canary means "go bump
+#   yt-dlp", not "your change is wrong".
+#
+# `continue-on-error` keeps the workflow's own status green; the summary is where
+# the signal lives.
+
+on:
+  schedule:
+    # 04:00 UTC daily — after yt-dlp's usual release cadence, before a working day.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: yt-dlp still extracts metadata
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync with the media extra
+        run: uv sync --locked --extra media
+
+      # Metadata extraction only — no download. It exercises the extractor, which
+      # is the part that actually breaks, without pulling a video onto a runner
+      # or leaning on someone else's bandwidth.
+      - name: Extract metadata for a stable public video
+        id: probe
+        run: |
+          uv run python - <<'PY'
+          import sys
+
+          from clipforge.media.sources import YouTubeAdapter
+
+          # "Me at the zoo" — the first video on YouTube. As stable a target as
+          # exists: public, short, not age-gated, and extremely unlikely to be
+          # removed.
+          adapter = YouTubeAdapter()
+          identity = adapter.identify("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+          metadata = adapter.fetch_metadata(identity)
+
+          print(f"title={metadata.title!r} duration={metadata.duration_sec}")
+          if not metadata.title or not metadata.duration_sec:
+              print("::error::yt-dlp returned no usable metadata — the extractor has likely broken")
+              sys.exit(1)
+          PY
+
+      - name: Report
+        if: always()
+        run: |
+          if [ "${{ steps.probe.outcome }}" = "success" ]; then
+            echo "✅ yt-dlp is still extracting metadata." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ **yt-dlp metadata extraction failed.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "This is expected periodically — YouTube changes and yt-dlp catches up." >> "$GITHUB_STEP_SUMMARY"
+            echo "Bump the pin in \`apps/worker/pyproject.toml\` and re-run." >> "$GITHUB_STEP_SUMMARY"
+            echo "It does not indicate a problem with ClipForge's own code." >> "$GITHUB_STEP_SUMMARY"
+          fi

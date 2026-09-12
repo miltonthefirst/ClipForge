@@ -29,6 +29,7 @@ import sys
 import tempfile
 import wave
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -229,7 +230,6 @@ def probe_ffmpeg(binary: str = "ffmpeg") -> CheckResult:
         return CheckResult("ffmpeg", False, f"{binary} not runnable: {exc}")
 
     required = {
-        "h264_nvenc": encoders,
         "libx264": encoders,
         "ass": filters,
         "loudnorm": filters,
@@ -239,7 +239,70 @@ def probe_ffmpeg(binary: str = "ffmpeg") -> CheckResult:
 
     if missing:
         return CheckResult("ffmpeg", False, f"missing capabilities: {', '.join(missing)}")
-    return CheckResult("ffmpeg", True, "h264_nvenc, libx264, ass, loudnorm, silencedetect present")
+    return CheckResult("ffmpeg", True, "libx264, ass, loudnorm, silencedetect present")
+
+
+def probe_nvenc(binary: str = "ffmpeg") -> CheckResult:
+    """Actually encode a frame with NVENC, rather than trusting the listing.
+
+    `ffmpeg -encoders` lists `h264_nvenc` on any build compiled with it, whether
+    or not the installed driver can run it. On this project's own reference
+    machine that gap is real: the encoder is listed, and every attempt to use it
+    fails with "Driver does not support the required nvenc API version".
+
+    This is the same class of problem as the cuBLAS DLL in Phase 0 — "present"
+    and "usable" are different questions — so it gets the same treatment: run the
+    real thing for a fraction of a second and see.
+
+    Not fatal. The render stage falls back to libx264 automatically, which is
+    slower but correct, so this reports a warning-shaped pass rather than
+    blocking the whole environment.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [
+                binary,
+                "-hide_banner",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=256x256:rate=10:duration=0.2",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CheckResult("nvenc", True, f"could not be tested ({exc}); renders will use libx264")
+
+    if completed.returncode == 0:
+        return CheckResult("nvenc", True, "h264_nvenc encodes successfully")
+
+    reason = next(
+        (
+            line.strip()
+            for line in completed.stderr.splitlines()
+            if "driver" in line.lower() or "nvenc" in line.lower()
+        ),
+        completed.stderr.strip().splitlines()[0] if completed.stderr.strip() else "unknown",
+    )
+    return CheckResult(
+        "nvenc",
+        True,
+        f"UNUSABLE, renders fall back to libx264 — {reason[:120]}",
+        data={
+            "usable": False,
+            "fix": "update the NVIDIA driver, or set CLIPFORGE_VIDEO_ENCODER=libx264",
+        },
+    )
 
 
 def probe_cuda_libraries() -> CheckResult:
@@ -262,9 +325,87 @@ def probe_cuda_libraries() -> CheckResult:
     )
 
 
+def probe_publishing(settings: Any | None = None) -> CheckResult:
+    """Report whether publishing is configured, without touching the network.
+
+    Publishing being *off* is a pass, not a failure. Off is the default and the
+    intended state for most machines; reporting it as a fault would train the
+    reader to ignore a red line, which is the one thing a diagnostic must never
+    do. What this catches is the genuinely broken middle: publishing switched on
+    with no client secrets or no authorisation, which would otherwise surface as
+    a failed job hours after someone approved a clip and expected it to go out.
+    """
+    from clipforge.config import get_settings
+    from clipforge.publish.credentials import TokenStore
+
+    # Injectable so a test can describe a configuration rather than arrange one
+    # in the environment. `doctor` passes nothing and gets the real settings.
+    settings = settings or get_settings()
+    if not settings.publishing_enabled:
+        return CheckResult(
+            "publishing",
+            True,
+            "disabled (CLIPFORGE_PUBLISHING_ENABLED=false) — nothing will be uploaded",
+            {"enabled": False},
+        )
+
+    secrets = Path(settings.youtube_client_secrets)
+    if not secrets.is_file():
+        return CheckResult(
+            "publishing",
+            False,
+            f"enabled, but no OAuth client at {secrets}. Create one in the Google Cloud "
+            "console and point CLIPFORGE_YOUTUBE_CLIENT_SECRETS at it.",
+            {"enabled": True, "clientSecrets": False},
+        )
+
+    store = TokenStore(settings.youtube_token_store)
+    if not store.exists():
+        return CheckResult(
+            "publishing",
+            False,
+            "enabled, but not authorised. Run: clipforge-worker youtube-auth",
+            {"enabled": True, "clientSecrets": True, "authorised": False},
+        )
+
+    try:
+        tokens = store.load()
+    except Exception as exc:  # noqa: BLE001 - any failure here means "re-authorise"
+        return CheckResult(
+            "publishing",
+            False,
+            f"enabled, but the stored token will not open: {exc}",
+            {"enabled": True, "authorised": False},
+        )
+
+    # Deliberately reports the *age* rather than the token. Refresh tokens expire
+    # after 7 days while the consent screen is in Testing mode, so age is the
+    # number that predicts the next failure.
+    age = ""
+    if tokens.obtained_at is not None:
+        days = (datetime.now(UTC) - tokens.obtained_at).days
+        age = f", authorised {days}d ago"
+        if days >= 7:
+            return CheckResult(
+                "publishing",
+                False,
+                f"enabled, but the token is {days} days old. While the OAuth consent screen "
+                "is in Testing mode Google expires refresh tokens after 7 days — "
+                "re-run: clipforge-worker youtube-auth",
+                {"enabled": True, "authorised": True, "ageDays": days},
+            )
+
+    return CheckResult(
+        "publishing",
+        True,
+        f"enabled, authorised, default privacy {settings.youtube_default_privacy}{age}",
+        {"enabled": True, "authorised": True, **tokens.redacted()},
+    )
+
+
 def run_all(*, include_gpu: bool = True) -> list[CheckResult]:
     """Run every diagnostic and return the results in report order."""
-    results = [probe_ffmpeg(), probe_ollama(), probe_gpu()]
+    results = [probe_ffmpeg(), probe_nvenc(), probe_ollama(), probe_gpu(), probe_publishing()]
     if include_gpu:
         results.append(probe_cuda_libraries())
         results.append(smoke_transcribe())

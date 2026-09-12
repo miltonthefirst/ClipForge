@@ -1,0 +1,15 @@
+{
+  "name": "clipforge-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Tauri shell around the ClipForge PWA, for reviewing on the machine that renders",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "stage": "npm --prefix ../web run build && node scripts/stage-frontend.mjs",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.1"
+  }
+}

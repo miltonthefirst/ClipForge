@@ -1,0 +1,989 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clipforge.dev/schemas/clipforge.json",
+  "title": "ClipForgeContracts",
+  "description": "The complete ClipForge wire protocol. The PWA and the worker are two independent implementations of the types defined here; both are generated from this file, so neither can drift from it. See docs/adr/0005-single-source-contracts.md. Every timestamp is an ISO 8601 date-time string, NOT a Firestore Timestamp: the store adapters convert at the boundary, which keeps this document language-neutral and lets the unit tier compare documents as plain JSON with no emulator running.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "job": { "$ref": "#/definitions/Job" },
+    "jobEvent": { "$ref": "#/definitions/JobEvent" },
+    "stage": { "$ref": "#/definitions/Stage" },
+    "source": { "$ref": "#/definitions/Source" },
+    "ingestErrorCode": { "$ref": "#/definitions/IngestErrorCode" },
+    "transcript": { "$ref": "#/definitions/Transcript" },
+    "transcriptRef": { "$ref": "#/definitions/TranscriptRef" },
+    "candidate": { "$ref": "#/definitions/Candidate" },
+    "clip": { "$ref": "#/definitions/Clip" },
+    "clipPreview": { "$ref": "#/definitions/ClipPreview" },
+    "publication": { "$ref": "#/definitions/Publication" },
+    "channel": { "$ref": "#/definitions/Channel" },
+    "userProfile": { "$ref": "#/definitions/UserProfile" },
+    "workerHeartbeat": { "$ref": "#/definitions/WorkerHeartbeat" },
+    "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" }
+  },
+
+  "definitions": {
+    "JobStatus": {
+      "title": "JobStatus",
+      "description": "Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.",
+      "type": "string",
+      "enum": ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
+    },
+
+    "JobType": {
+      "title": "JobType",
+      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else.",
+      "type": "string",
+      "enum": ["ECHO", "CLIP", "PUBLISH", "MUSIC", "UPLOAD"]
+    },
+
+    "StageStatus": {
+      "title": "StageStatus",
+      "description": "A stage that is DONE is never re-executed on retry. That is what makes a crash during ANALYZE cost seconds rather than the twenty minutes of DOWNLOAD and TRANSCRIBE that preceded it.",
+      "type": "string",
+      "enum": ["PENDING", "RUNNING", "DONE", "SKIPPED", "FAILED"]
+    },
+
+    "StageName": {
+      "title": "StageName",
+      "description": "Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it.",
+      "type": "string",
+      "enum": [
+        "ECHO_ONE",
+        "ECHO_TWO",
+        "ECHO_THREE",
+        "DOWNLOAD",
+        "TRANSCRIBE",
+        "ANALYZE",
+        "RENDER",
+        "PUBLISH",
+        "MUSIC",
+        "UPLOAD"
+      ]
+    },
+
+    "Lane": {
+      "title": "Lane",
+      "description": "Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).",
+      "type": "string",
+      "enum": ["GPU", "CPU"]
+    },
+
+    "StageError": {
+      "title": "StageError",
+      "description": "Structured failure detail. Captured rather than raised so a failed stage can be inspected from the PWA without reading worker logs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "type": "string", "description": "Exception class name." },
+        "message": { "type": "string" },
+        "code": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "A stable, machine-readable cause the PWA can map to a written explanation — see IngestErrorCode for the ingest stage's vocabulary. Null when a failure has no classified cause, in which case the UI falls back to `message`. Typed as a string rather than an enum so each stage can own its own vocabulary without every stage's codes leaking into every error."
+        },
+        "traceback": { "type": ["string", "null"], "default": null },
+        "retryable": {
+          "type": "boolean",
+          "default": true,
+          "description": "False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts."
+        }
+      }
+    },
+
+    "Stage": {
+      "title": "Stage",
+      "description": "One idempotent, checkpointed step of a job.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "lane", "status"],
+      "properties": {
+        "name": { "$ref": "#/definitions/StageName" },
+        "lane": { "$ref": "#/definitions/Lane" },
+        "status": { "$ref": "#/definitions/StageStatus" },
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "endedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "durationMs": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "peakVramMb": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "Peak VRAM observed through NVML while this stage held the ModelBroker lease. Null for CPU stages."
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "checkpoint": {
+          "type": ["object", "null"],
+          "default": null,
+          "additionalProperties": true,
+          "description": "Opaque, stage-owned resume state. The scheduler persists and returns it verbatim and never interprets it."
+        },
+        "error": {
+          "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
+          "default": null
+        }
+      }
+    },
+
+    "AppliedMusic": {
+      "title": "AppliedMusic",
+      "description": "What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "captions", "source"],
+      "properties": {
+        "mode": { "$ref": "#/definitions/MusicMode" },
+        "captions": { "$ref": "#/definitions/MusicCaptions" },
+        "source": {
+          "type": "string",
+          "description": "The URL or path the track came from, verbatim."
+        },
+        "trackTitle": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "What the source called itself, when it said. Worth keeping for the description and for answering a claim."
+        },
+        "tempoBpm": {
+          "type": ["number", "null"],
+          "default": null,
+          "description": "The tempo the analysis settled on. Null when the track had no beat clear enough to measure, in which case alignment was skipped rather than guessed."
+        },
+        "musicStartSec": {
+          "type": ["number", "null"],
+          "default": null,
+          "description": "Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat."
+        },
+        "rights": {
+          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
+          "default": null
+        }
+      }
+    },
+
+    "MusicMode": {
+      "title": "MusicMode",
+      "description": "What the added track does to the clip's own audio. BED keeps the original and sits the music under it, ducking automatically so speech stays intelligible — the usual choice for a talking clip. REPLACE removes the original audio entirely and the track becomes the whole soundtrack, which is what a montage or a silent-action clip wants.",
+      "type": "string",
+      "enum": ["BED", "REPLACE"]
+    },
+
+    "MusicCaptions": {
+      "title": "MusicCaptions",
+      "description": "Captions are burned into the clip's pixels by the RENDER stage, so they cannot be peeled off a finished file — removing them means re-rendering the segment from the original source without the subtitle filter. KEEP is therefore cheap and always available; REMOVE needs the source media to still be on the worker, and fails clearly when it has been garbage-collected. Offered as a choice rather than inferred from the mode because 'music over captions' is a real style, and guessing wrong either way is worse than asking.",
+      "type": "string",
+      "enum": ["KEEP", "REMOVE"]
+    },
+
+    "MusicOptions": {
+      "title": "MusicOptions",
+      "description": "What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "mode", "captions", "rights"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A YouTube URL, or a path to an audio file on the worker. Only the audio is ever fetched from a URL — the video of a music source is of no use here and would cost bandwidth for nothing."
+        },
+        "mode": { "$ref": "#/definitions/MusicMode" },
+        "captions": { "$ref": "#/definitions/MusicCaptions" },
+        "gainDb": {
+          "type": ["number", "null"],
+          "minimum": -40,
+          "maximum": 12,
+          "default": null,
+          "description": "Trim on the music, relative to the level the stage picks. Null means 'use the stage's judgement', which targets a bed roughly 18 LUFS below speech and a replacement at the clip's own loudness target."
+        },
+        "alignToBeat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure."
+        },
+        "rights": {
+          "$ref": "#/definitions/RightsAttestation",
+          "description": "Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards."
+        }
+      }
+    },
+
+    "Job": {
+      "title": "Job",
+      "description": "One pipeline run over one source. Stored at jobs/{jobId}.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uid",
+        "type",
+        "status",
+        "stages",
+        "attempts",
+        "maxAttempts",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Owning user. Every security rule keys off this field."
+        },
+        "type": { "$ref": "#/definitions/JobType" },
+        "status": { "$ref": "#/definitions/JobStatus" },
+        "sourceId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Set by the DOWNLOAD stage once ingestion resolves the submission to a source. Null until then."
+        },
+        "submission": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "What the user actually submitted: a YouTube URL or a local file path. Kept verbatim and separate from sourceId, because a job must be re-runnable from the original input even if its source document was garbage-collected."
+        },
+        "clipId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all."
+        },
+        "musicOptions": {
+          "anyOf": [{ "$ref": "#/definitions/MusicOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "What a MUSIC job should add, and how. Null for every other job type."
+        },
+        "publishOptions": {
+          "anyOf": [{ "$ref": "#/definitions/PublishOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'."
+        },
+        "notBefore": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "The job is not claimable until this instant. Null means claimable immediately. This is how a publish-at time is honoured: scheduling lives in the one predicate every claim path already consults, rather than in a second scheduler that could disagree with the first."
+        },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Stage" },
+          "minItems": 1,
+          "description": "Ordered. Executed front to back; DONE stages are skipped on retry."
+        },
+        "workerId": { "type": ["string", "null"], "default": null },
+        "leaseExpiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "Set on claim, extended by heartbeat. A RUNNING job whose lease is in the past is reclaimable by the reaper."
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "maxAttempts": { "type": "integer", "minimum": 1, "default": 3 },
+        "error": {
+          "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
+          "default": null,
+          "description": "The failure that terminated the job, copied from the failing stage."
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "endedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "JobEventKind": {
+      "title": "JobEventKind",
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "CLAIMED",
+        "STAGE_STARTED",
+        "STAGE_COMPLETED",
+        "STAGE_FAILED",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "LEASE_EXPIRED",
+        "REQUEUED"
+      ]
+    },
+
+    "JobEvent": {
+      "title": "JobEvent",
+      "description": "Append-only transition log at jobs/{jobId}/events/{eventId}. Never mutated, which is what makes it trustworthy when debugging a job that failed hours ago.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "jobId", "kind", "at", "seq"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "jobId": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/definitions/JobEventKind" },
+        "at": { "type": "string", "format": "date-time" },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Order within a single transition. One transition can emit several events at the identical instant — a reap emits LEASE_EXPIRED and REQUEUED together — and ordering by timestamp alone would then fall back to document id, which is random. The log is ordered by (at, seq)."
+        },
+        "stage": {
+          "anyOf": [{ "$ref": "#/definitions/StageName" }, { "type": "null" }],
+          "default": null
+        },
+        "workerId": { "type": ["string", "null"], "default": null },
+        "detail": { "type": ["string", "null"], "default": null },
+        "attempts": { "type": ["integer", "null"], "minimum": 0, "default": null }
+      }
+    },
+
+    "IngestErrorCode": {
+      "title": "IngestErrorCode",
+      "description": "Why an ingest failed, in terms a user can act on. Phase 3 requires each of these to map to a distinct user-facing message rather than a stack trace: 'this video is age-restricted' is actionable, 'DownloadError' is not. Only RATE_LIMITED and NETWORK are worth retrying.",
+      "type": "string",
+      "enum": [
+        "UNSUPPORTED_URL",
+        "NOT_FOUND",
+        "PRIVATE",
+        "GEO_BLOCKED",
+        "AGE_RESTRICTED",
+        "LIVE_STREAM",
+        "TOO_LONG",
+        "NO_SUITABLE_FORMAT",
+        "RATE_LIMITED",
+        "NETWORK",
+        "DISK_FULL",
+        "UNKNOWN"
+      ]
+    },
+
+    "SourceProvider": {
+      "title": "SourceProvider",
+      "description": "local exists so the whole pipeline can be exercised from a committed fixture with no network, which is what keeps the integration tier runnable in CI.",
+      "type": "string",
+      "enum": ["youtube", "local"]
+    },
+
+    "Source": {
+      "title": "Source",
+      "description": "One ingested long-form video at sources/{sourceId}. The media itself never leaves the worker (docs/PLAN.md decision D3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "provider", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "provider": { "$ref": "#/definitions/SourceProvider" },
+        "externalId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "YouTube video id, or null for a local file."
+        },
+        "url": { "type": ["string", "null"], "default": null },
+        "title": { "type": ["string", "null"], "default": null },
+        "channel": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "contentHash": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Hash of the downloaded media. Transcripts are cached against this, so re-ingesting the same video costs no GPU time."
+        },
+        "localPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Worker-local absolute path. Advisory only for the PWA, which can never read it."
+        },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "pinned": {
+          "type": "boolean",
+          "default": false,
+          "description": "Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with."
+        },
+        "lastAccessedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read."
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "TranscriptWord": {
+      "title": "TranscriptWord",
+      "description": "Word-level timing. Load-bearing for boundary snapping (D4) and caption generation, which is why faster-whisper is configured with word timestamps enabled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "startSec", "endSec"],
+      "properties": {
+        "text": { "type": "string" },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "probability": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "default": null }
+      }
+    },
+
+    "TranscriptSegment": {
+      "title": "TranscriptSegment",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "text", "startSec", "endSec"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "text": { "type": "string" },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "words": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/TranscriptWord" },
+          "default": []
+        }
+      }
+    },
+
+    "Transcript": {
+      "title": "Transcript",
+      "description": "Stored at sources/{sourceId}/transcripts/{modelVersion}, keyed by model so re-transcribing with a better model does not destroy the old one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "modelVersion", "segments", "createdAt"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "For example faster-whisper:large-v3-turbo:int8_float16"
+        },
+        "language": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "segments": { "type": "array", "items": { "$ref": "#/definitions/TranscriptSegment" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "SubScores": {
+      "title": "SubScores",
+      "description": "The rubric from docs/PLAN.md. The LLM returns these; Python computes the weighted total (decision D5), so the weighting can be changed and every historical candidate rescored without re-running inference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hook", "curiosity", "standalone", "emotion", "pacing", "shareability"],
+      "properties": {
+        "hook": { "type": "integer", "minimum": 0, "maximum": 25 },
+        "curiosity": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "standalone": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "emotion": { "type": "integer", "minimum": 0, "maximum": 15 },
+        "pacing": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "shareability": { "type": "integer", "minimum": 0, "maximum": 10 }
+      }
+    },
+
+    "Candidate": {
+      "title": "Candidate",
+      "description": "An LLM-proposed clip window at candidates/{candidateId}, after deterministic boundary snapping.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "sourceId", "startSec", "endSec", "subScores", "total", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "sourceId": { "type": "string", "minLength": 1 },
+        "jobId": { "type": ["string", "null"], "default": null },
+        "startSec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Snapped to a silence boundary and a sentence end, not the raw LLM value."
+        },
+        "endSec": { "type": "number", "minimum": 0 },
+        "proposedStartSec": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "The model's raw suggestion, retained so snapping can be evaluated against it."
+        },
+        "proposedEndSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "subScores": { "$ref": "#/definitions/SubScores" },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Computed in Python from subScores. Never supplied by the model."
+        },
+        "hook": { "type": ["string", "null"], "default": null },
+        "reason": { "type": ["string", "null"], "default": null },
+        "transcriptExcerpt": { "type": ["string", "null"], "default": null },
+        "modelVersion": { "type": ["string", "null"], "default": null },
+        "promptVersion": { "type": ["string", "null"], "default": null },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "ReviewState": {
+      "title": "ReviewState",
+      "type": "string",
+      "enum": ["PENDING", "APPROVED", "REJECTED"]
+    },
+
+    "RightsBasis": {
+      "title": "RightsBasis",
+      "description": "Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.",
+      "type": "string",
+      "enum": [
+        "OWN_CONTENT",
+        "LICENSED",
+        "PERMISSION_GRANTED",
+        "FAIR_USE_ASSERTED",
+        "PUBLIC_DOMAIN"
+      ]
+    },
+
+    "ChannelConnection": {
+      "title": "ChannelConnection",
+      "description": "Whether the worker can currently publish to this channel. NOT_CONFIGURED means no OAuth client has been supplied; NEEDS_AUTH means one has but nobody has authorised it, or the refresh token expired — which it does every 7 days while the consent screen is in Testing mode.",
+      "type": "string",
+      "enum": ["NOT_CONFIGURED", "NEEDS_AUTH", "CONNECTED", "ERROR"]
+    },
+
+    "PublishDefaults": {
+      "title": "PublishDefaults",
+      "description": "What a publish uses when the clip does not say otherwise. Editable from the app because none of it is secret — unlike the credentials, which never leave the worker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["privacy"],
+      "properties": {
+        "privacy": { "$ref": "#/definitions/PublishPrivacy" },
+        "categoryId": {
+          "type": "string",
+          "default": "22",
+          "description": "YouTube category id. 22 is People & Blogs, which is the safe default for talking-head clips."
+        },
+        "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "titleSuffix": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Appended to every title, for a channel handle or series marker. Truncation still applies: YouTube rejects titles over 100 characters."
+        },
+        "descriptionTemplate": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Appended to every description. Where a standing credit, licence note or link block belongs."
+        }
+      }
+    },
+
+    "Channel": {
+      "title": "Channel",
+      "description": "A publishing destination, at channels/{channelId}. Modelled as a collection from the outset even though the UI manages one: adding a second channel is then a document and a second `youtube-auth`, not a schema migration and a rewrite of every publication record. Deliberately holds NO credentials — the client secret and refresh token live on the worker (docs/adr/0010-worker-held-publishing-credentials.md).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "platform", "label", "connection", "defaults", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "platform": { "$ref": "#/definitions/PublishPlatform" },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the operator calls it. Free text, because 'the cooking one' is more useful at 6am than a channel id."
+        },
+        "isDefault": { "type": "boolean", "default": false },
+        "externalChannelId": { "type": ["string", "null"], "default": null },
+        "externalChannelTitle": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Read back from YouTube after authorising, so the app can show which account was actually connected rather than which one was intended."
+        },
+        "connection": { "$ref": "#/definitions/ChannelConnection" },
+        "connectionMessage": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Why the connection is not CONNECTED, in words the operator can act on."
+        },
+        "authorisedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "checkedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "defaults": { "$ref": "#/definitions/PublishDefaults" },
+        "quotaDay": { "type": ["string", "null"], "default": null },
+        "quotaUsedUnits": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "uploadsRemainingToday": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "PublishOptions": {
+      "title": "PublishOptions",
+      "description": "What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channelId": { "type": ["string", "null"], "default": null },
+        "title": {
+          "type": ["string", "null"],
+          "maxLength": 100,
+          "default": null,
+          "description": "Replaces the clip's title for this upload only. Capped at YouTube's own limit here rather than truncated silently on the way out, so what the operator typed is what the audit record shows."
+        },
+        "description": {
+          "type": ["string", "null"],
+          "maxLength": 4900,
+          "default": null,
+          "description": "Replaces the clip's description for this upload only."
+        },
+        "privacy": {
+          "anyOf": [{ "$ref": "#/definitions/PublishPrivacy" }, { "type": "null" }],
+          "default": null
+        },
+        "categoryId": { "type": ["string", "null"], "default": null },
+        "tags": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "default": null,
+          "description": "Null and empty are different answers here, and both are ones an operator can mean. Null is 'I did not touch the tags', which falls through to the channel's; an empty list is 'no tags on this one', which does not. Every other field in this block is nullable for the same reason, and an array whose absent value was [] could not express the second."
+        }
+      }
+    },
+
+    "UserRole": {
+      "title": "UserRole",
+      "description": "ADMIN can approve other users and change roles. MEMBER can use the app for their own data and nothing else. There is no third level because there is no third thing to protect.",
+      "type": "string",
+      "enum": ["ADMIN", "MEMBER"]
+    },
+
+    "UserStatus": {
+      "title": "UserStatus",
+      "description": "Registration is open; access is not. A new account lands in PENDING and can read nothing until an admin approves it, so an unapproved sign-up is an inert row rather than a foothold. REJECTED and DISABLED are kept apart deliberately: one was never let in, the other was and had it taken away, and an audit that cannot tell them apart is not much of an audit.",
+      "type": "string",
+      "enum": ["PENDING", "APPROVED", "REJECTED", "DISABLED"]
+    },
+
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "A person with an account, at users/{uid}. The document id IS the Firebase Auth uid, which is what lets security rules resolve a caller's status with one get() and no join.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uid", "email", "role", "status", "createdAt"],
+      "properties": {
+        "uid": { "type": "string", "minLength": 1 },
+        "email": { "type": "string", "minLength": 1 },
+        "displayName": { "type": ["string", "null"], "default": null },
+        "photoUrl": { "type": ["string", "null"], "default": null },
+        "role": { "$ref": "#/definitions/UserRole" },
+        "status": { "$ref": "#/definitions/UserStatus" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "decidedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "When an admin last approved, rejected or disabled this account."
+        },
+        "decidedBy": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The uid of the admin who made that decision. Recorded so 'who let this person in?' is answerable later."
+        }
+      }
+    },
+
+    "RightsAttestation": {
+      "title": "RightsAttestation",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis"],
+      "properties": {
+        "basis": { "$ref": "#/definitions/RightsBasis" },
+        "attestedBy": { "type": ["string", "null"], "default": null },
+        "attestedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "note": { "type": ["string", "null"], "default": null }
+      }
+    },
+
+    "ClipLocation": {
+      "title": "ClipLocation",
+      "description": "Where the authoritative copy of a rendered clip lives. LOCAL is the free-tier default: Cloud Storage for Firebase requires the Blaze plan, so on Spark there is no bucket at all and clips stay on the worker. REMOTE means a copy exists that any browser can fetch. See docs/adr/0009-spark-tier-local-artefacts.md.",
+      "type": "string",
+      "enum": ["LOCAL", "REMOTE"]
+    },
+
+    "Clip": {
+      "title": "Clip",
+      "description": "A rendered artefact at clips/{clipId}. The FILE itself never enters Firestore. On the free tier it stays on the worker and is reachable through the worker's local file server; when Blaze is available the same document also carries a playbackUrl. Both states are first-class here on purpose, so enabling Blaze populates a field rather than migrating a model.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "candidateId", "location", "localPath", "review", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "candidateId": { "type": "string", "minLength": 1 },
+        "sourceId": { "type": ["string", "null"], "default": null },
+        "jobId": { "type": ["string", "null"], "default": null },
+        "location": { "$ref": "#/definitions/ClipLocation" },
+        "localPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path on the worker. Always set, even once a remote copy exists — the worker still needs it to publish (decision D7)."
+        },
+        "playbackUrl": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "A URL any browser can fetch. Null on the free tier. Populated by the Cloud Storage adapter, and equally by a tunnel — this field is 'a URL', not 'a Firebase thing'."
+        },
+        "storagePath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Object path within the bucket, when one exists. Kept alongside playbackUrl because deletion and rules key off the path, not the URL."
+        },
+        "playbackExpiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "When the bucket copy stops being playable. Written at upload as upload time plus the retention window, and honoured by the UI without asking the bucket: the object is removed by a Cloud Storage lifecycle rule, which reports to nobody, so a clip whose expiry has passed is treated as local-only rather than discovered to be missing when someone presses play. Null when there is no bucket copy."
+        },
+        "thumbnailPath": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "widthPx": { "type": ["integer", "null"], "minimum": 1, "default": null },
+        "heightPx": { "type": ["integer", "null"], "minimum": 1, "default": null },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "renderProfile": { "type": ["string", "null"], "default": null },
+        "title": { "type": ["string", "null"], "default": null },
+        "description": { "type": ["string", "null"], "default": null },
+        "review": { "$ref": "#/definitions/ReviewState" },
+        "reviewedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "derivedFromClipId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates."
+        },
+        "music": {
+          "anyOf": [{ "$ref": "#/definitions/AppliedMusic" }, { "type": "null" }],
+          "default": null,
+          "description": "What was added to this clip, when something was. Null on an ordinary render."
+        },
+        "reviewNote": {
+          "type": ["string", "null"],
+          "maxLength": 2000,
+          "default": null,
+          "description": "What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh."
+        },
+        "rights": {
+          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
+          "default": null
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "ClipPreview": {
+      "title": "ClipPreview",
+      "description": "What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clipId", "posterBase64", "widthPx", "heightPx", "createdAt"],
+      "properties": {
+        "clipId": { "type": "string", "minLength": 1 },
+        "posterBase64": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A single representative frame, JPEG, base64-encoded without a data: prefix."
+        },
+        "filmstripBase64": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Four frames tiled into one JPEG, so a reviewer gets a sense of motion rather than a single still."
+        },
+        "widthPx": { "type": "integer", "minimum": 1 },
+        "heightPx": { "type": "integer", "minimum": 1 },
+        "byteSize": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "TranscriptRef": {
+      "title": "TranscriptRef",
+      "description": "What Firestore keeps about a transcript, at sources/{sourceId}/transcripts/{modelVersion}. The word-level segments themselves live on the worker: a 60-minute word-level transcript approaches Firestore's 1 MiB document limit, and the PWA never needs one whole — Candidate.transcriptExcerpt carries the part a reviewer reads.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "modelVersion", "localPath", "createdAt"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 },
+        "modelVersion": { "type": "string", "minLength": 1 },
+        "localPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Worker-local path to the full Transcript document, as JSON."
+        },
+        "vadPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Worker-local path to the voice-activity map produced alongside the transcript: the speech spans, whose gaps are the silences. Phase 5 snaps clip boundaries to those gaps, so it is worth persisting rather than recomputing. Its contents are deliberately NOT modelled here — it never crosses to the PWA, and this document is the wire protocol."
+        },
+        "language": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "segmentCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "wordCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "PublicationState": {
+      "title": "PublicationState",
+      "description": "Lifecycle of one attempt to publish one clip to one platform. PENDING is written BEFORE the upload begins, which is what makes a retry reconcile against the platform instead of double-posting.",
+      "type": "string",
+      "enum": ["PENDING", "UPLOADING", "PUBLISHED", "FAILED", "CANCELLED"]
+    },
+
+    "PublishPlatform": {
+      "title": "PublishPlatform",
+      "description": "Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.",
+      "type": "string",
+      "enum": ["YOUTUBE"]
+    },
+
+    "PublishPrivacy": {
+      "title": "PublishPrivacy",
+      "description": "Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.",
+      "type": "string",
+      "enum": ["private", "unlisted", "public"]
+    },
+
+    "Publication": {
+      "title": "Publication",
+      "description": "One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "clipId", "uid", "platform", "state", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "clipId": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "platform": { "$ref": "#/definitions/PublishPlatform" },
+        "state": { "$ref": "#/definitions/PublicationState" },
+        "externalId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The platform's id for the uploaded video. Null until the upload completes."
+        },
+        "externalUrl": { "type": ["string", "null"], "default": null },
+        "channelId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Which channel this went to. Recorded on the attempt because a clip published today and re-published elsewhere next month must not look like it went to the same place."
+        },
+        "privacy": {
+          "anyOf": [{ "$ref": "#/definitions/PublishPrivacy" }, { "type": "null" }],
+          "default": null
+        },
+        "title": { "type": ["string", "null"], "default": null },
+        "description": { "type": ["string", "null"], "default": null },
+        "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "categoryId": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing."
+        },
+        "rights": {
+          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
+          "default": null,
+          "description": "Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason."
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "quotaUnits": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure."
+        },
+        "error": {
+          "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
+          "default": null
+        },
+        "publishAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "Scheduled publish time. The worker holds the clip until then."
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "publishedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "WorkerStatus": {
+      "title": "WorkerStatus",
+      "type": "string",
+      "enum": ["ONLINE", "BUSY", "OFFLINE"]
+    },
+
+    "WorkerCapabilities": {
+      "title": "WorkerCapabilities",
+      "description": "Advertised so the PWA can explain why a job is not progressing, rather than leaving it silently queued.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["whisper", "llm", "render", "publish"],
+      "properties": {
+        "whisper": { "type": "boolean" },
+        "llm": { "type": "boolean" },
+        "render": { "type": "boolean" },
+        "publish": { "type": "boolean" }
+      }
+    },
+
+    "GpuInfo": {
+      "title": "GpuInfo",
+      "description": "vramFreeMb is measured through NVML rather than tracked internally, because a foreign process (an interactive Ollama session, say) can hold VRAM the pipeline needs. Observed in Phase 0.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "vramTotalMb", "vramFreeMb"],
+      "properties": {
+        "name": { "type": "string" },
+        "vramTotalMb": { "type": "integer", "minimum": 0 },
+        "vramFreeMb": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "WorkerHeartbeat": {
+      "title": "WorkerHeartbeat",
+      "description": "Liveness and capability advertisement at workers/{workerId}.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workerId", "uid", "status", "capabilities", "version", "lastSeenAt"],
+      "properties": {
+        "workerId": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/definitions/WorkerStatus" },
+        "capabilities": { "$ref": "#/definitions/WorkerCapabilities" },
+        "gpu": {
+          "anyOf": [{ "$ref": "#/definitions/GpuInfo" }, { "type": "null" }],
+          "default": null
+        },
+        "version": { "type": "string" },
+        "hostname": { "type": ["string", "null"], "default": null },
+        "activeJobIds": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "LlmClipProposal": {
+      "title": "LlmClipProposal",
+      "description": "One window as the model returns it. Deliberately carries no total and no precise boundaries: the model supplies judgement, Python supplies arithmetic (D5) and boundary precision (D4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startSec", "endSec", "subScores", "hook", "reason"],
+      "properties": {
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "subScores": { "$ref": "#/definitions/SubScores" },
+        "hook": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+
+    "LlmClipResponse": {
+      "title": "LlmClipResponse",
+      "description": "The schema-constrained response from the local model for one transcript window. Passed to Ollama as a format constraint so malformed output is rejected by the runtime rather than parsed defensively here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clips"],
+      "properties": {
+        "clips": { "type": "array", "items": { "$ref": "#/definitions/LlmClipProposal" } }
+      }
+    }
+  }
+}

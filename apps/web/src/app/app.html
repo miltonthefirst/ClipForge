@@ -1,57 +1,208 @@
-<main class="min-h-full bg-slate-50 text-slate-900">
-  <div class="mx-auto max-w-3xl px-6 py-16">
-    <header class="mb-10">
-      <p class="text-xs font-semibold uppercase tracking-[0.2em] text-forge-600">
-        Local-first AI content agent
-      </p>
-      <h1 class="mt-2 text-4xl font-bold tracking-tight">{{ title() }}</h1>
-      <p class="mt-3 max-w-xl text-sm leading-relaxed text-slate-600">
-        Transcription, clip selection and encoding run on local hardware. The cloud handles only
-        identity, small structured state, and reaching your phone.
-      </p>
-    </header>
-
-    <section aria-labelledby="roadmap-heading">
-      <div class="mb-4 flex items-baseline justify-between">
-        <h2
-          id="roadmap-heading"
-          class="text-sm font-semibold uppercase tracking-wide text-slate-500"
+<div class="flex min-h-full flex-col bg-canvas text-ink">
+  <!-- ── Top bar: identity and the account, nothing else ────────────────────
+       Navigation moved to the sidebar, so this stays the same three things on
+       every page and stops competing with them for width on a phone. -->
+  <header class="sticky top-0 z-30 border-b border-line bg-canvas/95 backdrop-blur">
+    <div class="flex items-center gap-2 px-4 py-3 lg:px-6">
+      @if (approved()) {
+        <button
+          type="button"
+          class="-ml-1 rounded-md p-2 text-ink-muted hover:bg-line hover:text-ink lg:hidden"
+          [attr.aria-expanded]="navOpen()"
+          aria-label="Toggle navigation"
+          (click)="toggleNav()"
         >
-          Milestones
-        </h2>
-        <p class="text-sm text-slate-500" data-testid="progress">
-          {{ completed() }} / {{ milestones().length }} complete
-        </p>
-      </div>
+          <svg
+            class="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+      }
 
-      <ul class="space-y-2">
-        @for (milestone of milestones(); track milestone.id) {
-          <li
-            class="flex items-center gap-4 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm"
-            [attr.data-done]="milestone.done"
+      <img src="icons/mark.png" alt="" width="28" height="28" class="h-7 w-7 shrink-0" />
+      <span class="text-lg font-semibold tracking-tight">ClipForge</span>
+
+      @if (signedIn()) {
+        <div class="relative ml-auto">
+          <button
+            type="button"
+            class="flex items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-line"
+            [attr.aria-expanded]="menuOpen()"
+            aria-haspopup="menu"
+            [attr.aria-label]="'Account menu for ' + displayName()"
+            (click)="toggleMenu($event)"
           >
             <span
-              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-forge-50 text-xs font-bold text-forge-600"
+              class="grid h-8 w-8 place-items-center rounded-full bg-forge-600 text-sm font-semibold text-white"
+              aria-hidden="true"
+              >{{ initials() }}</span
             >
-              {{ milestone.id }}
-            </span>
-            <span class="min-w-0 flex-1">
-              <span class="block text-sm font-medium">{{ milestone.label }}</span>
-              <span class="block truncate text-xs text-slate-500">{{ milestone.ships }}</span>
-            </span>
-            @if (milestone.done) {
-              <span class="text-xs font-medium text-emerald-600">done</span>
+            <svg
+              class="h-4 w-4 text-ink-subtle"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+
+          @if (menuOpen()) {
+            <div
+              class="absolute right-0 z-40 mt-2 w-60 overflow-hidden rounded-xl border border-line bg-panel shadow-lg"
+              role="menu"
+            >
+              <div class="border-b border-line px-4 py-3">
+                <p class="truncate text-sm font-medium text-ink">{{ displayName() }}</p>
+                @if (profile(); as me) {
+                  <p class="truncate text-xs text-ink-subtle">{{ me.email }}</p>
+                  <p class="mt-1 text-xs text-ink-subtle">{{ me.role }} · {{ me.status }}</p>
+                }
+              </div>
+
+              @if (approved()) {
+                <a
+                  routerLink="/settings"
+                  role="menuitem"
+                  class="block px-4 py-2.5 text-sm text-ink-muted hover:bg-line hover:text-ink"
+                  (click)="closeMenu()"
+                  >Profile and settings</a
+                >
+              }
+
+              <button
+                type="button"
+                role="menuitem"
+                class="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm text-ink-muted hover:bg-line hover:text-ink"
+                [attr.aria-label]="themeLabel()"
+                (click)="cycleTheme($event)"
+              >
+                <span>Theme</span>
+                <span class="text-xs text-ink-subtle">{{ themeChoice() }}</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                class="block w-full border-t border-line px-4 py-2.5 text-left text-sm text-ink-muted hover:bg-line hover:text-ink"
+                (click)="signOut()"
+              >
+                Sign out
+              </button>
+            </div>
+          }
+        </div>
+      }
+    </div>
+  </header>
+
+  <div class="flex w-full flex-1">
+    <!-- ── Sidebar ──────────────────────────────────────────────────────────
+         A permanent column from `lg` up, a drawer below it. Only shown once
+         approved: an account that can read nothing has nothing to navigate. -->
+    @if (approved()) {
+      <aside
+        class="fixed inset-y-0 left-0 z-20 w-64 shrink-0 border-r border-line bg-panel pt-16 transition-transform lg:sticky lg:top-14 lg:z-0 lg:h-[calc(100vh-3.5rem)] lg:w-56 lg:translate-x-0 lg:bg-transparent lg:pt-6"
+        [class.translate-x-0]="navOpen()"
+        [class.-translate-x-full]="!navOpen()"
+      >
+        <nav class="space-y-1 px-3">
+          @for (item of navigation(); track item.path) {
+            <a
+              [routerLink]="item.path"
+              routerLinkActive="bg-line text-ink"
+              [routerLinkActiveOptions]="{ exact: item.exact }"
+              class="flex items-center justify-between rounded-lg px-3 py-2 text-sm text-ink-muted hover:bg-line hover:text-ink"
+              (click)="navOpen.set(false)"
+            >
+              <span>{{ item.label }}</span>
+              @if (item.adminOnly) {
+                <span class="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent-ink"
+                  >admin</span
+                >
+              }
+            </a>
+          }
+        </nav>
+      </aside>
+
+      @if (navOpen()) {
+        <button
+          type="button"
+          class="fixed inset-0 z-10 bg-black/40 lg:hidden"
+          aria-label="Close navigation"
+          (click)="navOpen.set(false)"
+        ></button>
+      }
+    }
+
+    <main class="w-full min-w-0 flex-1 px-4 py-6 lg:px-8">
+      <!-- Left-aligned, not centred. Centring inside the remaining space put a
+           400px gap between the nav and the content on a wide window, which
+           reads as two disconnected panels rather than one app. -->
+      <div class="w-full max-w-5xl">
+        @if (checking()) {
+          <!-- Distinct from signed-out: showing the sign-in screen here would
+             flash it at every signed-in user on every load. -->
+          <p class="py-16 text-center text-ink-subtle">Checking your session…</p>
+        } @else if (!signedIn()) {
+          @if (signInError(); as message) {
+            <p
+              class="mx-auto mb-4 max-w-sm rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+            >
+              {{ message }}
+            </p>
+          }
+          <app-sign-in-page />
+        } @else if (awaitingApproval()) {
+          <!-- Signed in, not let in. Explained rather than left as an empty page
+             and a console full of permission errors. -->
+          <section class="mx-auto max-w-md py-16 text-center">
+            <img
+              src="icons/mark.png"
+              alt=""
+              width="56"
+              height="56"
+              class="mx-auto mb-6 h-14 w-14"
+            />
+            @if (profile()?.status === 'PENDING') {
+              <h1 class="text-2xl font-semibold">Waiting for approval</h1>
+              <p class="mt-3 text-ink-muted">
+                Your account exists but an administrator has not approved it yet. This page updates
+                by itself the moment they do.
+              </p>
+            } @else {
+              <h1 class="text-2xl font-semibold">Access not available</h1>
+              <p class="mt-3 text-ink-muted">
+                This account is {{ profile()?.status }}. An administrator can change that.
+              </p>
             }
-          </li>
+            <p class="mt-6 text-sm text-ink-subtle">{{ profile()?.email }}</p>
+            <button
+              type="button"
+              class="mt-6 rounded-lg border border-line-strong px-4 py-2.5 text-sm font-medium text-ink hover:bg-line"
+              (click)="signOut()"
+            >
+              Sign out
+            </button>
+          </section>
+        } @else if (profile() === undefined) {
+          <p class="py-16 text-center text-ink-subtle">Loading your account…</p>
+        } @else {
+          <router-outlet />
         }
-      </ul>
-    </section>
-
-    <footer class="mt-12 border-t border-slate-200 pt-6 text-xs text-slate-500">
-      Phase 0 shell. The dashboard, submission and review queue arrive in Phase 7 — see
-      <code class="rounded bg-slate-100 px-1 py-0.5">docs/PLAN.md</code>.
-    </footer>
+      </div>
+    </main>
   </div>
-
-  <router-outlet />
-</main>
+</div>

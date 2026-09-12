@@ -1,0 +1,22 @@
+# A louder alternative: larger type, higher contrast, captions further from the
+# bottom edge. Useful for footage where the speaker sits low in frame.
+
+version = "v1"
+crop = "centre"
+video_bitrate = "8M"
+audio_bitrate = "192k"
+loudness_lufs = -14.0
+
+[captions]
+font_name = "Arial"
+font_size = 92
+primary_colour = "&H00FFFFFF"
+highlight_colour = "&H000098FF"
+back_colour = "&HC0000000"
+outline = 6
+shadow = 3
+bold = true
+margin_v_pct = 30.0
+max_chars_per_line = 18
+max_lines = 2
+karaoke = true
