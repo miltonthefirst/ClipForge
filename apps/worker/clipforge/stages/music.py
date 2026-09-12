@@ -162,7 +162,9 @@ class MusicStage:
             job_id=job.id,
             derived_from_clip_id=original.id,
             location=(
-                ClipLocation.REMOTE if (ref.storage_path or ref.playback_url) else ClipLocation.LOCAL
+                ClipLocation.REMOTE
+                if (ref.storage_path or ref.playback_url)
+                else ClipLocation.LOCAL
             ),
             local_path=str(ref.local_path),
             playback_url=ref.playback_url,

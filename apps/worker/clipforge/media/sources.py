@@ -520,6 +520,7 @@ def select_adapter(
         f"Not a YouTube video URL, and no such local file: {submission!r}",
     )
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Audio-only sources, for the MUSIC stage
 # ─────────────────────────────────────────────────────────────────────────────

@@ -73,7 +73,9 @@ class BeatAnalysis:
         return 60.0 / self.tempo_bpm if self.tempo_bpm else None
 
 
-def decode_mono(path: Path, ffmpeg: str = "ffmpeg", *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+def decode_mono(
+    path: Path, ffmpeg: str = "ffmpeg", *, sample_rate: int = SAMPLE_RATE
+) -> np.ndarray:
     """Decode any audio ffmpeg understands into mono float32.
 
     Raises on a non-zero exit rather than returning silence: an empty array is
@@ -82,19 +84,29 @@ def decode_mono(path: Path, ffmpeg: str = "ffmpeg", *, sample_rate: int = SAMPLE
     """
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [
-            ffmpeg, "-nostdin", "-v", "error",
-            "-i", str(path),
-            "-map", "a:0",
-            "-ac", "1",
-            "-ar", str(sample_rate),
-            "-f", "f32le",
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "a:0",
+            "-ac",
+            "1",
+            "-ar",
+            str(sample_rate),
+            "-f",
+            "f32le",
             "-",
         ],
         capture_output=True,
         check=False,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"could not decode audio from {path.name}: {proc.stderr.decode(errors='replace')[:400]}")
+        raise RuntimeError(
+            f"could not decode audio from {path.name}: {proc.stderr.decode(errors='replace')[:400]}"
+        )
 
     samples = np.frombuffer(proc.stdout, dtype=np.float32)
     if samples.size == 0:
