@@ -184,6 +184,10 @@ class RenderStage:
                 candidate_id=candidate.id,
                 source_id=candidate.source_id,
                 job_id=context.job.id,
+                # The root of its own lineage. Every correction of this clip
+                # inherits the id, so they stay one row in the review queue.
+                lineage_id=clip_id,
+                version=1,
                 # REMOTE means "reachable from somewhere that is not this
                 # machine" — a bucket object, or a URL from some other store.
                 # The worker's own file server does not count: it answers on

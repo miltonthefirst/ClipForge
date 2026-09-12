@@ -197,6 +197,16 @@ slow motion — is listed on the finished clip instead of being quietly skipped.
 > speak the original language. It does **not** make footage safe to publish — see
 > [Rights and responsible use](#rights-and-responsible-use).
 
+**One clip is one row.** A remake produces a new clip, but the queue shows the latest version of
+each and keeps the rest as history — what you asked for at each step, what the machine made of it,
+and what it could not do. Rejecting a remake brings the version before it back.
+
+**It learns, and asks first.** After a remake that carried a note, it works out whether anything
+there would help on a *different* clip from the same source — "commentary on this channel should be
+in English" — and offers it at the top of the review queue. Nothing is applied until you keep it,
+an accepted preference only fills in settings you left open, and anything you turn down is never
+suggested again. See [ADR-0014](docs/adr/0014-learning-from-feedback.md).
+
 **From a terminal**, if you would rather not reach for a phone:
 
 ```bash

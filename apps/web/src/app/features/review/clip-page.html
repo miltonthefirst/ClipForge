@@ -460,6 +460,82 @@
         </section>
       }
 
+      <!-- ── History ────────────────────────────────────────────────────────
+           One clip is one row in the queue however many times it has been
+           corrected. This is where the rest of the chain lives: what was asked
+           for each time, and what came back. -->
+      @if ((clip.version ?? 1) > 1 || clip.derivedFromClipId) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-sm font-semibold">
+              Version {{ clip.version ?? 1 }}
+              <span class="font-normal text-ink-subtle">of this clip</span>
+            </h2>
+            @if (!showHistory()) {
+              <button
+                type="button"
+                class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line"
+                (click)="openHistory()"
+              >
+                Show history
+              </button>
+            }
+          </div>
+
+          @if (showHistory()) {
+            @if (!lineage().length) {
+              <p class="mt-2 text-xs text-ink-subtle">Loading…</p>
+            } @else {
+              <ol class="mt-3 space-y-3">
+                @for (past of lineage(); track past.id) {
+                  <li
+                    class="rounded-lg p-3 text-xs"
+                    [class]="past.id === clip.id ? 'bg-accent-soft' : 'bg-panel-soft'"
+                  >
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-medium text-ink">
+                        v{{ past.version ?? 1 }}
+                        @if (past.id === clip.id) {
+                          · you are here
+                        }
+                      </span>
+                      <span class="text-ink-subtle">{{ past.review }}</span>
+                    </div>
+
+                    @if (past.remake; as step) {
+                      @if (step.notes) {
+                        <p class="mt-1 text-ink">“{{ step.notes }}”</p>
+                      }
+                      <p class="mt-1 text-ink-muted">
+                        {{ step.framingMode }}
+                        @if (step.voice; as v) {
+                          · {{ v.voice }} in {{ v.language }}
+                        }
+                      </p>
+                      @for (refusal of step.refusals ?? []; track refusal) {
+                        <p class="mt-1 text-danger-ink">· {{ refusal }}</p>
+                      }
+                    } @else if (past.music) {
+                      <p class="mt-1 text-ink-muted">music added</p>
+                    } @else {
+                      <p class="mt-1 text-ink-muted">the original render</p>
+                    }
+
+                    @if (past.id !== clip.id) {
+                      <a
+                        [routerLink]="['/review', past.id]"
+                        class="mt-1 inline-block text-accent-ink hover:underline"
+                        >open this version</a
+                      >
+                    }
+                  </li>
+                }
+              </ol>
+            }
+          }
+        </section>
+      }
+
       <!-- ── Remake ─────────────────────────────────────────────────────────
            The correction channel. Deliberately available before a decision as
            well as after: the whole point is that the clip is not right yet, and

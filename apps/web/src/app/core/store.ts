@@ -10,6 +10,8 @@ import type {
   JobEvent,
   MusicOptions,
   Publication,
+  Preference,
+  PreferenceStatus,
   PublishOptions,
   RemakeOptions,
   ReviewState,
@@ -397,6 +399,68 @@ export class ClipForgeStore {
     }
 
     await updateDoc(doc(this.firebase.db, 'clips', clipId), changes);
+  }
+
+  /**
+   * Every version of one clip, oldest first.
+   *
+   * The history behind a queue row. A remake produces a new clip rather than
+   * editing the one that was reviewed, which is what makes a correction
+   * reversible — but it also means the reasoning is spread across several
+   * documents, and only together do they answer "what did I ask for, and what
+   * did it do about it?".
+   *
+   * Keyed on `lineageId` rather than by walking `derivedFromClipId`: one
+   * equality filter instead of a chain of round trips, and it still works when
+   * a clip in the middle has been deleted.
+   */
+  async loadLineage(lineageId: string): Promise<Clip[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(
+      query(collection(this.firebase.db, 'clips'), where('lineageId', '==', lineageId), limit(25)),
+    );
+    return snapshot.docs
+      .map((d) => fromDocument<Clip>(d.data()))
+      .sort((a, b) => (a.version ?? 1) - (b.version ?? 1));
+  }
+
+  /**
+   * What the system has worked out about you, and has not yet been told to keep.
+   *
+   * Live rather than fetched once: a remake proposes preferences while the
+   * reviewer is still on the page that queued it, and a list that needed a
+   * reload to show them would be a list nobody ever saw.
+   */
+  watchPreferences(
+    onData: (preferences: Preference[]) => void,
+    status: PreferenceStatus = 'PROPOSED',
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'preferences'), where('status', '==', status), limit(50)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Preference>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Keep a preference, or turn it down for good.
+   *
+   * Rejecting stores the decision rather than deleting the row, and that is the
+   * point: the worker checks every proposal against what it already holds in
+   * ANY status, so a suggestion that has been turned down once cannot come back
+   * on the next correction of the same kind of clip.
+   */
+  async decidePreference(
+    preferenceId: string,
+    uid: string,
+    status: 'ACCEPTED' | 'REJECTED',
+  ): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'preferences', preferenceId), {
+      status,
+      decidedAt: new Date().toISOString(),
+      decidedBy: uid,
+    });
   }
 
   /** Approved clips, the publish queue's input. */

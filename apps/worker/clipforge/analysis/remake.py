@@ -123,6 +123,7 @@ def build_note_prompt(
     already_set: list[str],
     clip_language: str | None,
     duration_sec: float | None,
+    standing: list[str] | None = None,
 ) -> str:
     """The user half of the note prompt.
 
@@ -167,6 +168,14 @@ def build_note_prompt(
         lines.append(f"\nThe clip is currently in {clip_language}.")
     if duration_sec:
         lines.append(f"It is {duration_sec:.0f} seconds long.")
+    if standing:
+        # What this reviewer has taught before. Context, not instruction: a note
+        # that contradicts one of these is the reviewer changing their mind, and
+        # the note wins.
+        lines.append(
+            "\nThings this reviewer has already established about clips like this:\n"
+            + "\n".join(f"- {item}" for item in standing[:10])
+        )
     if already_set:
         lines.append(
             "\nThe reviewer has already set these explicitly, so anything you say "
@@ -185,6 +194,7 @@ def interpret_note(
     options: RemakeOptions,
     clip_language: str | None = None,
     duration_sec: float | None = None,
+    standing: list[str] | None = None,
 ) -> tuple[LlmRemakeNote | None, NoteInterpretation]:
     """Put the note to the model. Never raises.
 
@@ -203,6 +213,7 @@ def interpret_note(
                 already_set=stated,
                 clip_language=clip_language,
                 duration_sec=duration_sec,
+                standing=standing,
             ),
             # A little sampling, unlike selection. Reading a sentence has one
             # right answer far more often than judging a clip does, and at

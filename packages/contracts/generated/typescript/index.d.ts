@@ -142,9 +142,17 @@ export type AgentDesired = 'RUNNING' | 'STOPPED';
  */
 export type AgentState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'FOREIGN' | 'STOPPING' | 'FAILED';
 /**
+ * How widely a learned preference applies. SOURCE is this channel or series only — the right default, because most corrections are about the kind of footage rather than about video in general, and a rule learned from football should not reframe a talking head. EVERYTHING is for a preference that genuinely holds across all of them, which is rarer than it feels while writing one.
+ */
+export type PreferenceScope = 'SOURCE' | 'EVERYTHING';
+/**
  * An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.
  */
 export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING';
+/**
+ * PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
+ */
+export type PreferenceStatus = 'PROPOSED' | 'ACCEPTED' | 'REJECTED';
 /**
  * A framing decision read out of a note, plus the value that means the note did not make one. NOT_MENTIONED is a member rather than the field being nullable, for a reason measured rather than assumed — see LlmRemakeNote.
  *
@@ -191,6 +199,8 @@ export interface ClipForgeContracts {
   userProfile?: UserProfile;
   workerHeartbeat?: WorkerHeartbeat;
   agentReport?: AgentReport;
+  preference?: Preference;
+  llmPreferenceProposal?: LlmPreferenceProposal;
   remakeOptions?: RemakeOptions;
   appliedRemake?: AppliedRemake;
   llmRemakeNote?: LlmRemakeNote;
@@ -642,6 +652,16 @@ export interface Clip {
   review: ReviewState;
   reviewedAt?: string | null;
   /**
+   * The id of the clip this one descends from, at the root of the chain — the clip RENDER originally made. Every version shares it, so a clip and every correction of it are one row in the review queue instead of five.
+   *
+   * That mattered immediately. The queue lists what is PENDING, a remake is always PENDING, and its parent usually still is too, so a single football clip corrected three times filled four slots and the reviewer had to work out which was newest. Null on a clip written before this field existed; readers treat that as the clip being its own root.
+   */
+  lineageId?: string | null;
+  /**
+   * Which attempt this is within its lineage. 1 is the clip RENDER made; a remake is its parent's version plus one. Ordering by this rather than by `createdAt` is deliberate: two remakes of the same parent are siblings, not a sequence, and the number says so.
+   */
+  version?: number;
+  /**
    * The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates.
    */
   derivedFromClipId?: string | null;
@@ -969,6 +989,120 @@ export interface AgentReport {
   projectId?: string | null;
   startedAt?: string | null;
   lastSeenAt: string;
+}
+/**
+ * Something the system noticed it should remember, at preferences/{preferenceId}.
+ *
+ * The point is to stop asking. A reviewer who writes "follow the ball" on every football clip is teaching the same thing every time, and a system that cannot hold it makes them type it forever. So after a remake that applied feedback, the local model is asked what — if anything — generalises, and the answer is stored here as a proposal.
+ *
+ * **Proposed, never applied.** A preference does nothing until a human accepts it. A wrong one is more expensive than a missed one, because it silently shapes every later clip and the reviewer has no reason to suspect it; a missed one costs one more sentence in a note. The model is also shown what has already been accepted AND what has been rejected, so it neither repeats itself nor re-proposes something that was already turned down.
+ */
+export interface Preference {
+  id: string;
+  uid: string;
+  scope: PreferenceScope;
+  /**
+   * Which source this applies to when the scope is SOURCE. Null for an EVERYTHING preference, which is stored unattached so it is retrieved for every clip.
+   */
+  sourceId?: string | null;
+  category: NoteTopic;
+  /**
+   * The standing instruction, written for a remake of a clip nobody has seen yet. It must make sense without the clip that prompted it: "this channel's wide shots lose the ball unless the window follows it", not "the framing was wrong on that one".
+   */
+  lesson: string;
+  defaults?: RemakeDefaults | null;
+  status: PreferenceStatus;
+  fromClipId?: string | null;
+  /**
+   * The feedback that taught it, verbatim. Kept so a preference can be judged against what was actually said rather than against the model's paraphrase of it.
+   */
+  fromNote?: string | null;
+  /**
+   * How many remakes this preference has shaped since it was accepted. The number that says whether it is earning its place: one that never fires is noise, and one that fires constantly is a default the pipeline should probably adopt outright.
+   */
+  timesApplied?: number;
+  createdAt: string;
+  decidedAt?: string | null;
+  decidedBy?: string | null;
+}
+/**
+ * The machine-readable half of a preference: settings to pre-fill on a future remake. Every field is optional, and a preference may have none at all — plenty of what a reviewer teaches is a judgement the controls cannot hold ("this channel's wide shots are unusable cropped") and is worth carrying as a sentence into the prompt even when it fills in no box.
+ */
+export interface RemakeDefaults {
+  framingMode?: FramingMode | null;
+  crop?: CropAnchor | null;
+  language?: string | null;
+  speechMode?: SpeechMode | null;
+}
+/**
+ * The schema-constrained answer to "what, if anything, should be remembered from this correction?". Handed to Ollama as a format constraint like the other LLM shapes here.
+ *
+ * `recurring` and `reasoning` come first, and that ordering is the whole design. Constrained decoding emits properties in declaration order, and an empty array satisfies an array schema trivially — so a model asked only for a list returns `[]` every single time, which it did on all four measured cases including the one that plainly taught two things. Being made to answer a yes/no question and justify it *before* the list is reached turns the same model into one that answers. It is the same lesson `LlmRemakeNote` records: where a schema offers a lazy path, a small model takes it.
+ *
+ * An empty list is still a correct and common answer — most corrections are about one clip's own moment — and a wrong standing rule costs far more than a missed one.
+ */
+export interface LlmPreferenceProposal {
+  /**
+   * Would a DIFFERENT clip from this same source be made better if the system already knew something from this correction? Answered first, before any list exists to be left empty.
+   */
+  recurring: boolean;
+  /**
+   * One sentence on why. Not stored — it exists to make the model state a position it then has to be consistent with, which is worth more than the tokens it costs.
+   */
+  reasoning: string;
+  /**
+   * @maxItems 3
+   */
+  preferences:
+    | []
+    | [
+        {
+          lesson: string;
+          category: NoteTopic;
+          scope: PreferenceScope;
+          framingMode?: NoteFraming | null;
+          language?: string | null;
+        }
+      ]
+    | [
+        {
+          lesson: string;
+          category: NoteTopic;
+          scope: PreferenceScope;
+          framingMode?: NoteFraming | null;
+          language?: string | null;
+        },
+        {
+          lesson: string;
+          category: NoteTopic;
+          scope: PreferenceScope;
+          framingMode?: NoteFraming | null;
+          language?: string | null;
+        }
+      ]
+    | [
+        {
+          lesson: string;
+          category: NoteTopic;
+          scope: PreferenceScope;
+          framingMode?: NoteFraming | null;
+          language?: string | null;
+        },
+        {
+          lesson: string;
+          category: NoteTopic;
+          scope: PreferenceScope;
+          framingMode?: NoteFraming | null;
+          language?: string | null;
+        },
+        {
+          lesson: string;
+          category: NoteTopic;
+          scope: PreferenceScope;
+          framingMode?: NoteFraming | null;
+          language?: string | null;
+        }
+      ];
 }
 /**
  * The schema-constrained reading of a reviewer's note. Handed to Ollama as a format constraint, like LlmClipResponse, so the model cannot answer with prose.

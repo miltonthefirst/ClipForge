@@ -34,6 +34,9 @@ from clipforge_contracts import (
     ClipPreview,
     Job,
     JobStatus,
+    Preference,
+    PreferenceScope,
+    PreferenceStatus,
     Publication,
     PublicationState,
     Source,
@@ -55,6 +58,7 @@ AGENTS = "agents"
 SOURCES = "sources"
 CANDIDATES = "candidates"
 CLIPS = "clips"
+PREFERENCES = "preferences"
 PREVIEW = "preview"
 PUBLICATIONS = "publications"
 EVENTS = "events"
@@ -87,6 +91,7 @@ def _to_document(
     | Candidate
     | Clip
     | ClipPreview
+    | Preference
     | Publication,
 ) -> dict[str, Any]:
     """Model to Firestore document.
@@ -560,6 +565,72 @@ class ClipStore:
         batch.set(clip_ref, _to_document(clip))
         if preview is not None:
             batch.set(clip_ref.collection(PREVIEW).document("poster"), _to_document(preview))
+        batch.commit()
+
+
+class PreferenceStore:
+    """What the system has learned about a reviewer, at ``preferences/{id}``.
+
+    Reads are filtered in Python rather than by a composite query. The
+    collection is small by construction — a preference is proposed only after a
+    remake that applied feedback, capped at three per remake, and deduped
+    against everything already held — so one bounded read beats maintaining an
+    index for a handful of rows.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def for_source(self, source_id: str | None, *, limit: int = 200) -> list[Preference]:
+        """Everything that could apply to a clip from this source.
+
+        Its own preferences plus every EVERYTHING-scoped one, in whatever status
+        — the caller filters to ACCEPTED when applying, and the learner needs
+        the rejected ones too so it does not propose them a second time.
+        """
+        rows = [
+            Preference.model_validate(doc.to_dict() or {})
+            for doc in self._db.collection(PREFERENCES).limit(limit).stream()
+        ]
+        return [
+            row
+            for row in rows
+            if row.scope is PreferenceScope.EVERYTHING
+            or (source_id is not None and row.source_id == source_id)
+        ]
+
+    def accepted_for_source(self, source_id: str | None) -> list[Preference]:
+        return [
+            row for row in self.for_source(source_id) if row.status is PreferenceStatus.ACCEPTED
+        ]
+
+    def save_all(self, preferences: list[Preference]) -> None:
+        if not preferences:
+            return
+        batch = self._db.batch()
+        for preference in preferences:
+            batch.set(
+                self._db.collection(PREFERENCES).document(preference.id),
+                _to_document(preference),
+            )
+        batch.commit()
+
+    def mark_applied(self, preferences: list[Preference]) -> None:
+        """Count a preference that actually shaped a remake.
+
+        The number that says whether it is earning its place: one that never
+        fires is noise, and one that fires on everything is a default the
+        pipeline should adopt outright rather than keep asking about.
+        """
+        if not preferences:
+            return
+        batch = self._db.batch()
+        for preference in preferences:
+            batch.update(
+                self._db.collection(PREFERENCES).document(preference.id),
+                {"timesApplied": (preference.times_applied or 0) + 1},
+            )
         batch.commit()
 
 

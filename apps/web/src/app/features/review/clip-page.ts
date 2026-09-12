@@ -159,6 +159,17 @@ export class ClipPage implements OnDestroy {
   protected readonly preview = signal<ClipPreview | null>(null);
   protected readonly candidate = signal<Candidate | null>(null);
   protected readonly publications = signal<Publication[]>([]);
+  /**
+   * Every version of this clip, oldest first.
+   *
+   * The queue shows one row per clip now, so this is where the rest of the
+   * lineage lives: what was asked for at each step, what the machine made of
+   * it, and what it refused. Loaded on demand rather than with the clip — most
+   * clips have never been remade and would pay for a query that returns one
+   * row.
+   */
+  protected readonly lineage = signal<Clip[]>([]);
+  protected readonly showHistory = signal(false);
   protected readonly channels = signal<Channel[]>([]);
   protected readonly source = signal<PlaybackSource>({ kind: 'poster' });
   /**
@@ -488,6 +499,8 @@ export class ClipPage implements OnDestroy {
     this.preview.set(null);
     this.candidate.set(null);
     this.publications.set([]);
+    this.lineage.set([]);
+    this.showHistory.set(false);
     this.source.set({ kind: 'poster' });
     this.uploadRequested.set(false);
     this.error.set(null);
@@ -520,6 +533,19 @@ export class ClipPage implements OnDestroy {
     this.remakeStartDelta.set(0);
     this.remakeEndDelta.set(0);
     this.playhead.set(0);
+  }
+
+  /** The other versions of this clip, fetched when the reviewer asks for them. */
+  protected async openHistory(): Promise<void> {
+    this.showHistory.set(true);
+    if (this.lineage().length) return;
+    const clip = this.clip();
+    if (!clip) return;
+    try {
+      this.lineage.set(await this.store.loadLineage(clip.lineageId ?? clip.id));
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    }
   }
 
   private async run(what: string, action: () => Promise<void>): Promise<void> {

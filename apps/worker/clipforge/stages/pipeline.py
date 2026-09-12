@@ -43,7 +43,13 @@ from clipforge.stages.render import RenderStage
 from clipforge.stages.transcribe import TranscribeStage
 from clipforge.store.blobs import BlobStore
 from clipforge.store.channels import ChannelStore
-from clipforge.store.firestore import CandidateStore, ClipStore, PublicationStore, SourceStore
+from clipforge.store.firestore import (
+    CandidateStore,
+    ClipStore,
+    PreferenceStore,
+    PublicationStore,
+    SourceStore,
+)
 from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
 __all__ = [
@@ -316,6 +322,7 @@ def build_remake_registry(
     archive: TranscriptArchive,
     workspace: Workspace,
     blobs: BlobStore,
+    preferences: PreferenceStore | None = None,
 ) -> StageRegistry:
     """The one-stage registry for REMAKE jobs.
 
@@ -343,6 +350,7 @@ def build_remake_registry(
             archive=archive,
             workspace=workspace,
             blobs=blobs,
+            preferences=preferences,
             speech=_speech_synth(settings),
         )
     )
@@ -502,6 +510,7 @@ def build_registry_factory(
     publications: PublicationStore,
     blobs: BlobStore,
     channels: ChannelStore | None = None,
+    preferences: PreferenceStore | None = None,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -543,6 +552,7 @@ def build_registry_factory(
         archive=archive,
         workspace=workspace,
         blobs=blobs,
+        preferences=preferences,
     )
 
     def factory(job_type: JobType) -> StageRegistry:

@@ -59,10 +59,12 @@ from clipforge_contracts import (
     Clip,
     ClipLocation,
     ClipPreview,
+    Framing,
     FramingMode,
     Lane,
     NoteInterpretation,
     PanKeyframe,
+    Preference,
     RemakeOptions,
     ReviewState,
     SpeechMode,
@@ -74,6 +76,12 @@ from clipforge_contracts import (
 )
 
 from clipforge.analysis.feedback import ClipFacts, speakability, translation_landed
+from clipforge.analysis.preferences import (
+    apply_to_options,
+    dedupe,
+    propose,
+    standing_guidance,
+)
 from clipforge.analysis.remake import (
     apply_interpretation,
     describe,
@@ -89,7 +97,7 @@ from clipforge.media.narration import plan_narration
 from clipforge.media.poster import PosterError, extract_poster
 from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, RenderRequest, render_clip
-from clipforge.media.speech import SpeechError, SpeechSynth
+from clipforge.media.speech import DEFAULT_VOICES, SpeechError, SpeechSynth, kokoro_language
 from clipforge.media.tracking import TrackError, plan_track
 from clipforge.media.workspace import Workspace
 from clipforge.models.broker import InsufficientVramError
@@ -98,7 +106,12 @@ from clipforge.models.whisper import model_version
 from clipforge.observability import get_logger
 from clipforge.stages.base import StageContext, StageOutcome
 from clipforge.store.blobs import BlobStore
-from clipforge.store.firestore import CandidateStore, ClipStore, SourceStore
+from clipforge.store.firestore import (
+    CandidateStore,
+    ClipStore,
+    PreferenceStore,
+    SourceStore,
+)
 from clipforge.store.transcripts import TranscriptArchive
 
 log = get_logger(__name__)
@@ -202,6 +215,7 @@ class RemakeStage:
         archive: TranscriptArchive,
         workspace: Workspace,
         blobs: BlobStore,
+        preferences: PreferenceStore | None = None,
         speech: SpeechSynth | None = None,
         transcriber: Aligner | None = None,
         client_factory: Callable[[], OllamaClient] | None = None,
@@ -213,6 +227,7 @@ class RemakeStage:
         self._archive = archive
         self._workspace = workspace
         self._blobs = blobs
+        self._preferences = preferences
         self._speech = speech
         self._transcriber = transcriber
         self._client_factory = client_factory
@@ -237,7 +252,9 @@ class RemakeStage:
         if original is None:
             raise RemakeStageError(f"no such clip: {job.clip_id}")
 
-        resolved, interpretation = self._resolve(context, options, original)
+        accepted = self._accepted_preferences(original)
+        resolved, interpretation = self._resolve(context, options, original, accepted)
+        resolved, used = _prefill(resolved, accepted)
         cut = self._cut(original, resolved)
         profile = load_profile(resolved.profile or _profile_name(original.render_profile))
 
@@ -253,7 +270,7 @@ class RemakeStage:
                 context, resolved, original, cut, profile, scratch, voice, utterance_text
             )
             final = self._mix(resolved.voice, picture, voice, original, cut, scratch)
-            return self._publish(
+            outcome = self._publish(
                 context,
                 clip_id=clip_id,
                 original=original,
@@ -266,13 +283,22 @@ class RemakeStage:
                 cut=cut,
                 scratch=scratch,
             )
+            # After the clip exists, never before. Learning is a bonus pass over
+            # a finished result — a model that is unreachable, slow or unhelpful
+            # must cost the lesson and nothing else.
+            self._learn(context, original, resolved, used)
+            return outcome
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
     # ── Reading the request ──────────────────────────────────────────────────
 
     def _resolve(
-        self, context: StageContext, options: RemakeOptions, original: Clip
+        self,
+        context: StageContext,
+        options: RemakeOptions,
+        original: Clip,
+        accepted: list[Preference],
     ) -> tuple[RemakeOptions, NoteInterpretation | None]:
         """Fold any note into the request, leaving stated fields alone."""
         note = (options.notes or "").strip()
@@ -298,6 +324,11 @@ class RemakeStage:
                     note,
                     options=options,
                     duration_sec=original.duration_sec,
+                    # What this reviewer has already taught. Shown so they do
+                    # not have to say it again to be understood, and so the
+                    # model does not read a note as contradicting a rule it is
+                    # merely silent about.
+                    standing=standing_guidance(accepted),
                 )
         except InsufficientVramError as exc:
             # The note is optional enrichment — it may only fill gaps the reviewer
@@ -335,6 +366,75 @@ class RemakeStage:
             summary=describe(answer, applied),
             model=interpretation.model,
         )
+
+    def _accepted_preferences(self, original: Clip) -> list[Preference]:
+        """What has already been learned about this kind of clip."""
+        if self._preferences is None:
+            return []
+        try:
+            return self._preferences.accepted_for_source(original.source_id)
+        except Exception as exc:  # noqa: BLE001 - a remake must not fail over this
+            log.warning("remake.preferences_unreadable", error=str(exc))
+            return []
+
+    def _learn(
+        self,
+        context: StageContext,
+        original: Clip,
+        resolved: RemakeOptions,
+        used: list[Preference],
+    ) -> None:
+        """Ask what generalises, and record it as a proposal.
+
+        Only after a remake that actually carried feedback: a correction made
+        entirely with the controls, with nothing written, teaches nothing a
+        default could not already express. And nothing here is applied — a
+        proposal sits until a human accepts it, because a wrong standing rule
+        shapes every later clip and the reviewer has no reason to suspect it.
+        """
+        if self._preferences is None:
+            return
+        try:
+            self._preferences.mark_applied(used)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("remake.preference_count_failed", error=str(exc))
+
+        note = (resolved.notes or "").strip()
+        if not note or not resolved.interpret_notes:
+            return
+
+        client = self._ollama()
+        if client is None or not client.is_available():
+            return
+
+        saved = self._clips.get(original.id)
+        applied = saved.remake if saved else None
+        if applied is None:
+            return
+
+        source = self._sources.get(original.source_id) if original.source_id else None
+        try:
+            known = self._preferences.for_source(original.source_id)
+            with context.broker.acquire(f"ollama:{client.model}", NOTE_LLM_VRAM_MB):
+                proposed = propose(
+                    client,
+                    note=note,
+                    applied=applied,
+                    clip=original,
+                    source_title=source.title if source else None,
+                    known=known,
+                    uid=context.job.uid,
+                )
+            fresh = dedupe(proposed, known)
+            self._preferences.save_all(fresh)
+            if fresh:
+                log.info(
+                    "remake.learned",
+                    count=len(fresh),
+                    lessons=[p.lesson[:80] for p in fresh],
+                )
+        except (InsufficientVramError, Exception) as exc:  # noqa: BLE001
+            log.info("remake.learning_skipped", error=str(exc))
 
     def _cut(self, original: Clip, options: RemakeOptions) -> _Cut:
         """Where in the source to take the picture from, after any nudge.
@@ -858,6 +958,12 @@ class RemakeStage:
             source_id=original.source_id,
             job_id=context.job.id,
             derived_from_clip_id=original.id,
+            # One lineage, however many corrections. `lineageId` is inherited
+            # rather than recomputed, so the chain stays flat: a remake of a
+            # remake of a remake all point at the clip RENDER made, and the
+            # review queue can group on one equality rather than walking a list.
+            lineage_id=original.lineage_id or original.id,
+            version=(original.version or 1) + 1,
             location=(
                 ClipLocation.REMOTE
                 if (ref.storage_path or ref.playback_url)
@@ -988,6 +1094,45 @@ class RemakeStage:
             model=self._settings.ollama_model,
             num_ctx=self._settings.ollama_num_ctx,
         )
+
+
+def _prefill(
+    options: RemakeOptions, accepted: list[Preference]
+) -> tuple[RemakeOptions, list[Preference]]:
+    """Fill in what the reviewer left open, from what they have already taught.
+
+    A preference is a default, and a default that overrides a choice is not a
+    default — so this only touches settings this request said nothing about.
+    The reviewer's silence is the opening; their note and their form both close
+    it.
+
+    Returns the preferences that actually changed something, so the ones that
+    never fire can be told apart from the ones carrying the work.
+    """
+    if not accepted:
+        return options, []
+
+    framing_set = options.framing is not None
+    voice_set = options.voice is not None
+    defaults = apply_to_options(accepted, framing_set=framing_set, voice_set=voice_set)
+    if defaults.framing_mode is None and not defaults.language:
+        return options, []
+
+    updated = options.model_copy(deep=True)
+    used: list[Preference] = []
+    if defaults.framing_mode is not None and not framing_set:
+        updated.framing = Framing(mode=defaults.framing_mode)
+        used.extend(p for p in accepted if p.defaults and p.defaults.framing_mode is not None)
+    if defaults.language and not voice_set:
+        updated.voice = VoiceOptions(
+            mode=SpeechMode.REPLACE,
+            voice=DEFAULT_VOICES.get(kokoro_language(defaults.language), "af_heart"),
+            language=defaults.language,
+            translate=True,
+            captions=VoiceCaptions.REBUILD,
+        )
+        used.extend(p for p in accepted if p.defaults and p.defaults.language)
+    return updated, used
 
 
 def _profile_name(identifier: str | None) -> str:

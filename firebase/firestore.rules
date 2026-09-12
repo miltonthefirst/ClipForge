@@ -522,6 +522,33 @@ service cloud.firestore {
     }
 
     // ── Clips ────────────────────────────────────────────────────────────────
+    // ── Preferences ──────────────────────────────────────────────────────────
+    //
+    // What the system has worked out about a reviewer from their corrections,
+    // proposed after a remake and applied to later ones only once accepted.
+    //
+    // The client's only power here is the decision. It cannot create a
+    // preference — the worker proposes them through the Admin SDK — and it
+    // cannot edit the text of one, because a preference whose wording could be
+    // rewritten after it was accepted would be a rule nobody had agreed to.
+    // Accepting and rejecting are the same write: `status` plus who decided and
+    // when, and nothing else in the document may move.
+    match /preferences/{preferenceId} {
+      allow read: if isApproved();
+
+      allow update: if isApproved()
+                    && changed().hasOnly(['status', 'decidedAt', 'decidedBy'])
+                    && request.resource.data.status in ['ACCEPTED', 'REJECTED']
+                    && request.resource.data.decidedBy == request.auth.uid
+                    && request.resource.data.decidedAt is string;
+
+      // Proposing is the worker's job; deleting is nobody's. A rejected
+      // preference is kept deliberately, so the same suggestion cannot come
+      // back on the next correction — the rejection is itself the thing worth
+      // remembering, and removing the row would restart the loop it ended.
+      allow create, delete: if false;
+    }
+
     match /clips/{clipId} {
       allow read: if isApproved();
       allow create, delete: if false;

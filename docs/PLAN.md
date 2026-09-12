@@ -1000,6 +1000,61 @@ rather than introducing a second path to a voice.
 
 ---
 
+#### Phase 8c — One clip, and a system that remembers
+
+**Goal.** Stop the queue filling with versions of the same clip, and stop the reviewer typing the
+same correction every time.
+
+**Why it jumped the queue.** Both came from using 8b for an afternoon. Thirteen rows in the review
+queue were nine actual clips — a remake is a new clip, a remake is always PENDING, and its parent
+usually still is too. And two of the first five corrections carried the same two asks, written out
+longhand both times, because nothing in the system could notice.
+
+**In scope**
+
+- `Clip.lineageId` and `Clip.version`: a clip and every correction of it are one row in the queue,
+  showing the latest, with the rest as history carrying each step's note, reading and refusals.
+  `MUSIC` joins the same lineage.
+- A `Preference` contract and the `preferences` collection: what the system has worked out about a
+  reviewer, **proposed and never applied** until accepted.
+- `clipforge.analysis.preferences`: propose after a remake that carried a note, dedupe against
+  everything already held in any status, feed accepted ones into the note prompt and into the
+  remake's defaults.
+- Rules giving the PWA exactly one power over a preference — the decision — and the review-queue UI
+  to exercise it.
+
+**Explicitly out of scope.** Applying a preference without being told to. Inferring preferences from
+approve/reject decisions rather than from notes — a rejection says *no*, not *why*, and that kind of
+statistical inference is Phase 9's business, over published performance.
+
+**Exit criteria** — met, 2026-09-13
+
+1. ✅ The live queue collapses from 13 rows to 9 on the existing clips, and the two lineages with
+   three and four versions each show one row apiece. Backfilled by walking `derivedFromClipId`.
+2. ✅ A note teaching a standing preference produces one; *"it cuts in three seconds too late on
+   this one"* produces none; something already accepted and something already rejected both produce
+   none. Measured against the real model in `tests/gpu/test_preference_learning.py`.
+3. ✅ Nothing is applied without a decision. 11 emulator tests in
+   `firebase/tests/preferences.rules.spec.ts` hold the write surface to `status`, `decidedBy` and
+   `decidedAt` — no creating, no editing the wording, no deleting a rejection.
+4. ✅ An accepted preference fills only what the current request left open, and the most recent of
+   two that disagree wins.
+
+**The shape lesson, paid for twice.** `LlmPreferenceProposal` first asked only for a list of
+preferences, and qwen3.5:4b returned an empty one on every case measured, including a note that
+plainly taught two things — an empty array satisfies an array schema trivially, so it is the
+cheapest answer available. Making it answer a required boolean and justify it *before* the list
+exists fixed it. That is the same failure `LlmRemakeNote` records about nullable fields. **Where a
+schema offers a lazy path, a small model takes it**, and prompting does not fix what the shape
+permits.
+
+**Borrowed from `sarungano`.** The propose-never-apply loop, the dedupe-against-every-status rule,
+and the scoping of a lesson to one work versus all of them come from that project's chapter
+feedback loop, which solves the same problem for adapted prose. See
+[ADR-0014](adr/0014-learning-from-feedback.md).
+
+---
+
 #### Phase 9 — Analytics and calibration → **v0.2.0**
 
 **Goal.** Close the loop: find out whether the scores predicted anything.

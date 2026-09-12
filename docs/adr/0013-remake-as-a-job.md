@@ -295,6 +295,14 @@ only for the one framing mode that has a fixed window. The model volunteered
 `crop: right` on notes about following the ball, and it reached two real clips'
 recorded summaries as a change that had never been applied.
 
+## Superseded in one respect
+
+A remake still produces a new clip and still never alters the one that was
+reviewed — but it no longer occupies its own row in the review queue. A clip and
+every correction of it share a `lineageId` and are one thing to decide about,
+with the history a click away. See [ADR-0014](0014-learning-from-feedback.md),
+which also adds the loop that learns from the corrections this ADR introduced.
+
 ## Alternatives considered
 
 **Make the render profile per-clip and stop there.** Cheapest by far, and it

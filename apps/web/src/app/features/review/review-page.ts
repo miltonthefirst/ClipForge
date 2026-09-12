@@ -7,9 +7,9 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { DecimalPipe } from '@angular/common';
+import { DecimalPipe, LowerCasePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import type { Candidate, Clip, ClipPreview } from '@clipforge/contracts';
+import type { Candidate, Clip, ClipPreview, Preference } from '@clipforge/contracts';
 
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { SessionService } from '../../core/session';
@@ -25,7 +25,7 @@ export interface ReviewCard {
 
 @Component({
   selector: 'app-review-page',
-  imports: [DecimalPipe, RouterLink],
+  imports: [DecimalPipe, LowerCasePipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './review-page.html',
 })
@@ -37,6 +37,14 @@ export class ReviewPage implements OnDestroy {
   private stop: (() => void) | null = null;
 
   protected readonly cards = signal<ReviewCard[] | null>(null);
+  /**
+   * What the system thinks it has learned, waiting to be kept or turned down.
+   *
+   * Shown here rather than on a settings page nobody opens: a proposal arrives
+   * moments after the remake that taught it, while the reviewer is still
+   * looking at the queue and still remembers why they asked.
+   */
+  protected readonly proposals = signal<Preference[]>([]);
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal<string | null>(null);
   /**
@@ -92,17 +100,71 @@ export class ReviewPage implements OnDestroy {
       this.stop = stop;
       onCleanup(stop);
     });
+
+    effect((onCleanup) => {
+      if (!this.session.uid) return;
+      const stop = this.store.watchPreferences(
+        (preferences) => this.proposals.set(preferences),
+        'PROPOSED',
+        () => this.proposals.set([]),
+      );
+      onCleanup(stop);
+    });
   }
 
   ngOnDestroy(): void {
     this.stop?.();
   }
 
+  /**
+   * One row per clip, not one per attempt.
+   *
+   * A remake is a new clip and is always PENDING, and its parent usually still
+   * is too — so a football clip corrected three times filled four slots in this
+   * queue and left the reviewer working out which was newest. They are one
+   * thing to decide about, and the decision is about the latest version.
+   *
+   * Grouping here rather than in the query because the query is already
+   * filtered to one review state: a rejected attempt is not in this result set
+   * at all, so the highest version present is by construction the latest one
+   * still awaiting a decision. Rejecting a remake therefore brings its parent
+   * back on the next snapshot, with no extra bookkeeping and nothing to undo.
+   */
+  private latestOfEachLineage(clips: Clip[]): Clip[] {
+    const best = new Map<string, Clip>();
+    for (const clip of clips) {
+      // A clip written before lineages existed is its own root.
+      const key = clip.lineageId ?? clip.id;
+      const held = best.get(key);
+      if (!held || (clip.version ?? 1) > (held.version ?? 1)) best.set(key, clip);
+    }
+    // The listener ordered by createdAt; preserve that among the survivors.
+    const keep = new Set([...best.values()].map((c) => c.id));
+    return clips.filter((c) => keep.has(c.id));
+  }
+
+  /** Keep this preference, or turn it down for good. */
+  protected async decidePreference(
+    preference: Preference,
+    status: 'ACCEPTED' | 'REJECTED',
+  ): Promise<void> {
+    const uid = this.session.uid;
+    if (!uid) return;
+    this.busy.set(preference.id);
+    try {
+      await this.store.decidePreference(preference.id, uid, status);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
   private async buildCards(clips: Clip[]): Promise<void> {
     const local = this.localAvailable();
     this.cards.set(
       await Promise.all(
-        clips.map(async (clip) => ({
+        this.latestOfEachLineage(clips).map(async (clip) => ({
           clip,
           source: await this.playback.resolve(clip, local),
           // Fetched per card rather than with the list: the poster is ~50 KB of

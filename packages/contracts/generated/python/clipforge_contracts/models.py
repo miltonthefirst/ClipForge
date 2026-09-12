@@ -149,6 +149,25 @@ class MusicCaptions(StrEnum):
     REMOVE = "REMOVE"
 
 
+class PreferenceScope(StrEnum):
+    """
+    How widely a learned preference applies. SOURCE is this channel or series only — the right default, because most corrections are about the kind of footage rather than about video in general, and a rule learned from football should not reframe a talking head. EVERYTHING is for a preference that genuinely holds across all of them, which is rarer than it feels while writing one.
+    """
+
+    SOURCE = "SOURCE"
+    EVERYTHING = "EVERYTHING"
+
+
+class PreferenceStatus(StrEnum):
+    """
+    PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
+    """
+
+    PROPOSED = "PROPOSED"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
 class UnsupportedAsk(StrEnum):
     """
     Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
@@ -1170,6 +1189,98 @@ class MusicOptions(BaseModel):
     """
 
 
+class RemakeDefaults(BaseModel):
+    """
+    The machine-readable half of a preference: settings to pre-fill on a future remake. Every field is optional, and a preference may have none at all — plenty of what a reviewer teaches is a judgement the controls cannot hold ("this channel's wide shots are unusable cropped") and is worth carrying as a sentence into the prompt even when it fills in no box.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    framing_mode: FramingMode | None = Field(None, alias="framingMode")
+    crop: CropAnchor | None = None
+    language: str | None = Field(None, max_length=16)
+    speech_mode: SpeechMode | None = Field(None, alias="speechMode")
+
+
+class Preference(BaseModel):
+    """
+    Something the system noticed it should remember, at preferences/{preferenceId}.
+
+    The point is to stop asking. A reviewer who writes "follow the ball" on every football clip is teaching the same thing every time, and a system that cannot hold it makes them type it forever. So after a remake that applied feedback, the local model is asked what — if anything — generalises, and the answer is stored here as a proposal.
+
+    **Proposed, never applied.** A preference does nothing until a human accepts it. A wrong one is more expensive than a missed one, because it silently shapes every later clip and the reviewer has no reason to suspect it; a missed one costs one more sentence in a note. The model is also shown what has already been accepted AND what has been rejected, so it neither repeats itself nor re-proposes something that was already turned down.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    scope: PreferenceScope
+    source_id: str | None = Field(None, alias="sourceId")
+    """
+    Which source this applies to when the scope is SOURCE. Null for an EVERYTHING preference, which is stored unattached so it is retrieved for every clip.
+    """
+    category: NoteTopic
+    lesson: str = Field(..., max_length=400, min_length=1)
+    """
+    The standing instruction, written for a remake of a clip nobody has seen yet. It must make sense without the clip that prompted it: "this channel's wide shots lose the ball unless the window follows it", not "the framing was wrong on that one".
+    """
+    defaults: RemakeDefaults | None = None
+    status: PreferenceStatus
+    from_clip_id: str | None = Field(None, alias="fromClipId")
+    from_note: str | None = Field(None, alias="fromNote", max_length=2000)
+    """
+    The feedback that taught it, verbatim. Kept so a preference can be judged against what was actually said rather than against the model's paraphrase of it.
+    """
+    times_applied: int | None = Field(0, alias="timesApplied", ge=0)
+    """
+    How many remakes this preference has shaped since it was accepted. The number that says whether it is earning its place: one that never fires is noise, and one that fires constantly is a default the pipeline should probably adopt outright.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
+    decided_by: str | None = Field(None, alias="decidedBy")
+
+
+class Preference1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    lesson: str = Field(..., max_length=400)
+    category: NoteTopic
+    scope: PreferenceScope
+    framing_mode: NoteFraming | None = Field(None, alias="framingMode")
+    language: str | None = Field(None, max_length=16)
+
+
+class LlmPreferenceProposal(BaseModel):
+    """
+    The schema-constrained answer to "what, if anything, should be remembered from this correction?". Handed to Ollama as a format constraint like the other LLM shapes here.
+
+    `recurring` and `reasoning` come first, and that ordering is the whole design. Constrained decoding emits properties in declaration order, and an empty array satisfies an array schema trivially — so a model asked only for a list returns `[]` every single time, which it did on all four measured cases including the one that plainly taught two things. Being made to answer a yes/no question and justify it *before* the list is reached turns the same model into one that answers. It is the same lesson `LlmRemakeNote` records: where a schema offers a lazy path, a small model takes it.
+
+    An empty list is still a correct and common answer — most corrections are about one clip's own moment — and a wrong standing rule costs far more than a missed one.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    recurring: bool
+    """
+    Would a DIFFERENT clip from this same source be made better if the system already knew something from this correction? Answered first, before any list exists to be left empty.
+    """
+    reasoning: str = Field(..., max_length=300)
+    """
+    One sentence on why. Not stored — it exists to make the model state a position it then has to be consistent with, which is worth more than the tokens it costs.
+    """
+    preferences: list[Preference1] = Field(..., max_length=3)
+
+
 class PublishDefaults(BaseModel):
     """
     What a publish uses when the clip does not say otherwise. Editable from the app because none of it is secret — unlike the credentials, which never leave the worker.
@@ -1301,6 +1412,16 @@ class Clip(BaseModel):
     description: str | None = None
     review: ReviewState
     reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
+    lineage_id: str | None = Field(None, alias="lineageId", min_length=1)
+    """
+    The id of the clip this one descends from, at the root of the chain — the clip RENDER originally made. Every version shares it, so a clip and every correction of it are one row in the review queue instead of five.
+
+    That mattered immediately. The queue lists what is PENDING, a remake is always PENDING, and its parent usually still is too, so a single football clip corrected three times filled four slots and the reviewer had to work out which was newest. Null on a clip written before this field existed; readers treat that as the clip being its own root.
+    """
+    version: int | None = Field(1, ge=1)
+    """
+    Which attempt this is within its lineage. 1 is the clip RENDER made; a remake is its parent's version plus one. Ordering by this rather than by `createdAt` is deliberate: two remakes of the same parent are siblings, not a sequence, and the number says so.
+    """
     derived_from_clip_id: str | None = Field(None, alias="derivedFromClipId")
     """
     The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates.
@@ -1410,6 +1531,10 @@ class ClipForgeContracts(BaseModel):
     user_profile: UserProfile | None = Field(None, alias="userProfile")
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")
     agent_report: AgentReport | None = Field(None, alias="agentReport")
+    preference: Preference | None = None
+    llm_preference_proposal: LlmPreferenceProposal | None = Field(
+        None, alias="llmPreferenceProposal"
+    )
     remake_options: RemakeOptions | None = Field(None, alias="remakeOptions")
     applied_remake: AppliedRemake | None = Field(None, alias="appliedRemake")
     llm_remake_note: LlmRemakeNote | None = Field(None, alias="llmRemakeNote")

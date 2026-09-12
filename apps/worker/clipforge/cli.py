@@ -54,6 +54,7 @@ def run(
         CandidateStore,
         ClipStore,
         JobStore,
+        PreferenceStore,
         PublicationStore,
         SourceStore,
         WorkerStore,
@@ -87,6 +88,10 @@ def run(
             # same store the local API writes them through, so what the settings
             # page saved is what the next publish uses.
             channels=ChannelStore(client, settings),
+            # What this reviewer has already taught. Read by REMAKE before it
+            # decides anything, and written to afterwards — as proposals only,
+            # which do nothing until a human accepts them.
+            preferences=PreferenceStore(client, settings),
         ),
     )
     worker.install_signal_handlers()
