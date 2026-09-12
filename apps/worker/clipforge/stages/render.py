@@ -208,6 +208,15 @@ class RenderStage:
                 rights=None,
                 created_at=now,
             )
+            # A preview is worth a thumbnail in the review queue; it is not
+            # worth a clip. `ClipPreview` requires positive dimensions, and a
+            # poster whose size could not be read would fail that validation and
+            # discard a render that had already succeeded — so an unusable one
+            # is dropped here rather than raised. `_dimensions` explains how a
+            # poster ends up unmeasurable.
+            usable = images.width_px > 0 and images.height_px > 0
+            if not usable:
+                log.warning("render.preview_unusable", clip_id=clip_id, detail="no poster saved")
             self._clips.save(
                 clip,
                 preview=ClipPreview(
@@ -218,7 +227,9 @@ class RenderStage:
                     height_px=images.height_px,
                     byte_size=images.byte_size,
                     created_at=now,
-                ),
+                )
+                if usable
+                else None,
             )
             return clip
         finally:

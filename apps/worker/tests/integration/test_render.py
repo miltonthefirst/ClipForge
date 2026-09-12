@@ -301,6 +301,48 @@ def test_the_poster_is_taken_from_the_rendered_clip_not_the_source(
     assert images.height_px > images.width_px, "the poster is not vertical"
 
 
+def test_a_plain_poster_frame_still_reports_its_size(tmp_path: Path) -> None:
+    """A regression, and one that only showed up on *simple* footage.
+
+    ffmpeg picks a demuxer per file: a detailed JPEG is read by `image2`, which
+    reports a nominal 0.04s duration, and a plain one by `jpeg_pipe`, which
+    reports `N/A`. Poster dimensions used to come from the strict media probe,
+    which refuses a file with no duration — so the measurement succeeded or
+    failed according to how busy the frame happened to be, and on failure
+    returned a height of 0. `ClipPreview` requires positive dimensions, so a
+    render that had already finished then died saving its thumbnail.
+
+    A flat green field is enough to reproduce it; the test pattern above is not,
+    which is exactly why it survived the suite.
+    """
+    flat = tmp_path / "flat.mp4"
+    subprocess.run(  # noqa: S603 - ffmpeg is a hard dependency, resolved via PATH
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0x1f7a1f:s=1080x1920:r=30:d=4",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            str(flat),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    images = extract_poster(flat, duration_sec=4.0, work_dir=tmp_path / "work")
+    assert images.width_px == 360
+    assert images.height_px == 640, "a plain poster must still measure, not report 0"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Exit criterion 4 — throughput, on the real encoder
 # ─────────────────────────────────────────────────────────────────────────────
