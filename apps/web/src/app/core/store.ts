@@ -9,6 +9,7 @@ import type {
   Job,
   JobEvent,
   MusicOptions,
+  ObscureOptions,
   Publication,
   Preference,
   PreferenceStatus,
@@ -461,6 +462,22 @@ export class ClipForgeStore {
       decidedAt: new Date().toISOString(),
       decidedBy: uid,
     });
+  }
+
+  /**
+   * Make a set of rectangles a property of the channel rather than of one clip.
+   *
+   * This is the whole difference between a feature and a chore. A broadcaster's
+   * bug is in the same place on every video it will ever publish, so a reviewer
+   * who has to ask for it on each clip is doing the system's bookkeeping. Once
+   * this is set, RENDER applies it as it cuts and the clip arrives clean.
+   *
+   * `null` clears it. The write is a single field — firestore.rules pins it to
+   * exactly that name, because everything else on a source describes a file on
+   * the worker.
+   */
+  async rememberObscure(sourceId: string, obscure: ObscureOptions | null): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'sources', sourceId), { obscure });
   }
 
   /** Approved clips, the publish queue's input. */

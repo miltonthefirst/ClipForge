@@ -28,6 +28,7 @@ from clipforge_contracts import (
     ClipLocation,
     ClipPreview,
     Lane,
+    ObscureOptions,
     ReviewState,
     StageName,
     Transcript,
@@ -115,7 +116,9 @@ class RenderStage:
                 return self._checkpoint(rendered, failures, incomplete=True)
             try:
                 rendered.append(
-                    self._render_one(context, candidate, media_path, media, profile, transcript)
+                    self._render_one(
+                        context, candidate, media_path, media, profile, transcript, source.obscure
+                    )
                 )
             except (RenderError, PosterError) as exc:
                 # One clip that will not encode must not discard the others.
@@ -141,7 +144,18 @@ class RenderStage:
         media: MediaInfo,
         profile: RenderProfile,
         transcript: Transcript | None,
+        obscure: ObscureOptions | None = None,
     ) -> Clip:
+        """One candidate, cut and encoded.
+
+        `obscure` is the source's own standing list of things to hide, and it
+        arrives here rather than being looked up per clip because it is a
+        property of the channel: every clip in this job is cut from the same
+        video and needs the same rectangles gone. Hiding them at this point is
+        the difference between a feature and a chore — a reviewer who has
+        already said "this channel puts its bug in the top right" should never
+        see the bug again, on this clip or any future one.
+        """
         settings = context.settings
         clip_id = uuid.uuid4().hex
         scratch = self._workspace.tmp_dir / clip_id
@@ -159,6 +173,7 @@ class RenderStage:
                     profile=profile,
                     subtitles=subtitles,
                     encoder=settings.video_encoder,
+                    obscure=obscure,
                 ),
                 media,
                 ffmpeg_bin=settings.ffmpeg_bin,

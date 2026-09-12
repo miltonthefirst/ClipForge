@@ -38,7 +38,7 @@ were tried first and each failed in its own direction.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from clipforge_contracts import (
     CropAnchor,
@@ -49,9 +49,12 @@ from clipforge_contracts import (
     NoteCrop,
     NoteFraming,
     NoteInterpretation,
+    NoteObscure,
     NoteTopic,
+    ObscureOptions,
     RemakeOptions,
     SpeechMode,
+    UnsupportedAsk,
     VoiceCaptions,
     VoiceOptions,
 )
@@ -139,7 +142,8 @@ def build_note_prompt(
         "",
         _FRAMING_GUIDE,
         "",
-        "First answer `topics`: which of FRAMING, LANGUAGE, AUDIO and TIMING this "
+        "First answer `topics`: which of FRAMING, LANGUAGE, AUDIO, TIMING and "
+        "OBSCURE this "
         "note actually raises. Usually one. Anything you say about a topic you "
         "did not list is discarded, so listing a topic the note did not raise "
         "changes something nobody asked to change.",
@@ -153,16 +157,25 @@ def build_note_prompt(
         "- startDeltaSec / endDeltaSec: seconds to move the cut's start or end, "
         "and 0 if the note does not say it begins or ends at the wrong moment. "
         "Negative starts earlier; positive ends later.",
+        "- obscure: whether something burnt into the picture should be hidden "
+        "— a channel logo or bug, a broadcaster's watermark, a score bar, a "
+        "clock, burnt-in text. Answer ANYWHERE when the note asks for something "
+        "to be hidden but does not say where on screen it is, which is the usual "
+        "case: the system finds it by looking at the footage. Answer a corner "
+        "(TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT) or a band (TOP, "
+        "BOTTOM) only if the note says where. NOT_MENTIONED if the note does not "
+        "ask for anything to be hidden.",
         "",
         "Every field must have a value. Use NOT_MENTIONED, NONE or 0 to say the "
         "note did not raise something — those are answers, not blanks.",
         "",
         "Last, `unsupported`: anything the note asks for that NONE of the controls "
-        "above can express — a watermark or burnt-in text to remove, different "
-        "music, a zoom onto one person, slow motion, cutting the middle out, a "
-        "colour change. Usually empty. Listing something here does not stop the "
-        "remake; it records the part that will not be met so the reviewer is told "
-        "rather than left to notice.",
+        "above can express — different music, a zoom onto one person, slow "
+        "motion, cutting the middle out, a colour change. Usually empty. A logo "
+        "or watermark to remove is NOT unsupported any more; that is what "
+        "`obscure` is for. Listing something here does not stop the remake; it "
+        "records the part that will not be met so the reviewer is told rather "
+        "than left to notice.",
     ]
     if clip_language:
         lines.append(f"\nThe clip is currently in {clip_language}.")
@@ -258,6 +271,12 @@ class Applied:
     changes: list[str]
     # Where the note and the form disagreed, and which won.
     conflicts: list[str]
+    # A corner or band the note named, for detection to search in; None when it
+    # asked for something to be hidden without saying where, which is usual.
+    obscure_where: str | None = None
+    # Asks the model filed as impossible that this build can in fact do. The
+    # caller must not refuse these — see `apply_interpretation`.
+    absorbed: list[UnsupportedAsk] = field(default_factory=list)
 
 
 def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -> Applied:
@@ -362,6 +381,39 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
                 updated.voice.voice = DEFAULT_VOICES.get(resolved, updated.voice.voice)
                 changes.append(f"set the language to {language}")
 
+    # ── Hiding a fixed mark ──────────────────────────────────────────────────
+    # Two ways in, and both are read. The first is the OBSCURE topic, which is
+    # how a current model says it. The second is `unsupported`, which is where
+    # every model said it until this build existed and where a model that has
+    # not noticed the new field will keep saying it — the reviewer's three real
+    # notes all came back as REMOVE_WATERMARK. Absorbing that rather than
+    # refusing it is what makes the feature work on a note written the old way.
+    unsupported = set(answer.unsupported or ())
+    misfiled = unsupported & {UnsupportedAsk.REMOVE_WATERMARK, UnsupportedAsk.REMOVE_OVERLAY_TEXT}
+    by_topic = NoteTopic.OBSCURE in topics and answer.obscure is not NoteObscure.NOT_MENTIONED
+
+    obscure_where: str | None = None
+    absorbed: list[UnsupportedAsk] = []
+    if by_topic or misfiled:
+        absorbed = sorted(misfiled, key=lambda ask: ask.value)
+        if by_topic and answer.obscure is not NoteObscure.ANYWHERE:
+            obscure_where = answer.obscure.value
+        if updated.obscure is None:
+            updated.obscure = ObscureOptions(auto=True)
+        elif not updated.obscure.auto and not updated.obscure.regions:
+            # The form sent an object with nothing turned on, which is what an
+            # untouched control looks like. The note is the more specific
+            # statement, so it turns detection on rather than being outvoted by
+            # a checkbox nobody ticked.
+            updated.obscure.auto = True
+        else:
+            # Detection was already asked for, or boxes were already drawn.
+            # Nothing to change, and nothing to claim in the summary.
+            by_topic = False
+        if by_topic or misfiled:
+            where = f" in the {obscure_where.lower().replace('_', ' ')}" if obscure_where else ""
+            changes.append(f"looked for a fixed mark to hide{where}")
+
     # ── Trims ────────────────────────────────────────────────────────────────
     # `0` is this schema's "not mentioned", so a falsy answer never overwrites.
     if NoteTopic.TIMING in topics:
@@ -372,7 +424,13 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
             updated.end_delta_sec = answer.end_delta_sec
             changes.append(f"moved the end by {answer.end_delta_sec:+g}s")
 
-    return Applied(options=updated, changes=changes, conflicts=conflicts)
+    return Applied(
+        options=updated,
+        changes=changes,
+        conflicts=conflicts,
+        obscure_where=obscure_where,
+        absorbed=absorbed,
+    )
 
 
 def describe(answer: LlmRemakeNote | None, applied: Applied) -> str:
@@ -459,6 +517,8 @@ def _stated_fields(options: RemakeOptions) -> list[str]:
         stated.append("the start of the cut")
     if options.end_delta_sec:
         stated.append("the end of the cut")
+    if options.obscure is not None and (options.obscure.auto or options.obscure.regions):
+        stated.append("what to hide in the picture")
     return stated
 
 

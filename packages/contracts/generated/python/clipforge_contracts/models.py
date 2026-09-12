@@ -171,6 +171,8 @@ class PreferenceStatus(StrEnum):
 class UnsupportedAsk(StrEnum):
     """
     Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
+
+    REMOVE_WATERMARK and REMOVE_OVERLAY_TEXT are kept as members and are no longer refusals: both are now answered by ObscureOptions, and the note reader routes them to the OBSCURE topic. They stay in the enum because stored readings contain them, and because detection can still come back empty — at which point 'nothing static was found to hide' is the honest refusal and this is what it is recorded as.
     """
 
     REMOVE_WATERMARK = "REMOVE_WATERMARK"
@@ -181,6 +183,119 @@ class UnsupportedAsk(StrEnum):
     REORDER_OR_CUT_MIDDLE = "REORDER_OR_CUT_MIDDLE"
     COLOUR_OR_GRADE = "COLOUR_OR_GRADE"
     SOMETHING_ELSE = "SOMETHING_ELSE"
+
+
+class ObscureMethod(StrEnum):
+    """
+    How a region of the picture is hidden.
+
+    Four, because one is wrong for the two cases that matter. DELOGO reconstructs the area from the pixels around it and is far and away the best answer for a small broadcast bug — at channel-logo size it reads as though the logo was never there. It is also the worst answer for anything large: it has nothing to reconstruct from, so a wide region becomes a smear that draws more attention than the thing it hid. BLUR and PIXELATE stay honest at any size, which is what a burnt-in caption needs. BOX is a flat rectangle, for when honest is the point.
+    """
+
+    BLUR = "BLUR"
+    PIXELATE = "PIXELATE"
+    DELOGO = "DELOGO"
+    BOX = "BOX"
+
+
+class ObscureFound(StrEnum):
+    """
+    Where a region came from. Worth recording because the three fail differently: AUTO can be in the wrong place, MANUAL cannot but costs the reviewer a drag, and REMEMBERED is a decision made once about a channel and applied ever after — which is the one that needs to be visible when it goes wrong, because nobody asked for it on this clip.
+    """
+
+    AUTO = "AUTO"
+    MANUAL = "MANUAL"
+    REMEMBERED = "REMEMBERED"
+
+
+class ObscureRegion(BaseModel):
+    """
+    One rectangle of the SOURCE frame to hide, in percentages of its width and height.
+
+    Percentages rather than pixels, and of the source rather than the output, for one reason each. Percentages survive a source that turns out to be 1280 wide when the box was drawn on a 1920 poster. Source coordinates are the only frame a logo is actually fixed in: the output is cropped, panned and scaled, so a box in output coordinates would have to move with the window, and a tracked window would drag the blur across the picture.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    x_pct: float = Field(..., alias="xPct", ge=0.0, le=100.0)
+    """
+    Left edge, as a percentage of source width.
+    """
+    y_pct: float = Field(..., alias="yPct", ge=0.0, le=100.0)
+    """
+    Top edge, as a percentage of source height.
+    """
+    w_pct: float = Field(..., alias="wPct", ge=0.2, le=100.0)
+    h_pct: float = Field(..., alias="hPct", ge=0.2, le=100.0)
+    method: ObscureMethod | None = None
+    """
+    Null lets the worker choose by size, which is the better default: DELOGO for a region small enough to reconstruct, BLUR for anything bigger.
+    """
+    strength: float | None = Field(None, ge=0.0, le=1.0)
+    """
+    How hard to hide it, 0 to 1. Scales blur radius and pixel size; ignored by DELOGO, which either reconstructs the area or does not. Null means the default, which is strong enough that the shape underneath is not readable.
+    """
+    from_sec: float | None = Field(None, alias="fromSec", ge=0.0)
+    """
+    Seconds from the START OF THE CLIP, not of the source, because that is the timebase the render's filters see. Null means from the beginning. For a bug that only appears during play.
+    """
+    to_sec: float | None = Field(None, alias="toSec", ge=0.0)
+    label: str | None = Field(None, max_length=80)
+    """
+    What this is, in a couple of words — 'channel bug, top left'. Shown next to the box in the history, so a remembered region is identifiable a month later.
+    """
+    found: ObscureFound | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    """
+    For an AUTO region: how static and how distinct it was. Recorded rather than thresholded away, because a low-confidence find that turns out to be right is the evidence for loosening the threshold, and one that is wrong is the evidence for the reviewer to drag the box instead.
+    """
+
+
+class ObscureOptions(BaseModel):
+    """
+    The request to hide things: find them, or hide these, or both.
+
+    `auto` and `regions` compose rather than exclude. A reviewer who has drawn one box and also wants the scoreboard found gets both; detection skips anything that overlaps a box already listed, so asking for both never produces two filters over the same pixels.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    auto: bool | None = False
+    """
+    Look for static logos and burnt-in text in the footage and hide what is found. Costs a short decode pass over the cut and no model.
+    """
+    regions: list[ObscureRegion] | None = Field([], max_length=6, validate_default=True)
+    """
+    Rectangles to hide whatever detection thinks. Always applied.
+
+    Six, and the number is the security rule's rather than this schema's: each region is a filter pass, and a rule that validates them positionally has a thousand-expression budget that eight of them exceeded. Detection returns at most four.
+    """
+    method: ObscureMethod | None = None
+    """
+    Override the method for regions that do not name one, found or listed.
+    """
+    strength: float | None = Field(None, ge=0.0, le=1.0)
+
+
+class NoteObscure(StrEnum):
+    """
+    Whether a note asks for something in the picture to be hidden, and where it says that thing is.
+
+    One enum rather than a boolean plus a location, because the location is only meaningful when the answer is yes and a small model given two fields answers them independently — producing 'no, and it is in the top left'. ANYWHERE is the common answer: reviewers write 'blur the canal+' and expect the system to know where the canal+ is, which is exactly what detection is for. A corner narrows the search and is worth having when they do say.
+    """
+
+    NOT_MENTIONED = "NOT_MENTIONED"
+    ANYWHERE = "ANYWHERE"
+    TOP_LEFT = "TOP_LEFT"
+    TOP_RIGHT = "TOP_RIGHT"
+    BOTTOM_LEFT = "BOTTOM_LEFT"
+    BOTTOM_RIGHT = "BOTTOM_RIGHT"
+    TOP = "TOP"
+    BOTTOM = "BOTTOM"
 
 
 class NoteFraming(StrEnum):
@@ -226,6 +341,7 @@ class NoteTopic(StrEnum):
     LANGUAGE = "LANGUAGE"
     AUDIO = "AUDIO"
     TIMING = "TIMING"
+    OBSCURE = "OBSCURE"
 
 
 class LlmRemakeNote(BaseModel):
@@ -264,6 +380,7 @@ class LlmRemakeNote(BaseModel):
     """
     Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer.
     """
+    obscure: NoteObscure
     unsupported: list[UnsupportedAsk] | None = Field(None, max_length=8)
     """
     Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
@@ -463,6 +580,10 @@ class RemakeOptions(BaseModel):
     """
     Nudge the cut's end. Positive runs longer.
     """
+    obscure: ObscureOptions | None = None
+    """
+    Hide a fixed part of the picture — a channel bug, a scoreboard, a burnt-in caption. Null asks for nothing; an object with `auto` false and no regions is also nothing, and is what an untouched control sends.
+    """
     profile: str | None = None
     """
     Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
@@ -548,6 +669,12 @@ class AppliedRemake(BaseModel):
     warnings: list[Warning] | None = Field([], max_length=8, validate_default=True)
     """
     Things that were done but are likely to disappoint: a narration built from a transcript the recogniser was unsure of, a translation that barely changed the text, a clip with almost no speech in it. Surfaced next to the result because every one of these has produced a clip that looked finished and was unusable.
+    """
+    obscured: list[ObscureRegion] | None = Field(
+        [], max_length=6, validate_default=True
+    )
+    """
+    The regions actually hidden, with where each came from. This is the record that makes a wrong box fixable: a reviewer who can see that detection put the rectangle two percent too high can drag it and remake, rather than describing the error in prose to a model that will guess again.
     """
     start_sec: float = Field(..., alias="startSec", ge=0.0)
     """
@@ -649,6 +776,12 @@ class Source(BaseModel):
     Worker-local absolute path. Advisory only for the PWA, which can never read it.
     """
     size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
+    obscure: ObscureOptions | None = None
+    """
+    Hidden on every clip cut from this source, including the first. Set by accepting a learned preference, or from the remake form's 'always do this for this channel'.
+
+    This is the difference between a feature and a chore. A channel bug is a property of the channel: found once on one clip, it is in the same place on every clip that channel will ever produce, and a reviewer who has to ask for it each time is doing the system's bookkeeping. Applied at RENDER, so a clip arrives for review already clean rather than arriving wrong and needing a correction.
+    """
     pinned: bool | None = False
     """
     Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with.
@@ -1202,6 +1335,10 @@ class RemakeDefaults(BaseModel):
     crop: CropAnchor | None = None
     language: str | None = Field(None, max_length=16)
     speech_mode: SpeechMode | None = Field(None, alias="speechMode")
+    obscure: ObscureOptions | None = None
+    """
+    Regions to hide on future clips. The one kind of preference whose value is mostly in its coordinates rather than in its sentence: a channel's bug does not move, so the box found once is the box forever, and accepting it is what turns 'blur the canal+' from an instruction into a property of the channel.
+    """
 
 
 class Preference(BaseModel):

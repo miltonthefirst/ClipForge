@@ -63,6 +63,9 @@ from clipforge_contracts import (
     FramingMode,
     Lane,
     NoteInterpretation,
+    ObscureFound,
+    ObscureOptions,
+    ObscureRegion,
     PanKeyframe,
     Preference,
     RemakeOptions,
@@ -80,6 +83,7 @@ from clipforge.analysis.preferences import (
     apply_to_options,
     dedupe,
     propose,
+    propose_obscure,
     standing_guidance,
 )
 from clipforge.analysis.remake import (
@@ -94,6 +98,12 @@ from clipforge.media.ffprobe import MediaInfo, probe
 from clipforge.media.framing import FramingError, build_video_chain, resolve_keyframes
 from clipforge.media.narration import build_ffmpeg_args as build_narration_args
 from clipforge.media.narration import plan_narration
+from clipforge.media.obscure import (
+    ObscureError,
+    describe_region,
+    detect_static_regions,
+    merge_regions,
+)
 from clipforge.media.poster import PosterError, extract_poster
 from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, RenderRequest, render_clip
@@ -126,13 +136,17 @@ NOTE_LLM_VRAM_MB = 3600
 # answer to the person who asked, not as a capability gap, because that is what
 # they are reading: a sentence next to a clip that is missing something.
 _UNSUPPORTED_WORDING: dict[UnsupportedAsk, str] = {
+    # These two are absorbed rather than refused — `apply_interpretation` turns
+    # either of them into a request to look for the mark and hide it. The
+    # wording survives for a reading that somehow reaches here with hiding
+    # switched off, and says what to do about it rather than apologising.
     UnsupportedAsk.REMOVE_WATERMARK: (
-        "removing a watermark or channel bug is not something ClipForge can do "
-        "\u2014 it would need the area painted over, and nothing here does that"
+        "a watermark or channel bug can be hidden now — ask again with "
+        '"blur" or "hide" in the note, or draw a box on the clip page'
     ),
     UnsupportedAsk.REMOVE_OVERLAY_TEXT: (
-        "removing burnt-in text from the source is not possible; captions this "
-        "pipeline added can be removed, but text already in the footage cannot"
+        "burnt-in text can be covered now, though not removed — ask again with "
+        '"blur" or "hide" in the note, or draw a box over it on the clip page'
     ),
     UnsupportedAsk.CHANGE_MUSIC: (
         "changing the music is a separate job \u2014 use Add music on the clip page, "
@@ -195,6 +209,24 @@ class _Cut:
         return max(0.0, self.end_sec - self.start_sec)
 
 
+@dataclass(frozen=True)
+class _Picture:
+    """The rendered video, and the decisions that are only visible in it.
+
+    A tuple would do for two of these and stopped doing when the third arrived:
+    what was hidden has to reach `AppliedRemake`, and a reviewer correcting a
+    box that landed two percent high needs the coordinates that were used, not
+    the ones that were asked for.
+    """
+
+    path: Path
+    keyframes: list[PanKeyframe]
+    # Empty when nothing was hidden, which includes the voice-only path — that
+    # copies the reviewed picture wholesale, so whatever was hidden in it was
+    # hidden by an earlier job and is not this remake's to claim.
+    obscured: list[ObscureRegion]
+
+
 class RemakeStage:
     """Re-cut, re-frame and re-voice one clip, into a new one."""
 
@@ -239,6 +271,8 @@ class RemakeStage:
         # Parts of the request understood and NOT carried out. Distinct from
         # `_notes`, which is for things that were done but may disappoint.
         self._refusals: list[str] = []
+        # A corner the note named for detection to search in, when it named one.
+        self._obscure_where: str | None = None
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -252,24 +286,34 @@ class RemakeStage:
         if original is None:
             raise RemakeStageError(f"no such clip: {job.clip_id}")
 
+        # Per run, not per stage instance, and **before anything writes to
+        # them**. This used to sit below `_resolve`, which is where refusals and
+        # conflicts are recorded — so every one of them was collected and then
+        # thrown away a line later, and the live clips show it: a remake whose
+        # note asked for a watermark to be removed reached the reviewer with
+        # `refusals: null`, which is exactly the silence the field exists to
+        # prevent. The stage is long-lived and reused across jobs, so the reset
+        # cannot simply be dropped either.
+        self._notes = []
+        self._refusals = []
+        self._obscure_where = None
+
         accepted = self._accepted_preferences(original)
         resolved, interpretation = self._resolve(context, options, original, accepted)
         resolved, used = _prefill(resolved, accepted)
         cut = self._cut(original, resolved)
         profile = load_profile(resolved.profile or _profile_name(original.render_profile))
 
-        self._notes = []  # per run, not per stage instance
-        self._refusals = []
         clip_id = uuid.uuid4().hex
         scratch = self._workspace.tmp_dir / f"remake-{clip_id}"
         scratch.mkdir(parents=True, exist_ok=True)
 
         try:
             voice, utterance_text = self._narrate(context, resolved.voice, original, cut, scratch)
-            picture, keyframes = self._picture(
+            picture = self._picture(
                 context, resolved, original, cut, profile, scratch, voice, utterance_text
             )
-            final = self._mix(resolved.voice, picture, voice, original, cut, scratch)
+            final = self._mix(resolved.voice, picture.path, voice, original, cut, scratch)
             outcome = self._publish(
                 context,
                 clip_id=clip_id,
@@ -278,7 +322,8 @@ class RemakeStage:
                 profile=profile,
                 options=resolved,
                 interpretation=interpretation,
-                keyframes=keyframes,
+                keyframes=picture.keyframes,
+                obscured=picture.obscured,
                 voice=voice,
                 cut=cut,
                 scratch=scratch,
@@ -286,7 +331,7 @@ class RemakeStage:
             # After the clip exists, never before. Learning is a bonus pass over
             # a finished result — a model that is unreachable, slow or unhelpful
             # must cost the lesson and nothing else.
-            self._learn(context, original, resolved, used)
+            self._learn(context, clip_id, original, resolved, used, picture.obscured)
             return outcome
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -351,7 +396,14 @@ class RemakeStage:
         # the clip rather than dropped: a reviewer who asks for a watermark to
         # be removed and gets back a clip with the watermark on it cannot tell a
         # refusal from a misunderstanding from a bug.
+        self._obscure_where = applied.obscure_where
         for ask in (answer.unsupported if answer else None) or []:
+            if ask in applied.absorbed:
+                # The model filed it as impossible and it is not. Refusing it
+                # here would tell the reviewer their request was declined in the
+                # same clip that carries it out — which is how three real notes
+                # asking for a logo to be blurred were answered before this.
+                continue
             self._refusals.append(_UNSUPPORTED_WORDING[ask])
         # A conflict is not a refusal: the remake was made, it just resolved an
         # argument between the note and the form. The reviewer still needs to
@@ -380,9 +432,11 @@ class RemakeStage:
     def _learn(
         self,
         context: StageContext,
+        clip_id: str,
         original: Clip,
         resolved: RemakeOptions,
         used: list[Preference],
+        obscured: list[ObscureRegion],
     ) -> None:
         """Ask what generalises, and record it as a proposal.
 
@@ -399,6 +453,22 @@ class RemakeStage:
         except Exception as exc:  # noqa: BLE001
             log.warning("remake.preference_count_failed", error=str(exc))
 
+        try:
+            known = self._preferences.for_source(original.source_id)
+        except Exception as exc:  # noqa: BLE001
+            log.info("remake.learning_skipped", error=str(exc))
+            return
+
+        # Rectangles first, and without a model or a note. A reviewer who ticked
+        # the box and got three marks found has taught something durable about
+        # the channel, and no sentence was involved in any of it.
+        if obscured:
+            regions = propose_obscure(obscured, clip=original, uid=context.job.uid, known=known)
+            if regions:
+                self._preferences.save_all(regions)
+                known = [*known, *regions]
+                log.info("remake.learned_regions", marks=len(obscured))
+
         note = (resolved.notes or "").strip()
         if not note or not resolved.interpret_notes:
             return
@@ -407,14 +477,18 @@ class RemakeStage:
         if client is None or not client.is_available():
             return
 
-        saved = self._clips.get(original.id)
+        # The clip this remake just made, not the one it was made from. Reading
+        # `original.remake` here meant learning saw the PREVIOUS correction's
+        # record — and on a first correction, of a clip RENDER had made, saw
+        # None and returned without ever asking. Learning has therefore never
+        # run on the case it exists for.
+        saved = self._clips.get(clip_id)
         applied = saved.remake if saved else None
         if applied is None:
             return
 
         source = self._sources.get(original.source_id) if original.source_id else None
         try:
-            known = self._preferences.for_source(original.source_id)
             with context.broker.acquire(f"ollama:{client.model}", NOTE_LLM_VRAM_MB):
                 proposed = propose(
                     client,
@@ -645,7 +719,7 @@ class RemakeStage:
         scratch: Path,
         voice: AppliedVoice | None,
         spoken_text: str,
-    ) -> tuple[Path, list[PanKeyframe]]:
+    ) -> _Picture:
         """Produce the video, re-cutting from source only when it is needed.
 
         The cheap path is deliberately first and deliberately common: a
@@ -659,19 +733,28 @@ class RemakeStage:
         )
         reframing = options.framing is not None
         retrimming = bool(options.start_delta_sec or options.end_delta_sec)
+        # Hiding something is a change to the pixels, so it takes the expensive
+        # path even when nothing else does. Regions remembered against the
+        # source do NOT force it: the clip being corrected was rendered with
+        # them already, so applying them again would cost a re-cut to change
+        # nothing.
+        hiding = options.obscure is not None and (
+            options.obscure.auto or bool(options.obscure.regions)
+        )
 
-        if not (reframing or retrimming or rebuilding_captions):
+        if not (reframing or retrimming or rebuilding_captions or hiding):
             existing = Path(original.local_path)
             if not existing.is_file():
                 raise RemakeStageError(
                     f"the clip's file is gone from this machine ({existing.name}), and this "
                     "remake does not re-cut from the source, so there is nothing to work from."
                 )
-            return existing, []
+            return _Picture(path=existing, keyframes=[], obscured=[])
 
         source = self._source_media(original)
         media = probe(source, ffprobe_bin=self._settings.ffprobe_bin)
 
+        obscure = self._hide(options, original, source, cut)
         keyframes = self._keyframes(options, source, cut, media)
         subtitles = self._subtitles(
             options, original, cut, profile, scratch, voice, spoken_text, context
@@ -685,6 +768,7 @@ class RemakeStage:
                 framing=options.framing,
                 keyframes=keyframes,
                 subtitles_expr=_subtitles_filter(subtitles),
+                obscure=obscure,
             )
         except FramingError as exc:
             raise RemakeStageError(str(exc)) from exc
@@ -711,7 +795,90 @@ class RemakeStage:
         except RenderError as exc:
             raise RemakeStageError(f"the reframed clip would not render: {exc}") from exc
 
-        return destination, keyframes
+        return _Picture(
+            path=destination,
+            keyframes=keyframes,
+            obscured=list(obscure.regions or []) if obscure is not None else [],
+        )
+
+    # ── What to hide ─────────────────────────────────────────────────────────
+
+    def _hide(
+        self, options: RemakeOptions, original: Clip, source: Path, cut: _Cut
+    ) -> ObscureOptions | None:
+        """Every rectangle this render should cover, from all three places.
+
+        Precedence is the argument, and `merge_regions` enforces it: a box the
+        reviewer drew for this clip beats one remembered against the channel,
+        which beats one detection found. They are the same kind of thing by the
+        time they get here, which is what makes correcting a bad box an ordinary
+        remake rather than a special case.
+
+        Regions remembered against the source are applied on **every** re-cut,
+        asked for or not. Without that, reframing a clip whose logo was hidden
+        at RENDER would quietly bring the logo back, and the reviewer would have
+        no way to connect the reappearance to the reframe they asked for.
+        """
+        request = options.obscure
+        drawn = list(request.regions or []) if request is not None else []
+        remembered = self._remembered(original)
+        found: list[ObscureRegion] = []
+
+        if request is not None and request.auto:
+            try:
+                detection = detect_static_regions(
+                    source,
+                    start_sec=cut.start_sec,
+                    end_sec=cut.end_sec,
+                    where=self._obscure_where,
+                    avoid=[*drawn, *remembered],
+                    ffmpeg_bin=self._settings.ffmpeg_bin,
+                )
+            except ObscureError as exc:
+                # Not a failure of the remake. Everything else that was asked
+                # for is still worth doing, and the reviewer can draw the box.
+                log.warning("remake.obscure_failed", error=str(exc))
+                self._notes.append(f"the footage could not be searched for fixed marks: {exc}")
+            else:
+                found = detection.regions
+                if not found and not drawn and not remembered:
+                    self._refusals.append(
+                        f"nothing fixed enough to hide was found — {detection.reason}. "
+                        "Draw a box on the clip page and remake, and it goes exactly there."
+                        if detection.reason
+                        else "nothing fixed enough to hide was found in this clip. "
+                        "Draw a box on the clip page and remake, and it goes exactly there."
+                    )
+
+        regions = merge_regions(drawn, remembered, found)
+        if not regions:
+            return None
+
+        log.info(
+            "remake.hiding",
+            count=len(regions),
+            drawn=len(drawn),
+            remembered=len(remembered),
+            found=len(found),
+        )
+        return ObscureOptions(
+            auto=False,  # already resolved; the renderer never looks again
+            regions=regions[:6],
+            method=request.method if request is not None else None,
+            strength=request.strength if request is not None else None,
+        )
+
+    def _remembered(self, original: Clip) -> list[ObscureRegion]:
+        """What this channel always needs hidden, if anyone has said so."""
+        if not original.source_id:
+            return []
+        source = self._sources.get(original.source_id)
+        if source is None or source.obscure is None:
+            return []
+        return [
+            region.model_copy(update={"found": ObscureFound.REMEMBERED})
+            for region in source.obscure.regions or []
+        ]
 
     def _keyframes(
         self, options: RemakeOptions, source: Path, cut: _Cut, media: MediaInfo
@@ -926,6 +1093,7 @@ class RemakeStage:
         options: RemakeOptions,
         interpretation: NoteInterpretation | None,
         keyframes: list[PanKeyframe],
+        obscured: list[ObscureRegion],
         voice: AppliedVoice | None,
         cut: _Cut,
         scratch: Path,
@@ -994,6 +1162,7 @@ class RemakeStage:
                 interpretation=interpretation,
                 framing_mode=mode,
                 keyframes=keyframes,
+                obscured=obscured[:6],
                 voice=voice,
                 refusals=self._refusals[:8],
                 warnings=self._notes[:8],
@@ -1025,7 +1194,7 @@ class RemakeStage:
         )
         self._clips.save(remade, preview=preview)
 
-        detail = _describe(mode, voice, keyframes)
+        detail = _describe(mode, voice, keyframes, obscured)
         if self._notes:
             detail = f"{detail} ({'; '.join(self._notes)})"
         log.info(
@@ -1149,7 +1318,12 @@ def _subtitles_filter(path: Path | None) -> str | None:
     return f"subtitles='{text}'"
 
 
-def _describe(mode: FramingMode, voice: AppliedVoice | None, keyframes: list[PanKeyframe]) -> str:
+def _describe(
+    mode: FramingMode,
+    voice: AppliedVoice | None,
+    keyframes: list[PanKeyframe],
+    obscured: list[ObscureRegion] = [],  # noqa: B006 - read, never mutated
+) -> str:
     parts: list[str] = []
     if mode is FramingMode.TRACK:
         parts.append(f"tracked across {len(keyframes)} points")
@@ -1160,4 +1334,7 @@ def _describe(mode: FramingMode, voice: AppliedVoice | None, keyframes: list[Pan
     if voice is not None:
         spoken = f"{voice.voice} in {voice.language}"
         parts.append(f"re-voiced ({spoken}{', translated' if voice.translated else ''})")
+    if obscured:
+        where = ", ".join(describe_region(region) for region in obscured[:3])
+        parts.append(f"hid {len(obscured)} fixed mark{'s' if len(obscured) > 1 else ''}: {where}")
     return ", ".join(parts) if parts else "re-cut"

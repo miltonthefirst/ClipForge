@@ -143,7 +143,21 @@ export class ReviewPage implements OnDestroy {
     return clips.filter((c) => keep.has(c.id));
   }
 
-  /** Keep this preference, or turn it down for good. */
+  /**
+   * Keep this preference, or turn it down for good.
+   *
+   * Accepting one that carries rectangles does a second write, onto the source,
+   * and that is where the difference between a note and a rule lives. The rest
+   * of what gets learned here is a sentence, and a sentence earns its keep by
+   * going into the next note-reading prompt. A rectangle cannot: it has to be
+   * somewhere RENDER reads *before* a clip exists, or the reviewer keeps being
+   * asked about a logo they have already decided about.
+   *
+   * Ordered so the rule lands first. If the source write is refused, the
+   * preference stays PROPOSED and can be accepted again — which is recoverable.
+   * Accepting first and failing second would leave a preference marked kept
+   * that does nothing, with nothing on screen to say so.
+   */
   protected async decidePreference(
     preference: Preference,
     status: 'ACCEPTED' | 'REJECTED',
@@ -152,6 +166,15 @@ export class ReviewPage implements OnDestroy {
     if (!uid) return;
     this.busy.set(preference.id);
     try {
+      const regions = preference.defaults?.obscure?.regions ?? [];
+      if (status === 'ACCEPTED' && preference.sourceId && regions.length) {
+        await this.store.rememberObscure(preference.sourceId, {
+          auto: false,
+          regions,
+          method: null,
+          strength: null,
+        });
+      }
       await this.store.decidePreference(preference.id, uid, status);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));

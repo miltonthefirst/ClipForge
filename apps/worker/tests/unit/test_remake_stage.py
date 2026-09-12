@@ -37,6 +37,12 @@ from clipforge_contracts import (
     JobStatus,
     JobType,
     Lane,
+    LlmRemakeNote,
+    NoteAudio,
+    NoteCrop,
+    NoteFraming,
+    NoteObscure,
+    NoteTopic,
     PanKeyframe,
     RemakeOptions,
     ReviewState,
@@ -46,6 +52,7 @@ from clipforge_contracts import (
     StageName,
     StageStatus,
     SubScores,
+    UnsupportedAsk,
     VoiceCaptions,
     VoiceOptions,
 )
@@ -692,3 +699,63 @@ def test_refusals_do_not_leak_from_one_remake_to_the_next(tmp_path: Path) -> Non
     assert remade is not None
     assert remade.refusals == [], "a previous job's refusal must not reach this clip"
     assert remade.warnings == []
+
+
+def test_a_refusal_from_the_note_reaches_the_clip(tmp_path: Path) -> None:
+    """The field exists so a reviewer can tell "refused" from "broken".
+
+    It was doing the opposite. The per-run reset sat BELOW the call that reads
+    the note, so every refusal and every conflict was collected and then thrown
+    away one line later, and the clips in the live project show it: a remake
+    whose note asked for a watermark to be removed reached the reviewer with
+    `refusals: null`.
+    """
+
+    class Reading:
+        """Just enough of OllamaClient for `interpret_note`."""
+
+        model = "fake"
+
+        def is_available(self) -> bool:
+            return True
+
+        def generate_structured(self, **_: object) -> LlmRemakeNote:
+            return LlmRemakeNote(
+                topics=[NoteTopic.FRAMING],
+                framing_mode=NoteFraming.FIT,
+                crop=NoteCrop.NOT_MENTIONED,
+                language="NONE",
+                audio=NoteAudio.NOT_MENTIONED,
+                start_delta_sec=0,
+                end_delta_sec=0,
+                obscure=NoteObscure.NOT_MENTIONED,
+                unsupported=[UnsupportedAsk.SLOW_MOTION],
+                summary="fit the whole frame",
+            )
+
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+    stage._client_factory = Reading  # type: ignore[assignment]
+
+    stage.run(context(job(RemakeOptions(notes="fit it, and slow it down a bit"))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert [str(refusal.root) for refusal in remade.refusals or []] == [
+        "changing the speed of the footage is not supported"
+    ]
+
+
+def test_a_corner_hint_does_not_leak_from_one_remake_to_the_next(tmp_path: Path) -> None:
+    """A note naming a corner narrows the next job's search, if it survives."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, _, _ = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+    stage._obscure_where = "TOP_LEFT"
+
+    stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
+
+    assert stage._obscure_where is None

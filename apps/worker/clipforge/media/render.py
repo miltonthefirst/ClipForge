@@ -28,6 +28,8 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from clipforge_contracts import ObscureOptions
+
 from clipforge.media.ffprobe import MediaInfo
 from clipforge.media.framing import build_video_chain
 from clipforge.media.profiles import OUTPUT_HEIGHT, OUTPUT_WIDTH, RenderProfile
@@ -83,6 +85,12 @@ class RenderRequest:
     # here rather than handing over the pieces and hoping they recombine the
     # same way. None keeps the ordinary path, which is every CLIP render.
     video_filter: str | None = None
+    # Regions to hide, in source coordinates. Set by RENDER from the source's
+    # own `obscure` setting — a channel bug is a property of the channel, so a
+    # clip cut from it should arrive with the bug already gone rather than
+    # arrive wrong and cost a correction. Ignored when `video_filter` is set,
+    # because REMAKE has already folded its own regions into that graph.
+    obscure: ObscureOptions | None = None
 
     @property
     def duration_sec(self) -> float:
@@ -98,7 +106,12 @@ class RenderResult:
     height: int = OUTPUT_HEIGHT
 
 
-def build_filtergraph(media: MediaInfo, profile: RenderProfile, subtitles: Path | None) -> str:
+def build_filtergraph(
+    media: MediaInfo,
+    profile: RenderProfile,
+    subtitles: Path | None,
+    obscure: ObscureOptions | None = None,
+) -> str:
     """The video filter chain, as one string.
 
     Built separately from the ffmpeg invocation so it can be asserted on in a
@@ -122,6 +135,7 @@ def build_filtergraph(media: MediaInfo, profile: RenderProfile, subtitles: Path 
             # output pixels and mean the same thing on any source resolution.
             f"subtitles='{_escape_filter_path(subtitles)}'" if subtitles is not None else None
         ),
+        obscure=obscure,
     )
 
 
@@ -170,7 +184,8 @@ def render_clip(
         "-i",
         str(request.source),
         "-vf",
-        request.video_filter or build_filtergraph(media, request.profile, request.subtitles),
+        request.video_filter
+        or build_filtergraph(media, request.profile, request.subtitles, request.obscure),
         "-af",
         loudnorm,
         "-c:v",

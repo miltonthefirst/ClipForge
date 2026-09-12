@@ -188,14 +188,22 @@ musical instrumental for you"* — and speaking it would be worse than silence, 
 it is refused with a reason. The same applies to a script that reads like an
 instruction rather than a line to say, a window with almost no speech in it, and
 a translation that comes back as the language it started in. Anything the note
-asks for that ClipForge cannot do — removing a watermark, changing the music,
-slow motion — is listed on the finished clip instead of being quietly skipped.
+asks for that ClipForge cannot do — changing the music, slow motion, cutting the
+middle out — is listed on the finished clip instead of being quietly skipped.
 
 > **What re-voicing is not for.** It changes the soundtrack and nothing else. On third-party footage
 > the picture is still the picture, and it is the picture a rights holder's matching runs against.
 > This helps with a claim on commentary or music, and it opens a clip to an audience that does not
 > speak the original language. It does **not** make footage safe to publish — see
 > [Rights and responsible use](#rights-and-responsible-use).
+
+**It can hide what the broadcaster burnt in.** Tick *Hide logos, watermarks and burnt-in text* on
+a remake, or just write "blur the channel logo" in the note, and it looks through the footage for
+anything holding still while the rest of the picture moves — a channel bug, a score bar, a clock
+— and covers it. A small mark is rebuilt from its surroundings and disappears completely; a larger
+one is blurred. What was hidden is listed on the finished clip, and one button turns it into a
+property of the channel: after that, every clip cut from that source arrives with it already gone.
+See [ADR-0015](docs/adr/0015-hiding-what-is-burnt-into-the-picture.md).
 
 **One clip is one row.** A remake produces a new clip, but the queue shows the latest version of
 each and keeps the rest as history — what you asked for at each step, what the machine made of it,

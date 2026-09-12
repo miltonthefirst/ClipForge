@@ -14,18 +14,25 @@ from clipforge.analysis.preferences import (
     apply_to_options,
     build_prompt,
     dedupe,
+    propose_obscure,
     standing_guidance,
 )
 from clipforge_contracts import (
     AppliedRemake,
     AppliedVoice,
+    Clip,
+    ClipLocation,
     CropAnchor,
     FramingMode,
     NoteTopic,
+    ObscureFound,
+    ObscureOptions,
+    ObscureRegion,
     Preference,
     PreferenceScope,
     PreferenceStatus,
     RemakeDefaults,
+    ReviewState,
     SpeechMode,
 )
 
@@ -46,6 +53,28 @@ def preference(**overrides: object) -> Preference:
         "created_at": NOW,
     }
     return Preference(**{**defaults, **overrides})
+
+
+# A CANAL+ bug, as detection measured it on the real football source.
+BUG = ObscureRegion(x_pct=83.8, y_pct=4.4, w_pct=13.8, h_pct=8.9)
+
+CLIP = Clip(
+    id="clip-1",
+    uid="user-1",
+    candidate_id="cand-1",
+    source_id="src-1",
+    location=ClipLocation.LOCAL,
+    local_path="clip.mp4",
+    review=ReviewState.PENDING,
+    created_at=NOW,
+)
+
+
+def learned(preference: Preference) -> list[ObscureRegion]:
+    """The rectangles a proposal carries, without four optional hops."""
+    assert preference.defaults is not None
+    assert preference.defaults.obscure is not None
+    return preference.defaults.obscure.regions or []
 
 
 # ── Never propose the same thing twice ──────────────────────────────────────
@@ -212,3 +241,85 @@ def test_a_crop_preference_round_trips() -> None:
     held = preference(defaults=RemakeDefaults(crop=CropAnchor.LEFT))
     assert held.defaults is not None
     assert held.defaults.crop is CropAnchor.LEFT
+
+
+# ── Learning a rectangle, which no model is asked about ──────────────────────
+
+
+def test_marks_found_on_a_clip_become_a_proposal_about_the_channel() -> None:
+    """The one lesson written without consulting the model.
+
+    Everything else here is a sentence. This one is a rectangle, and a 4B asked
+    where a channel puts its logo produces plausible coordinates, which blur the
+    crowd and leave the logo.
+    """
+    proposed = propose_obscure([BUG], clip=CLIP, uid="user-1", known=[])
+    assert len(proposed) == 1
+    assert proposed[0].category is NoteTopic.OBSCURE
+    assert proposed[0].scope is PreferenceScope.SOURCE
+    assert proposed[0].status is PreferenceStatus.PROPOSED
+    assert learned(proposed[0])[0].x_pct == BUG.x_pct
+
+
+def test_a_learned_region_is_marked_as_remembered() -> None:
+    """So a clip that arrives already clean says which of the three it was."""
+    proposed = propose_obscure([BUG], clip=CLIP, uid="user-1", known=[])
+    assert learned(proposed[0])[0].found is ObscureFound.REMEMBERED
+
+
+def test_the_lesson_says_where_the_marks_are_in_words() -> None:
+    """A proposal nobody can read is a proposal nobody accepts."""
+    lesson = propose_obscure([BUG], clip=CLIP, uid="user-1", known=[])[0].lesson
+    assert "top right" in lesson
+    assert "every clip" in lesson
+
+
+def test_a_region_already_remembered_teaches_nothing_new() -> None:
+    assert (
+        propose_obscure(
+            [BUG.model_copy(update={"found": ObscureFound.REMEMBERED})],
+            clip=CLIP,
+            uid="user-1",
+            known=[],
+        )
+        == []
+    )
+
+
+def test_the_same_mark_measured_again_is_not_proposed_again() -> None:
+    """Compared by overlap, not by wording.
+
+    The same logo measured on two clips comes back a tenth of a percent apart,
+    and a text comparison would propose it on every single correction.
+    """
+    held = preference(
+        category=NoteTopic.OBSCURE,
+        lesson="this source burns a mark into the top right",
+        defaults=RemakeDefaults(obscure=ObscureOptions(regions=[BUG])),
+    )
+    nearly = BUG.model_copy(update={"x_pct": BUG.x_pct + 0.4, "y_pct": BUG.y_pct + 0.3})
+    assert propose_obscure([nearly], clip=CLIP, uid="user-1", known=[held]) == []
+
+
+def test_a_mark_that_was_turned_down_stays_turned_down() -> None:
+    held = preference(
+        category=NoteTopic.OBSCURE,
+        status=PreferenceStatus.REJECTED,
+        lesson="this source burns a mark into the top right",
+        defaults=RemakeDefaults(obscure=ObscureOptions(regions=[BUG])),
+    )
+    assert propose_obscure([BUG], clip=CLIP, uid="user-1", known=[held]) == []
+
+
+def test_a_second_mark_is_worth_proposing_even_when_one_is_held() -> None:
+    held = preference(
+        category=NoteTopic.OBSCURE,
+        lesson="this source burns a mark into the top right",
+        defaults=RemakeDefaults(obscure=ObscureOptions(regions=[BUG])),
+    )
+    plate = ObscureRegion(x_pct=2.5, y_pct=2.2, w_pct=30.0, h_pct=8.9)
+    assert len(propose_obscure([BUG, plate], clip=CLIP, uid="user-1", known=[held])) == 1
+
+
+def test_nothing_found_proposes_nothing() -> None:
+    assert propose_obscure([], clip=CLIP, uid="user-1", known=[]) == []

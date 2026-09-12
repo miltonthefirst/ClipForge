@@ -50,6 +50,16 @@ export type SpeechMode = 'REPLACE' | 'BED';
  */
 export type VoiceCaptions = 'REBUILD' | 'KEEP' | 'REMOVE';
 /**
+ * How a region of the picture is hidden.
+ *
+ * Four, because one is wrong for the two cases that matter. DELOGO reconstructs the area from the pixels around it and is far and away the best answer for a small broadcast bug — at channel-logo size it reads as though the logo was never there. It is also the worst answer for anything large: it has nothing to reconstruct from, so a wide region becomes a smear that draws more attention than the thing it hid. BLUR and PIXELATE stay honest at any size, which is what a burnt-in caption needs. BOX is a flat rectangle, for when honest is the point.
+ */
+export type ObscureMethod = 'BLUR' | 'PIXELATE' | 'DELOGO' | 'BOX';
+/**
+ * Where a region came from. Worth recording because the three fail differently: AUTO can be in the wrong place, MANUAL cannot but costs the reviewer a drag, and REMEMBERED is a decision made once about a channel and applied ever after — which is the one that needs to be visible when it goes wrong, because nobody asked for it on this clip.
+ */
+export type ObscureFound = 'AUTO' | 'MANUAL' | 'REMEMBERED';
+/**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
@@ -148,7 +158,7 @@ export type PreferenceScope = 'SOURCE' | 'EVERYTHING';
 /**
  * An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.
  */
-export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING';
+export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE';
 /**
  * PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
  */
@@ -168,7 +178,23 @@ export type NoteCrop = 'NOT_MENTIONED' | 'centre' | 'left' | 'right';
  */
 export type NoteAudio = 'NOT_MENTIONED' | 'REPLACE' | 'KEEP_UNDER';
 /**
+ * Whether a note asks for something in the picture to be hidden, and where it says that thing is.
+ *
+ * One enum rather than a boolean plus a location, because the location is only meaningful when the answer is yes and a small model given two fields answers them independently — producing 'no, and it is in the top left'. ANYWHERE is the common answer: reviewers write 'blur the canal+' and expect the system to know where the canal+ is, which is exactly what detection is for. A corner narrows the search and is worth having when they do say.
+ */
+export type NoteObscure =
+  | 'NOT_MENTIONED'
+  | 'ANYWHERE'
+  | 'TOP_LEFT'
+  | 'TOP_RIGHT'
+  | 'BOTTOM_LEFT'
+  | 'BOTTOM_RIGHT'
+  | 'TOP'
+  | 'BOTTOM';
+/**
  * Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
+ *
+ * REMOVE_WATERMARK and REMOVE_OVERLAY_TEXT are kept as members and are no longer refusals: both are now answered by ObscureOptions, and the note reader routes them to the OBSCURE topic. They stay in the enum because stored readings contain them, and because detection can still come back empty — at which point 'nothing static was found to hide' is the honest refusal and this is what it is recorded as.
  */
 export type UnsupportedAsk =
   | 'REMOVE_WATERMARK'
@@ -325,6 +351,10 @@ export interface RemakeOptions {
    */
   endDeltaSec?: number;
   /**
+   * Hide a fixed part of the picture — a channel bug, a scoreboard, a burnt-in caption. Null asks for nothing; an object with `auto` false and no regions is also nothing, and is what an untouched control sends.
+   */
+  obscure?: ObscureOptions | null;
+  /**
    * Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
    */
   profile?: string | null;
@@ -410,6 +440,76 @@ export interface VoiceOptions {
    */
   duckDb?: number | null;
   captions?: VoiceCaptions;
+}
+/**
+ * The request to hide things: find them, or hide these, or both.
+ *
+ * `auto` and `regions` compose rather than exclude. A reviewer who has drawn one box and also wants the scoreboard found gets both; detection skips anything that overlaps a box already listed, so asking for both never produces two filters over the same pixels.
+ */
+export interface ObscureOptions {
+  /**
+   * Look for static logos and burnt-in text in the footage and hide what is found. Costs a short decode pass over the cut and no model.
+   */
+  auto?: boolean;
+  /**
+   * Rectangles to hide whatever detection thinks. Always applied.
+   *
+   * Six, and the number is the security rule's rather than this schema's: each region is a filter pass, and a rule that validates them positionally has a thousand-expression budget that eight of them exceeded. Detection returns at most four.
+   *
+   * @maxItems 6
+   */
+  regions?:
+    | []
+    | [ObscureRegion]
+    | [ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion];
+  /**
+   * Override the method for regions that do not name one, found or listed.
+   */
+  method?: ObscureMethod | null;
+  strength?: number | null;
+}
+/**
+ * One rectangle of the SOURCE frame to hide, in percentages of its width and height.
+ *
+ * Percentages rather than pixels, and of the source rather than the output, for one reason each. Percentages survive a source that turns out to be 1280 wide when the box was drawn on a 1920 poster. Source coordinates are the only frame a logo is actually fixed in: the output is cropped, panned and scaled, so a box in output coordinates would have to move with the window, and a tracked window would drag the blur across the picture.
+ */
+export interface ObscureRegion {
+  /**
+   * Left edge, as a percentage of source width.
+   */
+  xPct: number;
+  /**
+   * Top edge, as a percentage of source height.
+   */
+  yPct: number;
+  wPct: number;
+  hPct: number;
+  /**
+   * Null lets the worker choose by size, which is the better default: DELOGO for a region small enough to reconstruct, BLUR for anything bigger.
+   */
+  method?: ObscureMethod | null;
+  /**
+   * How hard to hide it, 0 to 1. Scales blur radius and pixel size; ignored by DELOGO, which either reconstructs the area or does not. Null means the default, which is strong enough that the shape underneath is not readable.
+   */
+  strength?: number | null;
+  /**
+   * Seconds from the START OF THE CLIP, not of the source, because that is the timebase the render's filters see. Null means from the beginning. For a bug that only appears during play.
+   */
+  fromSec?: number | null;
+  toSec?: number | null;
+  /**
+   * What this is, in a couple of words — 'channel bug, top left'. Shown next to the box in the history, so a remembered region is identifiable a month later.
+   */
+  label?: string | null;
+  found?: ObscureFound | null;
+  /**
+   * For an AUTO region: how static and how distinct it was. Recorded rather than thresholded away, because a low-confidence find that turns out to be right is the evidence for loosening the threshold, and one that is wrong is the evidence for the reviewer to drag the box instead.
+   */
+  confidence?: number | null;
 }
 /**
  * What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
@@ -514,6 +614,12 @@ export interface Source {
    */
   localPath?: string | null;
   sizeBytes?: number | null;
+  /**
+   * Hidden on every clip cut from this source, including the first. Set by accepting a learned preference, or from the remake form's 'always do this for this channel'.
+   *
+   * This is the difference between a feature and a chore. A channel bug is a property of the channel: found once on one clip, it is in the same place on every clip that channel will ever produce, and a reviewer who has to ask for it each time is doing the system's bookkeeping. Applied at RENDER, so a clip arrives for review already clean rather than arriving wrong and needing a correction.
+   */
+  obscure?: ObscureOptions | null;
   /**
    * Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with.
    */
@@ -755,6 +861,19 @@ export interface AppliedRemake {
     | [string, string, string, string, string, string]
     | [string, string, string, string, string, string, string]
     | [string, string, string, string, string, string, string, string];
+  /**
+   * The regions actually hidden, with where each came from. This is the record that makes a wrong box fixable: a reviewer who can see that detection put the rectangle two percent too high can drag it and remake, rather than describing the error in prose to a model that will guess again.
+   *
+   * @maxItems 6
+   */
+  obscured?:
+    | []
+    | [ObscureRegion]
+    | [ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion]
+    | [ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion, ObscureRegion];
   /**
    * The window actually cut from the source, after any nudge. Absolute source seconds, matching Candidate.
    */
@@ -1033,6 +1152,10 @@ export interface RemakeDefaults {
   crop?: CropAnchor | null;
   language?: string | null;
   speechMode?: SpeechMode | null;
+  /**
+   * Regions to hide on future clips. The one kind of preference whose value is mostly in its coordinates rather than in its sentence: a channel's bug does not move, so the box found once is the box forever, and accepting it is what turns 'blur the canal+' from an instruction into a property of the channel.
+   */
+  obscure?: ObscureOptions | null;
 }
 /**
  * The schema-constrained answer to "what, if anything, should be remembered from this correction?". Handed to Ollama as a format constraint like the other LLM shapes here.
@@ -1142,6 +1265,7 @@ export interface LlmRemakeNote {
    * Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer.
    */
   endDeltaSec: number;
+  obscure: NoteObscure;
   /**
    * Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
    *

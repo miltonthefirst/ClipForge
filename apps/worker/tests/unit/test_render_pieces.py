@@ -15,7 +15,7 @@ from clipforge.media.captions import build_ass, group_into_cues
 from clipforge.media.ffprobe import MediaInfo
 from clipforge.media.profiles import CaptionStyle, RenderProfile, load_profile
 from clipforge.media.render import build_filtergraph
-from clipforge_contracts import TranscriptWord
+from clipforge_contracts import ObscureOptions, ObscureRegion, TranscriptWord
 
 STYLE = CaptionStyle()
 
@@ -272,3 +272,36 @@ def test_a_windows_path_is_escaped_for_the_filter_parser(tmp_path: Path) -> None
 
     assert "\\:" in graph or ":" not in str(subs.resolve())
     assert "\\\\" not in graph, "backslashes should have become forward slashes"
+
+
+# ── What a channel always hides ──────────────────────────────────────────────
+
+
+def test_a_plain_render_has_no_hiding_in_it() -> None:
+    """Every clip cut before this existed must still produce the same graph."""
+    assert "delogo" not in build_filtergraph(landscape(), RenderProfile(), None)
+    assert "overlay" not in build_filtergraph(landscape(), RenderProfile(), None)
+
+
+def test_a_sources_standing_marks_are_applied_as_it_cuts() -> None:
+    """The difference between a feature and a chore.
+
+    A broadcaster's bug is in the same place on every video it publishes, so a
+    clip should arrive already clean rather than arrive wrong and cost a
+    correction.
+    """
+    bug = ObscureRegion(x_pct=83.8, y_pct=4.4, w_pct=13.8, h_pct=8.9)
+    graph = build_filtergraph(landscape(), RenderProfile(), None, ObscureOptions(regions=[bug]))
+    assert "delogo=x=1608:y=48:w=264:h=96" in graph
+
+
+def test_hiding_comes_before_the_crop_on_the_render_path_too() -> None:
+    bug = ObscureRegion(x_pct=83.8, y_pct=4.4, w_pct=13.8, h_pct=8.9)
+    graph = build_filtergraph(landscape(), RenderProfile(), None, ObscureOptions(regions=[bug]))
+    assert graph.index("delogo=") < graph.index("crop=")
+
+
+def test_a_source_with_nothing_to_hide_changes_nothing() -> None:
+    plain = build_filtergraph(landscape(), RenderProfile(), None)
+    empty = build_filtergraph(landscape(), RenderProfile(), None, ObscureOptions())
+    assert plain == empty

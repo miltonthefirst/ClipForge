@@ -39,9 +39,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
-from clipforge_contracts import FitFill, Framing, FramingMode, PanKeyframe
+from clipforge_contracts import FitFill, Framing, FramingMode, ObscureOptions, PanKeyframe
 
 from clipforge.media.ffprobe import MediaInfo
+from clipforge.media.obscure import OBSCURE_LABEL, build_obscure_chains
 from clipforge.media.profiles import OUTPUT_HEIGHT, OUTPUT_WIDTH, RenderProfile
 
 __all__ = [
@@ -85,6 +86,7 @@ def build_video_chain(
     framing: Framing | None,
     keyframes: Sequence[PanKeyframe] = (),
     subtitles_expr: str | None = None,
+    obscure: ObscureOptions | None = None,
 ) -> str:
     """The complete video filtergraph for one clip, ready for `-vf`.
 
@@ -96,6 +98,14 @@ def build_video_chain(
     canvas means compositing the frame over a blurred copy of itself, and one
     input cannot be used twice in a single chain. Everything appended afterwards
     belongs to the last chain, which is the one carrying the finished picture.
+
+    Anything being hidden goes in **front of all of it**, because
+    `clipforge.media.obscure` works in source coordinates and this function's
+    first act is to stop those coordinates meaning anything. A logo the crop
+    then throws away has been blurred for nothing, which costs a filter and no
+    correctness; blurring after the crop would mean transforming the box by
+    whatever the framing did, and under TRACK that is a different transform on
+    every frame.
     """
     mode = _mode(framing)
 
@@ -132,6 +142,35 @@ def build_video_chain(
         tail.append(subtitles_expr)
     if tail:
         chains[-1] = ",".join([chains[-1], *tail])
+
+    hidden: list[str] = []
+    if obscure is not None and obscure.regions:
+        if not media.width or not media.height:
+            # A region is a percentage of dimensions nobody could read, so there
+            # is no honest place to put the box. Failing beats rendering a clip
+            # that silently still has the thing on it — the whole point of this
+            # feature is that "it came back with the logo still there" stops
+            # being a thing that happens without explanation.
+            raise FramingError(
+                "something was to be hidden in this clip, but the source's dimensions "
+                "could not be read — and a region is measured against them, so there "
+                "is no way to know where to put it"
+            )
+        hidden = build_obscure_chains(
+            obscure.regions,
+            width=media.width,
+            height=media.height,
+            default_method=obscure.method,
+            default_strength=obscure.strength,
+        )
+    if hidden:
+        # The framing's first chain reads what the last obscure chain wrote
+        # rather than the graph's input. Prefixing the label is all it takes
+        # for both the single-chain forms and for FIT, whose first chain is a
+        # split and whose last is the one the tail was just appended to.
+        chains[0] = f"[{OBSCURE_LABEL}]{chains[0]}"
+        chains = hidden + chains
+
     return ";".join(chains)
 
 

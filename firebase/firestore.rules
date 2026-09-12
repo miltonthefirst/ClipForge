@@ -331,12 +331,65 @@ service cloud.firestore {
                 );
     }
 
+    // What to hide in the picture: rectangles, in percentages of the SOURCE
+    // frame, plus a flag asking the worker to go and find some.
+    //
+    // **This is written against an evaluation budget, not for elegance.** A
+    // Firestore rule may evaluate a thousand expressions and no more, and the
+    // first version of this — eleven named keys and a typed range check on
+    // every field, unrolled over eight regions — exceeded it, denying a write
+    // that was perfectly valid with an error naming neither the field nor the
+    // reason. So it checks the two things only the rule can check, and leaves
+    // the rest to the worker's own schema, which rejects an unknown method or
+    // an out-of-range strength with a message that says so.
+    //
+    // What only the rule can check is the **key set** — a field nobody
+    // recognises is how something gets smuggled past a validator — and the
+    // **geometry**, because a zero-width rectangle is clamped to nothing on the
+    // worker and would hide neither the logo nor the reason it was not hidden.
+    //
+    // The cap is six because each region becomes a split/crop/overlay triple or
+    // a delogo in the filtergraph AND a full-frame filter pass at encode time.
+    // Detection never returns more than four, and no broadcast carries six
+    // marks, so this is headroom rather than a limit anyone meets.
+    function obscureRegionOk(region) {
+      return region.keys().hasOnly(
+               ['xPct', 'yPct', 'wPct', 'hPct', 'method', 'strength',
+                'fromSec', 'toSec', 'label', 'found', 'confidence'])
+             && region.xPct >= 0 && region.yPct >= 0
+             && region.wPct > 0 && region.hPct > 0
+             && region.xPct + region.wPct <= 100
+             && region.yPct + region.hPct <= 100;
+    }
+
+    function obscureRegionsOk(regions) {
+      // Rules have no map over a list, so the members are checked positionally.
+      // Short-circuiting means the ordinary one- or two-region write evaluates
+      // almost none of this.
+      return regions.size() <= 6
+             && (regions.size() < 1 || obscureRegionOk(regions[0]))
+             && (regions.size() < 2 || obscureRegionOk(regions[1]))
+             && (regions.size() < 3 || obscureRegionOk(regions[2]))
+             && (regions.size() < 4 || obscureRegionOk(regions[3]))
+             && (regions.size() < 5 || obscureRegionOk(regions[4]))
+             && (regions.size() < 6 || obscureRegionOk(regions[5]));
+    }
+
+    function obscureOk(obscure) {
+      return obscure == null
+             || (
+                  obscure.keys().hasOnly(['auto', 'regions', 'method', 'strength'])
+                  && (obscure.get('regions', null) == null
+                      || obscureRegionsOk(obscure.regions))
+                );
+    }
+
     function remakeOptionsOk() {
       let options = request.resource.data.get('remakeOptions', null);
       return options != null
              && options.keys().hasOnly(
                   ['notes', 'interpretNotes', 'framing', 'voice',
-                   'startDeltaSec', 'endDeltaSec', 'profile'])
+                   'startDeltaSec', 'endDeltaSec', 'profile', 'obscure'])
              && (options.get('notes', null) == null
                  || (options.notes is string && options.notes.size() <= 2000))
              && (options.get('interpretNotes', null) == null || options.interpretNotes is bool)
@@ -357,7 +410,8 @@ service cloud.firestore {
                  || (options.endDeltaSec is number
                      && options.endDeltaSec >= -30 && options.endDeltaSec <= 30))
              && framingOk(options.get('framing', null))
-             && voiceOk(options.get('voice', null));
+             && voiceOk(options.get('voice', null))
+             && obscureOk(options.get('obscure', null));
     }
 
     // What the operator chose for one specific upload: title, description,
@@ -489,7 +543,23 @@ service cloud.firestore {
     match /sources/{sourceId} {
       allow read: if isApproved();
       allow create: if ownsIncoming();
-      allow update, delete: if false;
+      allow delete: if false;
+
+      // `obscure` is the one field on a source a person owns, and it is here
+      // rather than on each clip because what it describes is a property of the
+      // channel: a broadcaster's bug is in the same place on every video it
+      // will ever publish, so the rectangle is worth recording once against the
+      // source and applying at RENDER ever after.
+      //
+      // Everything else about a source is a fact about a file — its hash, its
+      // path on the worker, how large it is — and a client that could write
+      // those could point a render at a file nobody ingested. So the field set
+      // is pinned to exactly one name, and `uid` is compared so the write
+      // cannot also reassign ownership.
+      allow update: if isApproved()
+                    && changed().hasOnly(['obscure'])
+                    && request.resource.data.uid == resource.data.uid
+                    && obscureOk(request.resource.data.get('obscure', null));
 
       // Transcripts are expensive to produce and are cached by content hash.
       // Nothing about them is user-editable.

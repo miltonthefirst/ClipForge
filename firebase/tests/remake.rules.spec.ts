@@ -12,6 +12,7 @@ import {
   createTestEnvironment,
   pendingClip,
   queuedJob,
+  source,
   userProfile,
 } from './helpers.js';
 
@@ -44,6 +45,7 @@ beforeEach(async () => {
   await seed(`users/${ALICE}`, userProfile(ALICE));
   await seed(`users/${BOB}`, userProfile(BOB));
   await seed('clips/clip-1', pendingClip(ALICE, { id: 'clip-1' }));
+  await seed('sources/src-1', source(ALICE));
 });
 
 const aliceDb = () => testEnv.authenticatedContext(ALICE).firestore();
@@ -120,7 +122,7 @@ describe('what a remake may ask for', () => {
   });
 
   it('accepts a keyframe list within the cap', async () => {
-    const points = Array.from({ length: 8 }, (_, i) => ({ atSec: i, xPct: 10 * i }));
+    const points = Array.from({ length: 6 }, (_, i) => ({ atSec: i, xPct: 10 * i }));
     await assertSucceeds(
       create(aliceDb(), remakeJob(ALICE, { framing: { mode: 'PAN', keyframes: points } })),
     );
@@ -240,5 +242,170 @@ describe('who may ask, and for what', () => {
     await assertSucceeds(
       create(bobDb(), remakeJob(BOB, { notes: 'try it tracked' }, { id: 'job-bob' })),
     );
+  });
+});
+
+/**
+ * Hiding a fixed mark: a channel bug, a score bar, a burnt-in caption.
+ *
+ * Each region becomes a split/crop/overlay triple or a delogo in the
+ * filtergraph, so the rule caps how many may be asked for and checks that the
+ * percentages are percentages. A region with a negative width collapses to
+ * nothing on the worker, which would hide neither the logo nor the reason.
+ */
+describe('what a remake may ask to hide', () => {
+  const region = (overrides: Record<string, unknown> = {}) => ({
+    xPct: 83.8,
+    yPct: 4.4,
+    wPct: 13.8,
+    hPct: 8.9,
+    ...overrides,
+  });
+
+  it('accepts asking the worker to go and find the marks itself', async () => {
+    await assertSucceeds(
+      create(
+        aliceDb(),
+        remakeJob(ALICE, { notes: 'blur the canal+', obscure: { auto: true } }),
+      ),
+    );
+  });
+
+  it('accepts a rectangle the reviewer drew', async () => {
+    await assertSucceeds(
+      create(aliceDb(), remakeJob(ALICE, { obscure: { regions: [region()] } })),
+    );
+  });
+
+  it('accepts a method and a strength on the region', async () => {
+    await assertSucceeds(
+      create(
+        aliceDb(),
+        remakeJob(ALICE, {
+          obscure: { regions: [region({ method: 'DELOGO', strength: 0.9, label: 'canal+' })] },
+        }),
+      ),
+    );
+  });
+
+  it('refuses a rectangle that runs off the frame', async () => {
+    await assertFails(
+      create(aliceDb(), remakeJob(ALICE, { obscure: { regions: [region({ xPct: 140 })] } })),
+    );
+  });
+
+  it('refuses a rectangle with no width, which would hide nothing silently', async () => {
+    await assertFails(
+      create(aliceDb(), remakeJob(ALICE, { obscure: { regions: [region({ wPct: 0 })] } })),
+    );
+  });
+
+  it('accepts a method it does not itself check, which the worker rejects', async () => {
+    /**
+     * Deliberate. Validating the enum here costs expressions the rule does not
+     * have (see `obscureRegionOk`), and an unrecognised method fails on the
+     * worker against the generated model with a message naming the field. The
+     * rule's job is the key set and the geometry.
+     */
+    await assertSucceeds(
+      create(
+        aliceDb(),
+        remakeJob(ALICE, { obscure: { regions: [region({ method: 'INPAINT' })] } }),
+      ),
+    );
+  });
+
+  it('refuses a field nobody recognises, on the region', async () => {
+    await assertFails(
+      create(aliceDb(), remakeJob(ALICE, { obscure: { regions: [region({ feather: 4 })] } })),
+    );
+  });
+
+  it('refuses more regions than the filtergraph should carry', async () => {
+    await assertFails(
+      create(
+        aliceDb(),
+        remakeJob(ALICE, {
+          obscure: { regions: Array.from({ length: 7 }, () => region()) },
+        }),
+      ),
+    );
+  });
+
+  it('accepts exactly the cap, so the limit is the number it says', async () => {
+    await assertSucceeds(
+      create(
+        aliceDb(),
+        remakeJob(ALICE, {
+          obscure: { regions: Array.from({ length: 6 }, () => region()) },
+        }),
+      ),
+    );
+  });
+
+  it('checks every region, not just the first', async () => {
+    await assertFails(
+      create(
+        aliceDb(),
+        remakeJob(ALICE, {
+          obscure: { regions: [region(), region(), region({ hPct: -3 })] },
+        }),
+      ),
+    );
+  });
+});
+
+/**
+ * The half that makes it stop being a chore.
+ *
+ * A broadcaster's bug is in the same place on every video it publishes, so the
+ * rectangle belongs to the source rather than to a clip. This is the only field
+ * on a source a person may write, and the rule pins it to that one name: the
+ * rest of a source describes a file on the worker, and a client that could
+ * write those could point a render somewhere nobody ingested.
+ */
+describe('remembering what to hide on a whole channel', () => {
+  const always = { regions: [{ xPct: 83.8, yPct: 4.4, wPct: 13.8, hPct: 8.9 }] };
+
+  const update = (db: ReturnType<typeof aliceDb>, data: Record<string, unknown>) =>
+    setDoc(doc(db, 'sources', 'src-1'), { ...source(ALICE), ...data });
+
+  it('lets the owner say what this channel always burns into the picture', async () => {
+    await assertSucceeds(update(aliceDb(), { obscure: always }));
+  });
+
+  it('lets another approved member say it too, because the workspace is shared', async () => {
+    await assertSucceeds(update(bobDb(), { obscure: always }));
+  });
+
+  it('lets it be cleared', async () => {
+    await seed('sources/src-1', { ...source(ALICE), obscure: always });
+    await assertSucceeds(update(aliceDb(), { obscure: null }));
+  });
+
+  it('refuses a write that also moves the file', async () => {
+    await assertFails(
+      setDoc(doc(aliceDb(), 'sources', 'src-1'), {
+        ...source(ALICE),
+        obscure: always,
+        localPath: 'P:/somewhere/else.mp4',
+      }),
+    );
+  });
+
+  it('refuses a write that reassigns who owns the source', async () => {
+    await assertFails(
+      setDoc(doc(aliceDb(), 'sources', 'src-1'), { ...source(BOB), obscure: always }),
+    );
+  });
+
+  it('refuses a rectangle it would not accept on a job either', async () => {
+    await assertFails(
+      update(aliceDb(), { obscure: { regions: [{ xPct: 0, yPct: 0, wPct: 0, hPct: 9 }] } }),
+    );
+  });
+
+  it('still refuses deleting a source', async () => {
+    await assertFails(update(aliceDb(), { provider: 'youtube' }));
   });
 });

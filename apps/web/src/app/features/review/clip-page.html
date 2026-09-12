@@ -593,6 +593,58 @@
               · {{ applied.keyframes.length }} point(s)
             }
           </p>
+          <!-- What was hidden, and where it came from.
+               This is the record that makes a wrong box fixable, and the place
+               a standing rule becomes visible: a clip that arrives with a
+               corner reconstructed and nothing anywhere saying why looks like a
+               fault. -->
+          @if (applied.obscured?.length) {
+            <div class="mt-3 rounded-lg bg-panel-soft p-2">
+              <p class="text-xs font-medium text-ink">
+                Hidden: {{ applied.obscured.length }} fixed mark{{
+                  applied.obscured.length > 1 ? 's' : ''
+                }}
+              </p>
+              <ul class="mt-1 space-y-0.5 text-xs text-ink-muted">
+                @for (region of applied.obscured; track $index) {
+                  <li>
+                    · {{ describeRegion(region) }}
+                    @if (region.found === 'REMEMBERED') {
+                      <span class="text-ink-subtle">— this channel always hides it</span>
+                    } @else if (region.found === 'AUTO') {
+                      <span class="text-ink-subtle">— found in the footage</span>
+                    }
+                  </li>
+                }
+              </ul>
+              <!-- The action that stops this being a chore. A broadcaster's bug
+                   is in the same place on every video it will ever publish, so
+                   once this is pressed RENDER applies it as it cuts and the
+                   next clip arrives clean rather than arriving wrong. -->
+              @if (marksAreRemembered()) {
+                <p class="mt-2 text-xs text-ink-subtle">
+                  Every clip from this channel has these hidden.
+                  <button
+                    type="button"
+                    class="text-accent-ink hover:underline disabled:opacity-50"
+                    [disabled]="busy()"
+                    (click)="forgetMarks()"
+                  >
+                    Stop doing that
+                  </button>
+                </p>
+              } @else {
+                <button
+                  type="button"
+                  class="mt-2 rounded-lg border border-line-strong px-3 py-1.5 text-xs text-ink hover:bg-line disabled:opacity-50"
+                  [disabled]="busy()"
+                  (click)="rememberMarks()"
+                >
+                  Always hide these on this channel
+                </button>
+              }
+            </div>
+          }
           @if (applied.voice; as voice) {
             <p class="mt-1 text-sm text-ink-muted">
               {{ voice.voice }} in {{ voice.language }}
@@ -776,6 +828,52 @@
                   Reframing re-cuts from the original video, so it needs the source still on the
                   worker. Clips outlive sources, so this can fail on an older clip — changing only
                   the voice works either way.
+                </p>
+              }
+            </fieldset>
+
+            <!-- Hiding what is burnt into the picture.
+                 One switch and no drawing tool, because the regions are
+                 percentages of the SOURCE frame and this app never sees one:
+                 media does not leave the worker, and the poster it does see is
+                 the finished 9:16 clip, already cropped out of those
+                 coordinates. Finding them is therefore the worker's job, and
+                 what this offers is the asking and the keeping. -->
+            <fieldset>
+              <label class="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  [checked]="remakeHideMarks()"
+                  (change)="remakeHideMarks.set(!remakeHideMarks())"
+                />
+                Hide logos, watermarks and burnt-in text
+              </label>
+              <p class="mt-1 text-xs text-ink-subtle">
+                Looks through the footage for anything that holds still while the rest of the
+                picture moves — a channel bug, a score bar, a clock — and covers it. Small marks
+                are rebuilt from their surroundings; larger ones are blurred.
+              </p>
+
+              @if (clip.remake?.obscured?.length) {
+                <label class="mt-2 flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    [checked]="remakeKeepMarks()"
+                    (change)="remakeKeepMarks.set(!remakeKeepMarks())"
+                  />
+                  Hide the same places as last time
+                </label>
+                <p class="mt-1 text-xs text-ink-subtle">
+                  Reuses the exact rectangles rather than looking again, which can land a little
+                  differently on a different cut.
+                </p>
+              }
+
+              @if (alwaysHidden().length) {
+                <p class="mt-2 rounded-lg bg-panel-soft p-2 text-xs text-ink-muted">
+                  This channel already hides
+                  {{ alwaysHidden().length }} place{{ alwaysHidden().length > 1 ? 's' : '' }} on
+                  every clip, whether or not you ask here.
                 </p>
               }
             </fieldset>

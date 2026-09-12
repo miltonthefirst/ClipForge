@@ -22,6 +22,8 @@ import type {
   MusicCaptions,
   MusicMode,
   MusicOptions,
+  ObscureOptions,
+  ObscureRegion,
   PanKeyframe,
   Publication,
   PublishOptions,
@@ -95,6 +97,32 @@ const REMAKE_LANGUAGES: readonly { tag: string; label: string; voice: string }[]
   { tag: 'ko', label: 'Korean', voice: 'kf_yuna' },
   { tag: 'zh', label: 'Mandarin', voice: 'zf_xiaobei' },
 ];
+
+/**
+ * Are two rectangles the same mark, measured twice?
+ *
+ * Detection is a measurement, not a lookup: the same channel bug found on two
+ * different cuts of the same match comes back a few tenths of a percent apart.
+ * Comparing for equality would say a standing rule had not been applied when
+ * it plainly had, so this compares within a tolerance wide enough to cover the
+ * grid detection rounds to and far narrower than the gap between two marks.
+ */
+function upToSix(regions: readonly ObscureRegion[]): ObscureOptions['regions'] {
+  /**
+   * `maxItems` in the schema becomes a tuple union in TypeScript, so the field
+   * is typed `[] | [R] | [R, R] | ...` and nothing produced by `.map()` is
+   * assignable to it however long it is. Capped and cast once here rather than
+   * at each call site, and the cap is the one the security rule enforces.
+   */
+  return regions.slice(0, 6) as ObscureOptions['regions'];
+}
+
+function sameRegion(a: ObscureRegion, b: ObscureRegion): boolean {
+  const near = (x: number, y: number) => Math.abs(x - y) < 2.5;
+  return (
+    near(a.xPct, b.xPct) && near(a.yPct, b.yPct) && near(a.wPct, b.wPct) && near(a.hPct, b.hPct)
+  );
+}
 
 function defaultVoiceFor(tag: string): string {
   return REMAKE_LANGUAGES.find((l) => l.tag === tag)?.voice ?? 'af_heart';
@@ -290,6 +318,29 @@ export class ClipPage implements OnDestroy {
   }
   protected readonly remakeKeyframes = signal<PanKeyframe[]>([]);
 
+  /**
+   * Hide what is burnt into the picture: a channel bug, a score bar, a
+   * watermark.
+   *
+   * A single switch, and deliberately not a drawing tool. The regions are
+   * percentages of the SOURCE frame and this app never sees a source frame —
+   * media does not leave the worker (decision D3), and the poster it does see is
+   * the finished 9:16 clip, which has already been cropped and scaled out of
+   * those coordinates. So finding them is the worker's job, and what this page
+   * offers instead is the record of what was found and one button to keep it.
+   */
+  protected readonly remakeHideMarks = signal(false);
+
+  /**
+   * Carry forward exactly what the last remake hid, rather than looking again.
+   *
+   * Worth its own control because detection is a measurement: run on a
+   * different cut of the same match it can land a few tenths of a percent
+   * apart, and a reviewer who was happy with the last one should be able to
+   * have that one rather than a new opinion.
+   */
+  protected readonly remakeKeepMarks = signal(false);
+
   protected readonly remakeVoiceOn = signal(false);
   protected readonly remakeLanguage = signal('es');
   protected readonly remakeVoiceName = signal('');
@@ -327,6 +378,8 @@ export class ClipPage implements OnDestroy {
       (this.remakeNotes().trim().length > 0 ||
         this.remakeFraming() !== 'UNCHANGED' ||
         this.remakeVoiceOn() ||
+        this.remakeHideMarks() ||
+        this.remakeKeepMarks() ||
         this.remakeStartDelta() !== 0 ||
         this.remakeEndDelta() !== 0),
   );
@@ -346,6 +399,7 @@ export class ClipPage implements OnDestroy {
           this.clip.set(clip);
           if (clip?.storagePath) this.uploadRequested.set(false);
           if (clip) void this.hydrate(clip);
+          void this.loadStandingMarks(clip?.sourceId);
         },
         (err) => this.error.set(err.message),
       );
@@ -529,6 +583,8 @@ export class ClipPage implements OnDestroy {
     this.remakeCrop.set(null);
     this.remakeKeyframes.set([]);
     this.remakeVoiceOn.set(false);
+    this.remakeHideMarks.set(false);
+    this.remakeKeepMarks.set(false);
     this.remakeScript.set('');
     this.remakeStartDelta.set(0);
     this.remakeEndDelta.set(0);
@@ -745,6 +801,74 @@ export class ClipPage implements OnDestroy {
     this.remakeKeyframes.set(applied.keyframes.slice(0, 60));
   }
 
+  /**
+   * The rectangles this source hides on every clip, including ones not yet cut.
+   *
+   * Loaded rather than assumed, because a standing rule set weeks ago is
+   * invisible otherwise: a clip arrives with a corner reconstructed, nobody
+   * asked for it on this clip, and there is nothing anywhere that says why.
+   */
+  protected readonly alwaysHidden = signal<ObscureRegion[]>([]);
+
+  /** Is what this remake hid already what the channel always hides? */
+  protected readonly marksAreRemembered = computed(() => {
+    const hidden = this.clip()?.remake?.obscured ?? [];
+    const standing = this.alwaysHidden();
+    if (!hidden.length || !standing.length) return false;
+    return hidden.every((region) => standing.some((kept) => sameRegion(region, kept)));
+  });
+
+  private async loadStandingMarks(sourceId: string | null | undefined): Promise<void> {
+    if (!sourceId) {
+      this.alwaysHidden.set([]);
+      return;
+    }
+    const source = await this.store.loadSource(sourceId);
+    this.alwaysHidden.set(source?.obscure?.regions ?? []);
+  }
+
+  /**
+   * Promote what this remake hid into a property of the channel.
+   *
+   * The one action that turns this from a thing you ask for into a thing that
+   * has already happened: after it, RENDER applies these as it cuts, so the
+   * next clip from this source arrives clean rather than arriving wrong.
+   */
+  protected async rememberMarks(): Promise<void> {
+    const clip = this.clip();
+    const regions = clip?.remake?.obscured ?? [];
+    if (!clip?.sourceId || !regions.length) return;
+    await this.run('This channel will have these hidden from now on', async () => {
+      await this.store.rememberObscure(clip.sourceId!, {
+        auto: false,
+        regions: upToSix(regions.map((region) => ({ ...region, found: 'REMEMBERED' }))),
+        method: null,
+        strength: null,
+      });
+      await this.loadStandingMarks(clip.sourceId);
+    });
+  }
+
+  /** Stop hiding them on future clips. Clips already cut keep what they have. */
+  protected async forgetMarks(): Promise<void> {
+    const sourceId = this.clip()?.sourceId;
+    if (!sourceId) return;
+    await this.run('Future clips from this channel will be left alone', async () => {
+      await this.store.rememberObscure(sourceId, null);
+      this.alwaysHidden.set([]);
+    });
+  }
+
+  /** "top right (14% x 9%)", the same phrase the worker records. */
+  protected describeRegion(region: ObscureRegion): string {
+    if (region.label) return region.label;
+    const midX = region.xPct + region.wPct / 2;
+    const midY = region.yPct + region.hPct / 2;
+    const down = midY < 40 ? 'top' : midY > 60 ? 'bottom' : 'middle';
+    const across = midX < 40 ? 'left' : midX > 60 ? 'right' : 'centre';
+    return `${down} ${across} (${Math.round(region.wPct)}% x ${Math.round(region.hPct)}%)`;
+  }
+
   protected async remake(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
@@ -788,6 +912,18 @@ export class ClipPage implements OnDestroy {
         : null,
       startDeltaSec: this.remakeStartDelta(),
       endDeltaSec: this.remakeEndDelta(),
+      // Keeping the previous marks and looking for new ones compose: the worker
+      // skips anything it finds that overlaps a region already listed, so
+      // asking for both never puts two filters over the same pixels.
+      obscure:
+        this.remakeHideMarks() || this.remakeKeepMarks()
+          ? {
+              auto: this.remakeHideMarks(),
+              regions: upToSix(this.remakeKeepMarks() ? (clip.remake?.obscured ?? []) : []),
+              method: null,
+              strength: null,
+            }
+          : null,
       profile: null,
     };
 

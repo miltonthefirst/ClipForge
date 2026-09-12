@@ -1055,6 +1055,63 @@ feedback loop, which solves the same problem for adapted prose. See
 
 ---
 
+#### Phase 8d — Hiding what the broadcaster burnt in
+
+**Goal.** Cover a channel bug, a score bar or a watermark, find them without being told where they
+are, and remember them against the channel so nobody has to ask twice.
+
+**Why it jumped the queue.** A reviewer asked for the same thing three times in three separate
+remakes. Every time the note was read correctly, filed as `UnsupportedAsk.REMOVE_WATERMARK`, and
+answered with a clip that still had the Canal+ logo on it. The refusal was honest and useless: a
+pipeline that cuts shorts from broadcast footage and cannot cover a channel bug produces clips that
+cannot be published, which makes this a missing floor rather than a missing feature.
+
+**In scope**
+
+- `clipforge.media.obscure`: find regions that hold still while the rest of the frame does not, and
+  build the filtergraph that hides them — `delogo` for a mark small enough to reconstruct, blur or
+  mosaic for anything larger, a flat box when flat is the point.
+- `ObscureRegion` in percentages of the **source** frame, applied at the head of the graph before
+  any crop, so a tracked window does not drag the blur across the picture.
+- `RemakeOptions.obscure` and `AppliedRemake.obscured`: ask for it, and see exactly what was hidden
+  and where each rectangle came from.
+- `NoteTopic.OBSCURE` and `NoteObscure`, plus **absorbing** `REMOVE_WATERMARK` and
+  `REMOVE_OVERLAY_TEXT` rather than refusing them.
+- `Source.obscure`, applied by RENDER: the rectangles become a property of the channel, so the next
+  clip arrives clean instead of arriving wrong.
+- `propose_obscure`: the one lesson written without consulting the model, because its value is its
+  coordinates.
+
+**Explicitly out of scope.** A rectangle editor in the PWA. The regions are percentages of the
+source frame and the app never sees one — media does not leave the worker, and the poster it does
+see is the finished 9:16 clip, already cropped out of those coordinates. Worth building only if
+detection turns out to miss.
+
+**Exit criteria** — met, 2026-09-13
+
+1. ✅ On the reviewer's own football source, detection finds the Canal+ bug at 0.98 confidence on
+   one cut and 0.96 on another, plus the score bar and the competition clock, with no false
+   positives. The rendered frame has the logo gone.
+2. ✅ All four methods leave nothing readable, and the rest of the frame is byte-identical. 14
+   integration tests against real ffmpeg in `tests/integration/test_obscure_renders.py`.
+3. ✅ A note saying "blur the canal+" turns detection on by both routes — the OBSCURE topic and a
+   model that still files it as impossible — and is not also refused.
+4. ✅ 17 emulator tests hold the write surface: six regions at most, geometry inside the frame, no
+   unrecognised field, and exactly one writable field on a source.
+
+**Two things the first real render taught.** `delogo` over a 30%-wide score bar drew a smear more
+conspicuous than the graphic, so the limits are on the sides as much as the area. And a match
+clock's digits change every second, so only the badge beside them is static — detection covered
+the badge and left "34:37" in the open, which reads as a fault. Two finds at the same height with a
+small gap are now treated as one plate.
+
+**The bug a test measured rather than read.** Pixelation scaled down with `flags=neighbor`, which
+samples one pixel per cell instead of averaging, so a mosaic kept whichever bars it landed on and
+the mark stayed legible while the filtergraph looked correct. See
+[ADR-0015](adr/0015-hiding-what-is-burnt-into-the-picture.md).
+
+---
+
 #### Phase 9 — Analytics and calibration → **v0.2.0**
 
 **Goal.** Close the loop: find out whether the scores predicted anything.

@@ -45,12 +45,16 @@ from clipforge_contracts import (
     LlmPreferenceProposal,
     NoteFraming,
     NoteTopic,
+    ObscureFound,
+    ObscureOptions,
+    ObscureRegion,
     Preference,
     PreferenceScope,
     PreferenceStatus,
     RemakeDefaults,
 )
 
+from clipforge.media.obscure import describe_region, overlaps
 from clipforge.models.ollama import OllamaClient, OllamaError
 from clipforge.observability import get_logger
 
@@ -62,6 +66,7 @@ __all__ = [
     "apply_to_options",
     "dedupe",
     "propose",
+    "propose_obscure",
     "standing_guidance",
 ]
 
@@ -238,6 +243,73 @@ def propose(
         )
     log.info("preferences.proposed", count=len(proposed))
     return proposed
+
+
+def propose_obscure(
+    regions: list[ObscureRegion],
+    *,
+    clip: Clip,
+    uid: str,
+    known: list[Preference],
+) -> list[Preference]:
+    """The one lesson that is written without asking the model anything.
+
+    Everything else here is a sentence, and a sentence is what a language model
+    is for. This one is a rectangle. A 4B asked where a channel puts its logo
+    will produce plausible coordinates, and plausible coordinates blur the
+    crowd and leave the logo — so the numbers come from the detector that
+    actually measured them, and the model is not consulted at all.
+
+    It follows that this fires on a remake with **no note**, unlike the rest of
+    learning. Ticking a box and getting three marks found is exactly the moment
+    to ask whether they should always be hidden, and there is no sentence
+    involved anywhere in it.
+    """
+    novel = [region for region in regions if region.found is not ObscureFound.REMEMBERED]
+    if not novel or not clip.source_id:
+        return []
+
+    for preference in known:
+        if preference.category is not NoteTopic.OBSCURE:
+            continue
+        held = (
+            preference.defaults.obscure.regions
+            if preference.defaults and preference.defaults.obscure
+            else None
+        ) or []
+        # Compared by overlap rather than by wording. The same logo measured on
+        # two different clips comes back a tenth of a percent apart, and a
+        # text comparison would propose it again every single time.
+        if held and all(any(overlaps(region, seen) for seen in held) for region in novel):
+            return []
+
+    where = " and ".join(describe_region(region) for region in novel[:3])
+    mark = "mark" if len(novel) == 1 else "marks"
+    return [
+        Preference(
+            id=uuid.uuid4().hex,
+            uid=uid,
+            scope=PreferenceScope.SOURCE,
+            source_id=clip.source_id,
+            category=NoteTopic.OBSCURE,
+            lesson=(
+                f"This source burns {len(novel)} fixed {mark} into the picture "
+                f"— {where} — so hide them on every clip cut from it."
+            )[:400],
+            defaults=RemakeDefaults(
+                obscure=ObscureOptions(
+                    auto=False,
+                    regions=[
+                        region.model_copy(update={"found": ObscureFound.REMEMBERED})
+                        for region in novel[:6]
+                    ],
+                )
+            ),
+            status=PreferenceStatus.PROPOSED,
+            from_clip_id=clip.id,
+            created_at=datetime.now(UTC),
+        )
+    ]
 
 
 def _defaults_from(item: object) -> RemakeDefaults | None:
