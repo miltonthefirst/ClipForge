@@ -58,7 +58,7 @@ def read(client: OllamaClient, note: str, options: RemakeOptions | None = None) 
     answer, _ = interpret_note(
         client, note, options=options, clip_language="English", duration_sec=42
     )
-    return apply_interpretation(options, answer)
+    return apply_interpretation(options, answer).options
 
 
 # ── Each note reaches the control it is about ────────────────────────────────
@@ -116,12 +116,16 @@ def test_a_note_about_one_thing_changes_only_that_thing(client: OllamaClient) ->
 
 
 def test_a_stated_setting_survives_the_model_disagreeing_with_it(client: OllamaClient) -> None:
-    """The reviewer's explicit choice is not up for reinterpretation.
+    """A framing the reviewer chose is not up for reinterpretation.
 
-    The note argues for TRACK and the framing says FIT. FIT wins, because it
-    was stated — and this is enforced in `apply_interpretation` rather than
-    asked for in the prompt, since a prompt is a request and this has to be a
-    guarantee.
+    The note argues for TRACK and the framing says FIT. FIT wins, because the
+    reviewer picked a framing mode deliberately and the note adds nothing the
+    form does not already say.
+
+    Language is the deliberate exception, covered below: a note that names a
+    language beats the form, because a dropdown cannot tell a choice from a
+    default and a note saying "in English" beside a form left on Spanish is not
+    a real disagreement.
     """
     stated = RemakeOptions(
         notes="it keeps losing the ball, track it",
@@ -134,14 +138,42 @@ def test_a_stated_setting_survives_the_model_disagreeing_with_it(client: OllamaC
     assert resolved.framing is not None
     assert resolved.framing.mode is FramingMode.FIT
     assert resolved.voice is not None
-    assert resolved.voice.language == "en-gb"
+    assert resolved.voice.language == "en-gb", "the note said nothing about language"
+
+
+def test_a_note_naming_a_language_beats_the_form(client: OllamaClient) -> None:
+    """The failure this rule was changed for, verbatim.
+
+    A reviewer wrote *"Let's change commentary voice to English and also try to
+    follow the ball"* against a form whose language dropdown was still on its
+    default, and the clip came back in Spanish. The old rule treated an
+    untouched control as a deliberate choice; it cannot be, and the note is both
+    more specific and more recent.
+    """
+    stated = RemakeOptions(
+        notes="Let's change commentary voice to English and also try to follow the ball",
+        voice=VoiceOptions(
+            mode=SpeechMode.REPLACE,
+            voice="ef_dora",
+            language="es",
+            captions=VoiceCaptions.REBUILD,
+        ),
+    )
+    answer, _ = interpret_note(client, stated.notes or "", options=stated, duration_sec=17)
+    applied = apply_interpretation(stated, answer)
+
+    assert applied.options.voice is not None
+    assert applied.options.voice.language.lower().startswith("en"), (
+        "the note asked for English twice"
+    )
+    assert applied.conflicts, "the disagreement must be recorded, not resolved quietly"
 
 
 def test_an_unreadable_note_does_not_stop_the_remake(client: OllamaClient) -> None:
     """A note nobody could parse is not a reason to refuse fully-specified work."""
     stated = RemakeOptions(notes="hmm", framing=Framing(mode=FramingMode.FIT))
     answer, interpretation = interpret_note(client, "hmm", options=stated)
-    resolved = apply_interpretation(stated, answer)
+    resolved = apply_interpretation(stated, answer).options
     assert resolved.framing is not None
     assert resolved.framing.mode is FramingMode.FIT
     assert interpretation.summary

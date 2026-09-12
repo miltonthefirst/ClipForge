@@ -25,6 +25,8 @@ from clipforge.stages.base import StageContext
 from clipforge.stages.remake import RemakeStage, RemakeStageError
 from clipforge.store.blobs import BlobRef
 from clipforge_contracts import (
+    AppliedRemake,
+    AppliedVoice,
     Candidate,
     Clip,
     ClipLocation,
@@ -372,7 +374,7 @@ def test_a_voice_with_nothing_to_say_is_refused(tmp_path: Path) -> None:
             captions=VoiceCaptions.REMOVE,
         )
     )
-    with pytest.raises(RemakeStageError, match="nothing for the voice to say"):
+    with pytest.raises(RemakeStageError, match="nothing to say"):
         stage.run(context(job(options)))
 
 
@@ -583,3 +585,110 @@ def test_a_narration_that_overruns_still_produces_a_clip_of_the_right_length(
     saved = clips.saved[0]
     assert saved.duration_sec == pytest.approx(8.0, abs=0.3)
     assert saved.remake.voice.speech_duration_sec == pytest.approx(20.0)  # type: ignore[union-attr]
+
+
+# ── Feedback that is understood but cannot be met ────────────────────────────
+
+
+def test_a_script_that_is_really_feedback_is_refused(tmp_path: Path) -> None:
+    """A synthesiser read a reviewer's own instruction aloud on the live project.
+
+    The notes box and the script box look alike and only one is obviously "for
+    the machine", so this is a reasonable mistake to make. Refusing it with an
+    explanation costs a sentence; accepting it cost a clip.
+    """
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, _, _ = build(
+        tmp_path,
+        the_clip=clip(tmp_path, local_path=str(existing)),
+        the_source=source(None),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+    options = RemakeOptions(
+        voice=VoiceOptions(
+            mode=SpeechMode.REPLACE,
+            voice="af_heart",
+            language="en",
+            translate=False,
+            script="Cut the Canal plus caption or watermark in the upper right corner.",
+            captions=VoiceCaptions.KEEP,
+        )
+    )
+    with pytest.raises(RemakeStageError, match="notes box"):
+        stage.run(context(job(options)))
+
+
+def test_a_remake_of_a_revoiced_clip_speaks_from_what_that_clip_says(tmp_path: Path) -> None:
+    """Not from the footage its ancestor was cut out of.
+
+    A remake asking for English, applied to a clip that had already been
+    re-voiced into Spanish, went back to the original French source transcript.
+    The lineage reset on every generation, so "translate this clip" translated
+    something the reviewer had already replaced.
+    """
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    already_voiced = clip(
+        tmp_path,
+        local_path=str(existing),
+        derived_from_clip_id="clip-0",
+        remake=AppliedRemake(
+            framing_mode=FramingMode.AS_RENDERED,
+            start_sec=100.0,
+            end_sec=108.0,
+            voice=AppliedVoice(
+                mode=SpeechMode.REPLACE,
+                voice="ef_dora",
+                language="es",
+                engine="stub-tts",
+                translated=True,
+                spoken_text="Que golazo desde treinta metros.",
+            ),
+        ),
+    )
+    synth = StubSynth()
+    stage, _, _ = build(
+        tmp_path,
+        the_clip=already_voiced,
+        the_source=source(None),
+        the_candidate=candidate(),
+        synth=synth,
+    )
+    options = RemakeOptions(
+        voice=VoiceOptions(
+            mode=SpeechMode.REPLACE,
+            voice="bf_emma",
+            language="en-gb",
+            translate=False,
+            captions=VoiceCaptions.KEEP,
+        )
+    )
+    stage.run(context(job(options)))
+
+    assert synth.spoken == ["Que golazo desde treinta metros."], (
+        "it must start from what this clip actually says"
+    )
+
+
+def test_refusals_do_not_leak_from_one_remake_to_the_next(tmp_path: Path) -> None:
+    """The stage is built once per worker and reused for every job.
+
+    Refusals and warnings accumulate on the instance while a job runs, so
+    without a reset the second clip of the day would carry the first clip's
+    complaints — which is worse than saying nothing, because it is wrong and
+    looks authoritative.
+    """
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+    # Left over from a previous job on the same stage instance.
+    stage._refusals.append("removing a watermark is not something ClipForge can do")
+    stage._notes.append("the recogniser was unsure of these words")
+
+    stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.refusals == [], "a previous job's refusal must not reach this clip"
+    assert remade.warnings == []

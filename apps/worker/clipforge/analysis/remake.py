@@ -38,6 +38,8 @@ were tried first and each failed in its own direction.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from clipforge_contracts import (
     CropAnchor,
     Framing,
@@ -64,9 +66,11 @@ log = get_logger(__name__)
 __all__ = [
     "NOTE_PROMPT_VERSION",
     "NOTE_SYSTEM_PROMPT",
+    "Applied",
     "Translation",
     "apply_interpretation",
     "build_note_prompt",
+    "describe",
     "interpret_note",
     "translate",
 ]
@@ -89,8 +93,15 @@ Set the control itself, not just a description of it. If the note is about \
 where the picture looks, `framingMode` must have a value; if it names a side, \
 `crop` must have one too. The `summary` is written last and only describes \
 settings you have already made — a summary that claims a change no field \
-records is the one failure that matters here, because nothing downstream reads \
-the summary."""
+records is the one failure that matters here.
+
+Some notes ask for things none of these controls can do: removing a watermark \
+or burnt-in text, changing the music, zooming onto one person, slow motion, \
+cutting the middle out, recolouring. When that happens, name it in \
+`unsupported` and leave the controls alone. Do NOT bend the request into the \
+nearest control that exists — "remove the watermark in the top right" is not a \
+framing change, and answering it with one produces a clip that is differently \
+wrong and still has the watermark."""
 
 _FRAMING_GUIDE = """\
 Framing controls which part of a wide video ends up in a tall clip:
@@ -144,6 +155,13 @@ def build_note_prompt(
         "",
         "Every field must have a value. Use NOT_MENTIONED, NONE or 0 to say the "
         "note did not raise something — those are answers, not blanks.",
+        "",
+        "Last, `unsupported`: anything the note asks for that NONE of the controls "
+        "above can express — a watermark or burnt-in text to remove, different "
+        "music, a zoom onto one person, slow motion, cutting the middle out, a "
+        "colour change. Usually empty. Listing something here does not stop the "
+        "remake; it records the part that will not be met so the reviewer is told "
+        "rather than left to notice.",
     ]
     if clip_language:
         lines.append(f"\nThe clip is currently in {clip_language}.")
@@ -216,19 +234,43 @@ def interpret_note(
     )
 
 
-def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -> RemakeOptions:
-    """Fold the model's reading into the request, without overriding it.
+@dataclass(frozen=True)
+class Applied:
+    """The resolved request, and an honest account of how it got that way."""
 
-    Pure, and the precedence lives here rather than in the prompt: a prompt
-    asking a model not to touch something is a request, and this needs to be a
-    property of the system. Every branch is "the reviewer did not say, and the
-    model did" — there is deliberately no branch in which a stated value loses.
+    options: RemakeOptions
+    # One phrase per change the note caused, in the reviewer's terms. This is
+    # what the recorded summary is built from, rather than the model's own
+    # description of its answer: settings outside the declared topics are
+    # discarded after the model has already written about them, so its wording
+    # claimed a crop that was never applied on two of the first five remakes.
+    changes: list[str]
+    # Where the note and the form disagreed, and which won.
+    conflicts: list[str]
+
+
+def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -> Applied:
+    """Fold the model's reading into the request.
+
+    The rule used to be "never override anything the reviewer stated", which
+    sounds right and was wrong in practice, because a form cannot tell a choice
+    from a default. A note reading *"change commentary voice to English"* was
+    overruled by a language dropdown nobody had touched, and the clip came back
+    in Spanish.
+
+    So the rule is now narrower and better matched to how the two inputs are
+    produced: **the note wins where it names something explicitly**, the form
+    fills in everything the note is silent about, and any disagreement is
+    recorded and shown rather than resolved quietly. The note is written last,
+    while watching the clip, and is the most specific thing the reviewer said.
     """
     if answer is None:
-        return options
+        return Applied(options=options, changes=[], conflicts=[])
 
     updated = options.model_copy(deep=True)
     topics = set(answer.topics or ())
+    changes: list[str] = []
+    conflicts: list[str] = []
 
     # Everything below is gated on the topic the model declared. Without this
     # the reading of "put it in Spanish" also arrives carrying a framing mode
@@ -237,15 +279,26 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
     mode = _framing_mode(answer.framing_mode) if NoteTopic.FRAMING in topics else None
     crop = (
         answer.crop.value
-        if NoteTopic.FRAMING in topics and answer.crop is not NoteCrop.NOT_MENTIONED
+        if NoteTopic.FRAMING in topics
+        and answer.crop is not NoteCrop.NOT_MENTIONED
+        and _names_a_side(options.notes)
         else None
     )
 
     # ── Framing ──────────────────────────────────────────────────────────────
     if updated.framing is None and (mode is not None or crop is not None):
+        resolved_mode = mode or FramingMode.AS_RENDERED
+        # An anchor only means anything to a window that holds still. Carrying
+        # one onto TRACK or FIT records a setting the renderer ignores, which
+        # then shows up in the clip's history as a decision nobody made.
+        keep_crop = crop if resolved_mode is FramingMode.AS_RENDERED else None
         updated.framing = Framing(
-            mode=mode or FramingMode.AS_RENDERED,
-            crop=CropAnchor(crop) if crop is not None else None,
+            mode=resolved_mode,
+            crop=CropAnchor(keep_crop) if keep_crop is not None else None,
+        )
+        changes.append(
+            f"set the framing to {updated.framing.mode.value}"
+            + (f" on the {keep_crop}" if keep_crop else "")
         )
     elif (
         updated.framing is not None
@@ -257,10 +310,11 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
         # so filling it in completes the reviewer's instruction rather than
         # contradicting it.
         updated.framing.crop = CropAnchor(crop)
+        changes.append(f"anchored the window to the {crop}")
 
     # ── Voice ────────────────────────────────────────────────────────────────
     language = _language(answer.language) if NoteTopic.LANGUAGE in topics else None
-    if updated.voice is None and language is not None:
+    if language is not None:
         try:
             resolved = kokoro_language(language)
         except SpeechError:
@@ -269,27 +323,93 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
             # request over a voice nobody can speak helps no one.
             log.info("remake.note_language_unsupported", language=language)
         else:
-            updated.voice = VoiceOptions(
-                mode=(
-                    SpeechMode.BED
-                    if NoteTopic.AUDIO in topics and answer.audio is NoteAudio.KEEP_UNDER
-                    else SpeechMode.REPLACE
-                ),
-                voice=DEFAULT_VOICES.get(resolved, "af_heart"),
-                language=language,
-                translate=True,
-                captions=VoiceCaptions.REBUILD,
-            )
+            if updated.voice is None:
+                updated.voice = VoiceOptions(
+                    mode=(
+                        SpeechMode.BED
+                        if NoteTopic.AUDIO in topics and answer.audio is NoteAudio.KEEP_UNDER
+                        else SpeechMode.REPLACE
+                    ),
+                    voice=DEFAULT_VOICES.get(resolved, "af_heart"),
+                    language=language,
+                    translate=True,
+                    captions=VoiceCaptions.REBUILD,
+                )
+                changes.append(f"set the language to {language}")
+            elif _different_language(updated.voice.language, language):
+                # The note named a language and the form named another. The
+                # note wins: it is the more specific and more recent statement,
+                # and a form cannot distinguish a deliberate choice from an
+                # untouched default. Recorded either way, because being
+                # overruled silently is how the reviewer lost an argument they
+                # did not know they were having.
+                conflicts.append(
+                    f"the note asked for {language} and the form said "
+                    f"{updated.voice.language}; the note was used"
+                )
+                updated.voice.language = language
+                updated.voice.voice = DEFAULT_VOICES.get(resolved, updated.voice.voice)
+                changes.append(f"set the language to {language}")
 
     # ── Trims ────────────────────────────────────────────────────────────────
     # `0` is this schema's "not mentioned", so a falsy answer never overwrites.
     if NoteTopic.TIMING in topics:
         if not updated.start_delta_sec and answer.start_delta_sec:
             updated.start_delta_sec = answer.start_delta_sec
+            changes.append(f"moved the start by {answer.start_delta_sec:+g}s")
         if not updated.end_delta_sec and answer.end_delta_sec:
             updated.end_delta_sec = answer.end_delta_sec
+            changes.append(f"moved the end by {answer.end_delta_sec:+g}s")
 
-    return updated
+    return Applied(options=updated, changes=changes, conflicts=conflicts)
+
+
+def describe(answer: LlmRemakeNote | None, applied: Applied) -> str:
+    """The sentence recorded on the clip, built from what actually happened.
+
+    The model writes a summary of its own answer, and the caller then discards
+    whatever fell outside the declared topics — so its wording is a description
+    of an intention, not of an outcome. Recording it verbatim told two
+    reviewers their clip had been anchored "to the right" when no crop was ever
+    set. The model's reading is still worth keeping; it is just no longer
+    allowed to be the record of what was done.
+    """
+    read = (answer.summary or "").strip() if answer is not None else ""
+    if applied.changes:
+        did = "; ".join(applied.changes)
+        return f"Read as: {read} Applied: {did}."[:600] if read else f"Applied: {did}."[:600]
+    if read:
+        return f"Read as: {read} Nothing in it changed a setting you had not already chosen."[:600]
+    return "Nothing in the note changed a setting."
+
+
+_SIDE_WORDS = ("left", "right", "centre", "center", "middle", "side")
+
+
+def _names_a_side(note: str | None) -> bool:
+    """Did the reviewer actually mention a side of the frame?
+
+    The model volunteers `crop: right` habitually \u2014 it appeared on notes about
+    following the ball and about a watermark, and on two of the first five real
+    remakes it reached the recorded summary as "and crop to right" when no crop
+    had been applied at all. An anchor is a specific instruction about where to
+    point the window, so requiring the note to contain the word costs nothing
+    and removes a whole class of invented settings.
+    """
+    if not note:
+        return False
+    lowered = note.lower()
+    return any(word in lowered for word in _SIDE_WORDS)
+
+
+def _different_language(a: str, b: str) -> bool:
+    """Do two tags name different languages?
+
+    Compared on the primary subtag: `en-us` and `en-GB` are the same argument
+    about accents, not about language, and overruling a reviewer's chosen
+    accent because the note said "English" would be the same mistake in reverse.
+    """
+    return a.strip().lower().split("-")[0] != b.strip().lower().split("-")[0]
 
 
 def _framing_mode(value: NoteFraming) -> FramingMode | None:

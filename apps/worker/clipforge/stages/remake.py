@@ -68,11 +68,18 @@ from clipforge_contracts import (
     SpeechMode,
     StageName,
     Transcript,
+    UnsupportedAsk,
     VoiceCaptions,
     VoiceOptions,
 )
 
-from clipforge.analysis.remake import apply_interpretation, interpret_note, translate
+from clipforge.analysis.feedback import ClipFacts, speakability, translation_landed
+from clipforge.analysis.remake import (
+    apply_interpretation,
+    describe,
+    interpret_note,
+    translate,
+)
 from clipforge.config import Settings
 from clipforge.media.captions import build_ass, group_into_cues
 from clipforge.media.ffprobe import MediaInfo, probe
@@ -101,6 +108,35 @@ __all__ = ["RemakeStage", "RemakeStageError"]
 # Reading one short note. Far smaller than a full analysis run, but it is the
 # same model, so it takes the same lease against the same budget.
 NOTE_LLM_VRAM_MB = 3600
+
+# What to tell the reviewer about each thing the system cannot do. Phrased as an
+# answer to the person who asked, not as a capability gap, because that is what
+# they are reading: a sentence next to a clip that is missing something.
+_UNSUPPORTED_WORDING: dict[UnsupportedAsk, str] = {
+    UnsupportedAsk.REMOVE_WATERMARK: (
+        "removing a watermark or channel bug is not something ClipForge can do "
+        "\u2014 it would need the area painted over, and nothing here does that"
+    ),
+    UnsupportedAsk.REMOVE_OVERLAY_TEXT: (
+        "removing burnt-in text from the source is not possible; captions this "
+        "pipeline added can be removed, but text already in the footage cannot"
+    ),
+    UnsupportedAsk.CHANGE_MUSIC: (
+        "changing the music is a separate job \u2014 use Add music on the clip page, "
+        "which replaces or beds a track and records its rights"
+    ),
+    UnsupportedAsk.ZOOM_ON_SUBJECT: (
+        "zooming onto a particular subject is not supported; the closest is "
+        "Follow the action, which moves the window to wherever the motion is"
+    ),
+    UnsupportedAsk.SLOW_MOTION: "changing the speed of the footage is not supported",
+    UnsupportedAsk.REORDER_OR_CUT_MIDDLE: (
+        "cutting or reordering the middle of a clip is not supported \u2014 only the "
+        "start and end can be moved"
+    ),
+    UnsupportedAsk.COLOUR_OR_GRADE: "colour and grading changes are not supported",
+    UnsupportedAsk.SOMETHING_ELSE: ("part of that request is not something ClipForge can do yet"),
+}
 
 
 class Aligned(Protocol):
@@ -185,6 +221,9 @@ class RemakeStage:
         # alternative is a reviewer looking at an uncaptioned clip with no
         # explanation anywhere.
         self._notes: list[str] = []
+        # Parts of the request understood and NOT carried out. Distinct from
+        # `_notes`, which is for things that were done but may disappoint.
+        self._refusals: list[str] = []
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -203,6 +242,7 @@ class RemakeStage:
         profile = load_profile(resolved.profile or _profile_name(original.render_profile))
 
         self._notes = []  # per run, not per stage instance
+        self._refusals = []
         clip_id = uuid.uuid4().hex
         scratch = self._workspace.tmp_dir / f"remake-{clip_id}"
         scratch.mkdir(parents=True, exist_ok=True)
@@ -274,7 +314,27 @@ class RemakeStage:
                 ),
                 model=None,
             )
-        return apply_interpretation(options, answer), interpretation
+        applied = apply_interpretation(options, answer)
+
+        # Anything the note asked for that no control can express. Recorded on
+        # the clip rather than dropped: a reviewer who asks for a watermark to
+        # be removed and gets back a clip with the watermark on it cannot tell a
+        # refusal from a misunderstanding from a bug.
+        for ask in (answer.unsupported if answer else None) or []:
+            self._refusals.append(_UNSUPPORTED_WORDING[ask])
+        # A conflict is not a refusal: the remake was made, it just resolved an
+        # argument between the note and the form. The reviewer still needs to
+        # see which side won.
+        self._notes.extend(applied.conflicts)
+
+        return applied.options, NoteInterpretation(
+            understood=interpretation.understood,
+            # Rebuilt from what was actually applied. The model's own wording
+            # describes its answer, and the topics gate discards part of that
+            # answer afterwards.
+            summary=describe(answer, applied),
+            model=interpretation.model,
+        )
 
     def _cut(self, original: Clip, options: RemakeOptions) -> _Cut:
         """Where in the source to take the picture from, after any nudge.
@@ -342,14 +402,18 @@ class RemakeStage:
 
         script = (voice.script or "").strip()
         translated = False
+        from_transcript = False
         if not script:
-            script = self._spoken_words(original, cut)
-            if not script:
-                raise RemakeStageError(
-                    "there is no transcript for this clip and no script was written, so "
-                    "there is nothing for the voice to say. Write a script, or remake a "
-                    "clip whose source was transcribed."
-                )
+            script, from_transcript = self._spoken_words(original, cut)
+
+        # Is this worth saying at all? Every check here exists because a clip
+        # shipped without it: a hallucinated "thanks for watching" over a goal,
+        # a feedback note read aloud, two words of commentary stretched into a
+        # narration. See clipforge.analysis.feedback.
+        verdict = speakability(script, self._facts(original, cut), from_transcript=from_transcript)
+        self._notes.extend(verdict.warnings)
+        if not verdict.ok:
+            raise RemakeStageError(verdict.refusal or "there is nothing worth narrating here")
 
         if voice.translate and script:
             client = self._ollama()
@@ -361,7 +425,19 @@ class RemakeStage:
                 )
             try:
                 with context.broker.acquire(f"ollama:{client.model}", NOTE_LLM_VRAM_MB):
+                    source_text = script
                     script = translate(client, script, target_language=voice.language)
+                    # Did it actually translate? Handed unpunctuated ASR text, a
+                    # 4B will restore the punctuation and hand back the same
+                    # language — a plausible reading of the input, and one that
+                    # produced a clip recorded as English that spoke French.
+                    if not translation_landed(source_text, script, target_language=voice.language):
+                        raise RemakeStageError(
+                            f"the translation into {voice.language} came back as the same "
+                            "text it was given, which happens when the transcript is too "
+                            "rough to translate. Nothing was narrated. Write the line you "
+                            "want spoken, or keep the clip's own audio."
+                        )
             except InsufficientVramError as exc:
                 # Unlike the note, this one is load-bearing: speaking the original
                 # words with another language's voice is not a degraded result, it
@@ -397,18 +473,65 @@ class RemakeStage:
             utterance.text,
         )
 
-    def _spoken_words(self, original: Clip, cut: _Cut) -> str:
-        """What the clip says, from the archived transcript."""
+    def _facts(self, original: Clip, cut: _Cut) -> ClipFacts:
+        """What is true about this clip, for the feedback layer to reason about."""
+        transcript = self._transcript(original)
+        words = (
+            [
+                word
+                for segment in transcript.segments
+                for word in (segment.words or [])
+                if word.end_sec > cut.start_sec and word.start_sec < cut.end_sec
+            ]
+            if transcript is not None
+            else []
+        )
+        scored = [w.probability for w in words if w.probability is not None]
+        previous = original.remake.voice if original.remake else None
+        source = self._sources.get(original.source_id) if original.source_id else None
+        return ClipFacts(
+            duration_sec=float(original.duration_sec or cut.duration_sec),
+            spoken_language=(
+                previous.language if previous else (transcript.language if transcript else None)
+            ),
+            source_language=transcript.language if transcript else None,
+            word_count=len(words),
+            mean_confidence=(sum(scored) / len(scored)) if scored else None,
+            source_available=bool(
+                source and source.local_path and Path(source.local_path).is_file()
+            ),
+            can_speak=self._speech is not None,
+            can_rebuild_captions=self._transcriber is not None,
+            is_derived=bool(original.derived_from_clip_id),
+        )
+
+    def _spoken_words(self, original: Clip, cut: _Cut) -> tuple[str, bool]:
+        """What this clip says, and whether the words came from the recogniser.
+
+        A clip that has already been re-voiced says whatever its narration says,
+        and `AppliedVoice.spokenText` is the exact text a synthesiser was given
+        — so for a derived clip that is the truth, and it is also clean,
+        punctuated prose rather than ASR output.
+
+        Reading the source transcript instead was how a remake of a Spanish clip
+        went back to the original French: the lineage resets to the footage on
+        every generation, so translating "the clip" translated something the
+        reviewer had already replaced.
+        """
+        previous = original.remake.voice if original.remake else None
+        if previous is not None and previous.spoken_text:
+            return previous.spoken_text, False
+
         transcript = self._transcript(original)
         if transcript is None:
-            return ""
+            return "", True
         words = [
             word.text
             for segment in transcript.segments
             for word in (segment.words or [])
             if word.end_sec > cut.start_sec and word.start_sec < cut.end_sec
         ]
-        return " ".join(w.strip() for w in words if w.strip())
+        return " ".join(w.strip() for w in words if w.strip()), True
 
     # ── The picture ──────────────────────────────────────────────────────────
 
@@ -766,6 +889,8 @@ class RemakeStage:
                 framing_mode=mode,
                 keyframes=keyframes,
                 voice=voice,
+                refusals=self._refusals[:8],
+                warnings=self._notes[:8],
                 start_sec=round(cut.start_sec, 3),
                 end_sec=round(cut.end_sec, 3),
             ),

@@ -213,6 +213,22 @@
       }
     },
 
+    "UnsupportedAsk": {
+      "title": "UnsupportedAsk",
+      "description": "Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.",
+      "type": "string",
+      "enum": [
+        "REMOVE_WATERMARK",
+        "REMOVE_OVERLAY_TEXT",
+        "CHANGE_MUSIC",
+        "ZOOM_ON_SUBJECT",
+        "SLOW_MOTION",
+        "REORDER_OR_CUT_MIDDLE",
+        "COLOUR_OR_GRADE",
+        "SOMETHING_ELSE"
+      ]
+    },
+
     "NoteFraming": {
       "title": "NoteFraming",
       "description": "A framing decision read out of a note, plus the value that means the note did not make one. NOT_MENTIONED is a member rather than the field being nullable, for a reason measured rather than assumed \u2014 see LlmRemakeNote.\n\nPAN is deliberately absent, though FramingMode has it. A pan is defined by its keyframes and this schema gives the model no way to supply any, so a model answering PAN could only ever produce a framing with an empty keyframe list \u2014 which the render path refuses outright, turning a readable note into a failed job. TRACK is the executable form of the same intent: follow the action, with the points worked out from the footage.",
@@ -283,10 +299,16 @@
           "maximum": 30,
           "description": "Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer."
         },
+        "unsupported": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/UnsupportedAsk" },
+          "maxItems": 8,
+          "description": "Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake \u2014 the rest of the note is still acted on \u2014 it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure."
+        },
         "summary": {
           "type": "string",
           "maxLength": 600,
-          "description": "One sentence restating the instruction and naming what was changed. Written last, after the settings it describes."
+          "description": "One sentence restating the instruction and naming what was changed. Written last, after the settings it describes.\n\nIt describes this ANSWER, not necessarily the outcome: settings belonging to a topic that was not declared are discarded by the caller afterwards, so a summary can name a change that does not survive. `NoteInterpretation.summary` is rewritten from what was actually applied before it reaches the clip \u2014 an early version recorded the model's own wording and told reviewers it had set a crop it had not."
         }
       }
     },
@@ -585,6 +607,20 @@
         "voice": {
           "anyOf": [{ "$ref": "#/definitions/AppliedVoice" }, { "type": "null" }],
           "default": null
+        },
+        "refusals": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 300 },
+          "default": [],
+          "maxItems": 8,
+          "description": "Parts of the request that were understood and NOT carried out, each phrased for the person who asked. A remake that silently does four of the five things asked of it is indistinguishable from one that is broken, and the reviewer's next move \u2014 ask again, ask differently, give up \u2014 depends entirely on which it was."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 300 },
+          "default": [],
+          "maxItems": 8,
+          "description": "Things that were done but are likely to disappoint: a narration built from a transcript the recogniser was unsure of, a translation that barely changed the text, a clip with almost no speech in it. Surfaced next to the result because every one of these has produced a clip that looked finished and was unusable."
         },
         "startSec": {
           "type": "number",

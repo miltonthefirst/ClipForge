@@ -474,6 +474,25 @@
           @if (applied.notes) {
             <p class="mt-2 text-sm text-ink">“{{ applied.notes }}”</p>
           }
+          <!-- Asked for and NOT done. Shown first and in the danger colour: a
+               remake that quietly did four of the five things asked of it is
+               indistinguishable from one that is broken, and the reviewer's
+               next move depends on knowing which. -->
+          @if (applied.refusals?.length) {
+            <ul class="mt-2 space-y-1 rounded-lg bg-danger-bg p-2 text-xs text-danger-ink">
+              @for (refusal of applied.refusals; track refusal) {
+                <li>· {{ refusal }}</li>
+              }
+            </ul>
+          }
+          <!-- Done, but likely to disappoint. -->
+          @if (applied.warnings?.length) {
+            <ul class="mt-2 space-y-1 rounded-lg bg-panel-soft p-2 text-xs text-ink-muted">
+              @for (warning of applied.warnings; track warning) {
+                <li>· {{ warning }}</li>
+              }
+            </ul>
+          }
           @if (applied.interpretation; as read) {
             <p
               class="mt-2 rounded-lg p-2 text-xs"
@@ -734,12 +753,12 @@
                   </div>
 
                   <label class="block">
-                    <span class="text-sm">Say something else instead (optional)</span>
+                    <span class="text-sm">Words to speak instead (optional)</span>
                     <textarea
                       class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
                       rows="2"
                       [attr.maxlength]="scriptMax"
-                      placeholder="Leave empty to translate what the clip already says"
+                      placeholder="e.g. What a strike from thirty yards — leave empty to translate what the clip already says"
                       [ngModel]="remakeScript()"
                       (ngModelChange)="remakeScript.set($event)"
                       name="remakeScript"
@@ -768,6 +787,11 @@
                       </button>
                     }
                   </div>
+                  <p class="text-xs text-ink-subtle">
+                    This is the line a voice will read out, not a note to us — put feedback in the
+                    box at the top. A script that reads like an instruction is refused rather than
+                    narrated.
+                  </p>
                   <p class="text-xs text-ink-subtle">
                     Captions are burned into the picture, so a new voice makes the old ones wrong.
                     Redoing them transcribes the new narration, which needs the source video.

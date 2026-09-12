@@ -221,6 +221,80 @@ records that it did, while the same shortfall during translation still refuses,
 because speaking one language's words with another's phonetics is a wrong result
 rather than a degraded one.
 
+## What the first five real remakes changed
+
+All five completed successfully. None was usable. They are worth listing
+individually because the common cause is not what it looks like:
+
+| Note | What came out |
+| --- | --- |
+| *"change voice to English and follow the ball"* | A voice reading `"Here is a nice musical instrumental for you. [Instrumental music plays here] Thank you."` — Whisper's boilerplate from music-only audio, stage direction included |
+| *"change **commentary voice to English**"* | Spanish |
+| (no note, English requested) | *"Very bad beauty glim this pure left lateral munitions shot"* |
+| (no note, English requested) | French |
+| (feedback typed in the script box) | A voice reading *"Cut the Canal plus caption or watermark in the upper right corner."* |
+
+Not one of these is a component doing the wrong thing. Whisper produced its
+documented failure output for speechless audio; the translator gave a defensible
+reading of unpunctuated ASR text; the synthesiser said what it was given; the
+form supplied the value it held. **Every stage did its job, and there was no
+predicate anywhere between a bad input and a finished artefact.** A pipeline of
+individually reasonable steps with no gate between them produces confident
+nonsense, and it does it at the speed of the fastest step.
+
+So the response is a layer whose entire purpose is to refuse:
+`clipforge.analysis.feedback`. Its checks are deliberately **deterministic and
+outside the model** — a model cannot be the thing that decides whether to trust
+a model's output. It refuses recogniser boilerplate, refuses a script that reads
+like an instruction rather than narration, refuses a window with too few words,
+and warns when the recogniser's own confidence was low. `tests/unit/test_feedback.py`
+pins each of the five strings above.
+
+Three companion changes, each a direct consequence:
+
+- **A translation now has to prove it translated.** Given lowercase ASR French
+  and asked for English, the local model restores punctuation and returns the
+  same language. It satisfies the schema, so the clip was recorded as
+  translated. `translation_landed` compares normalised text and rejects a result
+  too similar to its input.
+- **The note beats the form on language.** The old rule — never override
+  anything the reviewer stated — sounds right and is wrong, because a form
+  cannot tell a choice from a default. A note saying *"commentary voice to
+  English"* lost to a dropdown nobody had touched. The note is written last,
+  while watching the clip, and is the more specific statement; the disagreement
+  is now recorded and shown rather than resolved silently.
+- **A remake of a re-voiced clip starts from what that clip says**, via
+  `AppliedVoice.spokenText`, rather than resolving back through `candidateId` to
+  the footage. The lineage used to reset every generation, so translating "this
+  clip" translated something the reviewer had already replaced.
+
+## Saying no is a feature
+
+`UnsupportedAsk` gives the reading layer somewhere to put a request it
+understood and cannot meet — remove a watermark, change the music, zoom on a
+person, slow motion — and `AppliedRemake.refusals` carries the wording to the
+review screen.
+
+This closes the worst hole in the original design. A reviewer who asks for a
+watermark to be removed and gets back a clip with the watermark still on it
+cannot distinguish *refused* from *misunderstood* from *broken*, and all three
+call for a different next move. Being told is also the only honest answer,
+because the request was perfectly clear.
+
+It is worth the schema real estate for a second reason: the list is written by
+the person who wanted the feature, at the moment they wanted it, which makes it
+a better backlog than any amount of speculation. Two of the five notes above
+asked for something outside every control the system has.
+
+The model is now also told, in the prompt, not to bend an impossible request
+into the nearest control that exists — it had been answering *"remove the
+watermark in the top right"* with a framing change, which produces a clip that
+is differently wrong and still has the watermark. A deterministic guard backs
+this up: a crop anchor is only accepted when the note actually names a side, and
+only for the one framing mode that has a fixed window. The model volunteered
+`crop: right` on notes about following the ball, and it reached two real clips'
+recorded summaries as a change that had never been applied.
+
 ## Alternatives considered
 
 **Make the render profile per-clip and stop there.** Cheapest by far, and it

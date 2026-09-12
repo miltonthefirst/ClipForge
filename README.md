@@ -182,6 +182,15 @@ either replaced or ducked underneath. Captions are burned into the picture, so a
 old ones wrong — *Redo captions* transcribes the new narration to recover timings that match what
 was actually said.
 
+**What it will refuse.** A remake does not narrate everything it is handed. If the
+clip's audio is music, the recogniser produces boilerplate — *"Here is a nice
+musical instrumental for you"* — and speaking it would be worse than silence, so
+it is refused with a reason. The same applies to a script that reads like an
+instruction rather than a line to say, a window with almost no speech in it, and
+a translation that comes back as the language it started in. Anything the note
+asks for that ClipForge cannot do — removing a watermark, changing the music,
+slow motion — is listed on the finished clip instead of being quietly skipped.
+
 > **What re-voicing is not for.** It changes the soundtrack and nothing else. On third-party footage
 > the picture is still the picture, and it is the picture a rights holder's matching runs against.
 > This helps with a claim on commentary or music, and it opens a clip to an audience that does not

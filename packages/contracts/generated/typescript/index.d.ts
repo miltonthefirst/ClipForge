@@ -159,6 +159,18 @@ export type NoteCrop = 'NOT_MENTIONED' | 'centre' | 'left' | 'right';
  * What a note asked for the original audio. REPLACE removes it, KEEP_UNDER keeps it ducked beneath a narration, NOT_MENTIONED means the note said nothing about sound at all — which is most notes.
  */
 export type NoteAudio = 'NOT_MENTIONED' | 'REPLACE' | 'KEEP_UNDER';
+/**
+ * Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
+ */
+export type UnsupportedAsk =
+  | 'REMOVE_WATERMARK'
+  | 'REMOVE_OVERLAY_TEXT'
+  | 'CHANGE_MUSIC'
+  | 'ZOOM_ON_SUBJECT'
+  | 'SLOW_MOTION'
+  | 'REORDER_OR_CUT_MIDDLE'
+  | 'COLOUR_OR_GRADE'
+  | 'SOMETHING_ELSE';
 
 /**
  * The complete ClipForge wire protocol. The PWA and the worker are two independent implementations of the types defined here; both are generated from this file, so neither can drift from it. See docs/adr/0005-single-source-contracts.md. Every timestamp is an ISO 8601 date-time string, NOT a Firestore Timestamp: the store adapters convert at the boundary, which keeps this document language-neutral and lets the unit tier compare documents as plain JSON with no emulator running.
@@ -694,6 +706,36 @@ export interface AppliedRemake {
   keyframes?: PanKeyframe[];
   voice?: AppliedVoice | null;
   /**
+   * Parts of the request that were understood and NOT carried out, each phrased for the person who asked. A remake that silently does four of the five things asked of it is indistinguishable from one that is broken, and the reviewer's next move — ask again, ask differently, give up — depends entirely on which it was.
+   *
+   * @maxItems 8
+   */
+  refusals?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string];
+  /**
+   * Things that were done but are likely to disappoint: a narration built from a transcript the recogniser was unsure of, a translation that barely changed the text, a clip with almost no speech in it. Surfaced next to the result because every one of these has produced a clip that looked finished and was unusable.
+   *
+   * @maxItems 8
+   */
+  warnings?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string];
+  /**
    * The window actually cut from the source, after any nudge. Absolute source seconds, matching Candidate.
    */
   startSec: number;
@@ -967,7 +1009,48 @@ export interface LlmRemakeNote {
    */
   endDeltaSec: number;
   /**
+   * Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
+   *
+   * @maxItems 8
+   */
+  unsupported?:
+    | []
+    | [UnsupportedAsk]
+    | [UnsupportedAsk, UnsupportedAsk]
+    | [UnsupportedAsk, UnsupportedAsk, UnsupportedAsk]
+    | [UnsupportedAsk, UnsupportedAsk, UnsupportedAsk, UnsupportedAsk]
+    | [UnsupportedAsk, UnsupportedAsk, UnsupportedAsk, UnsupportedAsk, UnsupportedAsk]
+    | [
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk
+      ]
+    | [
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk
+      ]
+    | [
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk,
+        UnsupportedAsk
+      ];
+  /**
    * One sentence restating the instruction and naming what was changed. Written last, after the settings it describes.
+   *
+   * It describes this ANSWER, not necessarily the outcome: settings belonging to a topic that was not declared are discarded by the caller afterwards, so a summary can name a change that does not survive. `NoteInterpretation.summary` is rewritten from what was actually applied before it reaches the clip — an early version recorded the model's own wording and told reviewers it had set a crop it had not.
    */
   summary: string;
 }

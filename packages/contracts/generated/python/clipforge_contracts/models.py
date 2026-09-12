@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel
 
 
 class JobStatus(StrEnum):
@@ -149,6 +149,21 @@ class MusicCaptions(StrEnum):
     REMOVE = "REMOVE"
 
 
+class UnsupportedAsk(StrEnum):
+    """
+    Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
+    """
+
+    REMOVE_WATERMARK = "REMOVE_WATERMARK"
+    REMOVE_OVERLAY_TEXT = "REMOVE_OVERLAY_TEXT"
+    CHANGE_MUSIC = "CHANGE_MUSIC"
+    ZOOM_ON_SUBJECT = "ZOOM_ON_SUBJECT"
+    SLOW_MOTION = "SLOW_MOTION"
+    REORDER_OR_CUT_MIDDLE = "REORDER_OR_CUT_MIDDLE"
+    COLOUR_OR_GRADE = "COLOUR_OR_GRADE"
+    SOMETHING_ELSE = "SOMETHING_ELSE"
+
+
 class NoteFraming(StrEnum):
     """
     A framing decision read out of a note, plus the value that means the note did not make one. NOT_MENTIONED is a member rather than the field being nullable, for a reason measured rather than assumed — see LlmRemakeNote.
@@ -230,9 +245,15 @@ class LlmRemakeNote(BaseModel):
     """
     Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer.
     """
+    unsupported: list[UnsupportedAsk] | None = Field(None, max_length=8)
+    """
+    Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
+    """
     summary: str = Field(..., max_length=600)
     """
     One sentence restating the instruction and naming what was changed. Written last, after the settings it describes.
+
+    It describes this ANSWER, not necessarily the outcome: settings belonging to a topic that was not declared are discarded by the caller afterwards, so a summary can name a change that does not survive. `NoteInterpretation.summary` is rewritten from what was actually applied before it reaches the clip — an early version recorded the model's own wording and told reviewers it had set a crop it had not.
     """
 
 
@@ -473,6 +494,14 @@ class AppliedVoice(BaseModel):
     """
 
 
+class Refusal(RootModel[str]):
+    root: str = Field(..., max_length=300)
+
+
+class Warning(RootModel[str]):
+    root: str = Field(..., max_length=300)
+
+
 class AppliedRemake(BaseModel):
     """
     What was asked for, and what was done. Carried on the clip the remake produced, beside `derivedFromClipId`, so the pair reads as a correction and its result rather than as two unrelated clips.
@@ -493,6 +522,14 @@ class AppliedRemake(BaseModel):
     The window's path through the source, as rendered — the reviewer's own points in PAN, and the tracker's findings in TRACK. Kept because it is the only way to see what a tracked remake actually decided to follow, and because a PAN remake can be seeded from it and corrected by hand when it followed the wrong thing.
     """
     voice: AppliedVoice | None = None
+    refusals: list[Refusal] | None = Field([], max_length=8, validate_default=True)
+    """
+    Parts of the request that were understood and NOT carried out, each phrased for the person who asked. A remake that silently does four of the five things asked of it is indistinguishable from one that is broken, and the reviewer's next move — ask again, ask differently, give up — depends entirely on which it was.
+    """
+    warnings: list[Warning] | None = Field([], max_length=8, validate_default=True)
+    """
+    Things that were done but are likely to disappoint: a narration built from a transcript the recogniser was unsure of, a translation that barely changed the text, a clip with almost no speech in it. Surfaced next to the result because every one of these has produced a clip that looked finished and was unusable.
+    """
     start_sec: float = Field(..., alias="startSec", ge=0.0)
     """
     The window actually cut from the source, after any nudge. Absolute source seconds, matching Candidate.
