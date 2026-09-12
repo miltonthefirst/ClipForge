@@ -188,6 +188,17 @@ workers/{workerId}                # heartbeat and capability advertisement
   gpu: { name, vramTotalMb, vramFreeMb }
   lastSeenAt, version
 
+agents/{machineId}                # the supervisor that starts and stops a worker,
+                                  # so the PWA can do it from anywhere. The only
+                                  # document where a client may influence what runs.
+                                  # See docs/adr/0012-machine-agent.md
+  desired: RUNNING|STOPPED         # the WISH — the client's three writable fields
+  requestedBy, requestedAt         # who asked, and when. Freshness is load-bearing
+  state: STOPPED|STARTING|RUNNING|FOREIGN|STOPPING|FAILED
+  detail, workerPid, lastExitCode, restarts, log[]
+  lastSeenAt                       # keeps beating when no worker runs, which is
+                                   # the one thing workers/{workerId} cannot do
+
 sources/{sourceId}                # one ingested long-form video (uid: who submitted it)
   provider: youtube|local
   externalId, title, channel, durationSec, contentHash
@@ -246,7 +257,7 @@ minutes it took to download and transcribe.
 | **M0 — Foundations** | 0, 1, 2 | A control plane and a worker that can run a no-op job reliably |
 | **M1 — Pipeline** | 3, 4, 5, 6 | URL in, rendered vertical clip on disk. No UI |
 | **M2 — Product** | 7 | **v0.1.0** — the phone review loop |
-| **M3 — Feedback loop** | 8, 9 | **v0.2.0** — publish and measure |
+| **M3 — Feedback loop** | 8, 8b, 9 | **v0.2.0** — publish, correct and measure |
 | **M4 — Autonomy** | 10, 12 | **v0.3.0** — trend-driven sourcing, then **v0.4.0** — several channels |
 | **M5 — Release** | 11 | Public open-source launch |
 | **M6 — Synthesis** | 13, 14 | **v0.6.0** — an idea becomes a finished video |
@@ -885,6 +896,107 @@ the reaper notices it, which is the behaviour scheduling exists to guarantee.
 - *Quota.* The default YouTube Data API quota is 10,000 units/day and an upload costs **1,600 units** —
   roughly **six uploads per day**. The scheduler must budget quota and surface it in the UI rather than
   failing opaquely on the seventh upload.
+
+---
+
+#### Phase 8b — The correction channel
+
+**Goal.** A reviewer who thinks a clip was made wrong can say so and get a better one.
+
+**Why it jumped the queue.** Not planned here; it arrived from use. Reviewing football clips surfaced
+two complaints that no existing screen could answer, and both were structural rather than cosmetic:
+
+- **The framing loses the ball.** `RENDER` took one 9:16 window, anchored by the render profile, and
+  held it for the whole clip. On a 1920-wide broadcast frame that keeps 608 pixels — 31.6% of the
+  width, measured in `tests/integration/test_framing_renders.py` — and it never moves. Worse, `crop`
+  was a field of the *profile*, which is one global setting: changing it for a football clip changed
+  it for every talking head too.
+- **The voice and language cannot be changed.** Planned for M6 ([Phase 13](#phase-13--the-synthesis-spine--v050)),
+  gated behind M5, and therefore a long way off.
+
+Underneath both: there was no feedback channel at all. Approve, reject, retitle, score with music,
+publish — every one of those accepts the clip as rendered.
+
+**In scope**
+
+- A `REMAKE` job type and a `RemakeOptions` contract, following `MUSIC` exactly: it names a clip, it
+  produces a *new* clip carrying `derivedFromClipId`, and it never alters the one that was reviewed.
+- **Framing as a per-clip decision**, with the three answers that are actually different —
+  `FIT` (the whole frame, nothing croppable), `TRACK` (a window that follows the motion), `PAN` (a
+  window the reviewer moves), plus `AS_RENDERED` for today's fixed crop, now overridable per clip.
+- **`clipforge.media.tracking`**: a motion-saliency pass over the source, ffmpeg to numpy, no new
+  dependency and no model. It scores window *positions* rather than taking a motion centroid, and it
+  is rate-limited so it lags the action rather than whip-panning to meet it.
+- **Narration** behind a `SpeechSynth` port, Kokoro-82M on onnxruntime as the first adapter — the
+  ONNX build rather than the PyPI one, which depends on the PyTorch this project does not have
+  ([ADR-0002](adr/0002-ctranslate2-without-pytorch.md)). This is D11 arriving early, on the CPU lane,
+  never touching the broker.
+- **Translation and note-reading** on the Ollama model `ANALYZE` already uses. No second model class.
+- Caption `REBUILD`: transcribe the generated narration *back* to recover word timings that match
+  what was said rather than what was scripted, then feed `build_ass` unchanged. D-level machinery
+  from Phase 13, built here because a new voice makes the burned-in captions a lie.
+- The remake panel on the clip page, and `clipforge-worker remake` / `fetch-voices`.
+
+**Explicitly out of scope.** A real object detector for tracking — that is a model, a VRAM budget and
+a third broker-managed class, and `plan_track` is the seam it goes behind if it ever pays. Generated
+visuals, scripts and briefs: those are M6 and stay there.
+
+**Exit criteria** — met, 2026-09-12; one item is honestly outstanding
+
+1. ✅ Each framing mode does what it claims, measured rather than inspected. The source is a
+   horizontal gradient, so brightness encodes horizontal position: a left window comes back dark, a
+   right window bright, a pan gets brighter over time, and `FIT` spans the full gradient because it
+   crops nothing. 12 tests in `tests/integration/test_framing_renders.py`, plus 28 pure-function tests
+   on the filtergraph strings themselves — a wrong crop expression does not fail, it renders the wrong
+   third of the pitch.
+2. ✅ Tracking follows a moving subject into the rendered clip, settles on a stationary one, reports
+   still footage as nothing-to-follow rather than guessing, and honours its speed limit.
+   Three bugs surfaced here and all three were invisible in a rendered clip: ties broken leftward
+   pinned a stationary subject to the edge of frame; a silent instant voted for dead centre, so the
+   crop drifted to the halfway line every time play stopped; and edge-padding was needed to stop the
+   smoothing pass sagging at both ends of a short clip.
+3. ✅ The picture is never retimed to fit the narration. A translated script routinely runs 20-30%
+   longer; the overrun is recorded on the clip and shown in the UI, and the video is untouched.
+4. ✅ A note the reviewer writes is read into settings, never overrides a setting they stated, and
+   never touches a topic the note was not about. `tests/gpu/test_remake_notes.py`, against the real
+   model — the shape of `LlmRemakeNote` is the record of two simpler shapes that each failed in their
+   own direction (see [ADR-0013](adr/0013-remake-as-a-job.md)).
+5. ✅ Refusals name the alternative. Reframing needs the source, which the workspace collector
+   reclaims; re-voicing does not, because it copies the video stream. A remake that cannot reframe
+   says so *and* says that a voice change would still work.
+6. ✅ **Kokoro runs end to end**, verified 2026-09-12 after installing the extra and fetching the
+   model: 54 voices load, English and Spanish both synthesise, and three real remakes — tracked
+   reframe, fit-plus-Spanish-narration, and voice-only — each produced a valid 1080x1920 clip with
+   audio. This was outstanding at the time the phase was written and is no longer.
+
+**One defect this phase surfaced, and it was not in this phase's code.**
+
+`extract_poster` read its dimensions through the strict media probe, which refuses a file with no
+duration. ffmpeg picks a demuxer per file — a detailed JPEG is read by `image2` and reports a
+nominal 0.04s, a plain one by `jpeg_pipe` and reports `N/A` — so the poster measured successfully or
+not *according to how busy the frame happened to be*, and on failure reported a height of 0.
+`ClipPreview` requires positive dimensions, so a render that had already finished then died saving
+its thumbnail. A flat green pitch reproduces it; the test suite's colour-bar pattern does not, which
+is why it survived. Fixed at the root — the poster helper asks ffprobe for width and height and
+nothing else — with a regression test on plain footage, plus a guard in both RENDER and REMAKE so an
+unmeasurable poster costs a thumbnail rather than a clip.
+
+**Delivered.** `RemakeStage` and the `REMAKE` job type · `clipforge.media.framing` (now the single
+crop implementation, with `RENDER` delegating to it) · `clipforge.media.tracking` ·
+`clipforge.media.speech` and `clipforge.media.narration` · `clipforge.analysis.remake` ·
+the remake panel on the clip page · `remakeOptionsOk` in the rules, with 27 emulator tests ·
+`clipforge-worker remake` and `fetch-voices` · [ADR-0013](adr/0013-remake-as-a-job.md).
+
+**A note on what re-voicing is for.** It changes the soundtrack and nothing else. On third-party
+footage the picture is still the picture, and it is the picture a rights holder's matching runs
+against. It helps with a claim on commentary or music, and it opens a clip to an audience that does
+not speak the original language; it does **not** make footage safe to publish. The rights attestation
+is what does that, and the review screen says so where the option is offered.
+
+**What this changes about M6.** Three of Phase 13's pieces now exist: the `SpeechSynth` port and its
+Kokoro adapter, the transcribe-our-own-narration alignment trick, and the CPU-lane discipline for
+both. Phase 13 inherits them rather than building them, and `COMPOSE` should reuse `SpeechSynth`
+rather than introducing a second path to a voice.
 
 ---
 

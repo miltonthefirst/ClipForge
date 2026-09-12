@@ -241,9 +241,18 @@ def test_the_three_crop_modes_differ_from_one_another() -> None:
 @pytest.mark.unit
 def test_an_already_vertical_source_is_not_pillarboxed() -> None:
     """Cropping width on a 9:16 source would leave black bars where there is
-    perfectly good picture."""
+    perfectly good picture.
+
+    Asserted on what the crop expression computes rather than on how it is
+    written: the reframing moved into `clipforge.media.framing`, which clamps
+    the window to the frame instead of branching on the source's shape, and the
+    old `crop=iw:` prefix went with it. The guarantee is unchanged.
+    """
     graph = build_filtergraph(landscape(1080, 1920), RenderProfile(), None)
-    assert graph.startswith("crop=iw:")
+    width = graph[len("crop='") :].split("':'")[0]
+    scope = {"iw": 1080, "ih": 1920, "min": min}
+    kept = eval(width, {"__builtins__": {}}, scope)  # noqa: S307
+    assert kept == 1080, "the full width of a 9:16 source must survive the crop"
 
 
 @pytest.mark.unit

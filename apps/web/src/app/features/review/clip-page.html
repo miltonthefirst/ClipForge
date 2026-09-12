@@ -30,14 +30,15 @@
          is visible without scrolling whatever the window is. -->
     <div class="lg:sticky lg:top-20 lg:self-start">
       <div class="overflow-hidden rounded-xl border border-line bg-black">
-        @if (source().kind !== 'poster') {
+        @if (playable()) {
           <video
             class="mx-auto block max-h-[70vh] w-auto max-w-full"
-            [src]="source().kind === 'poster' ? '' : $any(source()).url"
+            [src]="$any(source()).url"
             [poster]="posterSrc() ?? ''"
             controls
             playsinline
             preload="metadata"
+            (timeupdate)="trackPlayhead($event)"
           ></video>
         } @else if (posterSrc(); as poster) {
           <img
@@ -52,13 +53,28 @@
         <p class="mt-2 text-xs text-ink-subtle">Playing from the worker on this machine.</p>
       }
 
+      <!-- The clip IS in the bucket and this device was refused it. Deliberately
+           not offering the upload button here: the worker would find the file
+           already uploaded and skip, which is how this looked like an upload
+           that never happened. -->
+      @if (blockedReason(); as reason) {
+        <div
+          class="mt-2 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+        >
+          <p class="font-medium">This clip is uploaded, but this device cannot fetch it.</p>
+          <p class="mt-1 leading-relaxed">{{ reason }}</p>
+        </div>
+      }
+
       <!-- Offered whenever no copy exists that another device could fetch —
            including while this one is playing it locally. That is the case
            where it matters most: the clip plays here because this is the
            machine that rendered it, and the phone it will be reviewed on
            cannot reach that file at all. -->
       @if (needsCloudCopy()) {
-        <div class="mt-2 rounded-lg border border-line bg-panel/60 px-3 py-2 text-xs text-ink-muted">
+        <div
+          class="mt-2 rounded-lg border border-line bg-panel/60 px-3 py-2 text-xs text-ink-muted"
+        >
           @if (uploadRequested()) {
             <p>
               Upload queued. The worker has to be running to pick it up; this becomes playable
@@ -443,6 +459,380 @@
           }
         </section>
       }
+
+      <!-- ── Remake ─────────────────────────────────────────────────────────
+           The correction channel. Deliberately available before a decision as
+           well as after: the whole point is that the clip is not right yet, and
+           requiring approval would mean approving something in order to say it
+           is wrong.
+
+           Like music, this produces a NEW clip and leaves this one exactly as
+           it was reviewed — which is why there is no "undo" here to want. -->
+      @if (clip.remake; as applied) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold">Remade</h2>
+          @if (applied.notes) {
+            <p class="mt-2 text-sm text-ink">“{{ applied.notes }}”</p>
+          }
+          @if (applied.interpretation; as read) {
+            <p
+              class="mt-2 rounded-lg p-2 text-xs"
+              [class]="
+                read.understood ? 'bg-panel-soft text-ink-muted' : 'bg-danger-bg text-danger-ink'
+              "
+            >
+              {{ read.summary }}
+            </p>
+          }
+          <p class="mt-2 text-sm text-ink-muted">
+            {{
+              applied.framingMode === 'FIT'
+                ? 'Whole frame fitted'
+                : applied.framingMode === 'TRACK'
+                  ? 'Followed the action'
+                  : applied.framingMode === 'PAN'
+                    ? 'Panned by hand'
+                    : 'Fixed window'
+            }}
+            @if (applied.keyframes?.length) {
+              · {{ applied.keyframes.length }} point(s)
+            }
+          </p>
+          @if (applied.voice; as voice) {
+            <p class="mt-1 text-sm text-ink-muted">
+              {{ voice.voice }} in {{ voice.language }}
+              @if (voice.translated) {
+                · translated
+              }
+              · {{ voice.mode === 'BED' ? 'over the original' : 'original audio removed' }}
+            </p>
+            <!-- The most common way a translated clip goes wrong, and it is
+                 invisible until someone watches to the end. -->
+            @if (
+              voice.speechDurationSec &&
+              clip.durationSec &&
+              voice.speechDurationSec > clip.durationSec + 0.05
+            ) {
+              <p class="mt-1 rounded-lg bg-danger-bg p-2 text-xs text-danger-ink">
+                The narration runs
+                {{ voice.speechDurationSec - clip.durationSec | number: '1.0-1' }}s longer than the
+                picture, so its ending is cut off. Shorten the script, or remake with a longer clip.
+              </p>
+            }
+          }
+          @if (clip.derivedFromClipId; as originalId) {
+            <a
+              [routerLink]="['/review', originalId]"
+              class="mt-2 inline-block text-xs text-accent-ink hover:underline"
+              >← the version this was made from</a
+            >
+          }
+        </section>
+      }
+
+      <section class="rounded-xl border border-line bg-panel p-4">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-sm font-semibold">Not right? Remake it</h2>
+          <button
+            type="button"
+            class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line"
+            (click)="showRemake.set(!showRemake())"
+          >
+            {{ showRemake() ? 'Cancel' : 'Remake' }}
+          </button>
+        </div>
+
+        @if (!showRemake()) {
+          <p class="mt-2 text-xs text-ink-subtle">
+            Say what is wrong and get a new version. The clip you are watching is left as it is.
+          </p>
+        } @else {
+          <div class="mt-4 space-y-4">
+            <!-- The note first, because it is the fastest thing to write and
+                 often the only thing needed. -->
+            <label class="block">
+              <span class="text-sm font-medium">What is wrong with it?</span>
+              <textarea
+                class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
+                rows="3"
+                [attr.maxlength]="notesMax"
+                placeholder="e.g. it keeps losing the ball when play switches to the other wing"
+                [ngModel]="remakeNotes()"
+                (ngModelChange)="remakeNotes.set($event)"
+                name="remakeNotes"
+              ></textarea>
+              <span class="mt-1 block text-xs text-ink-subtle">
+                The worker reads this and fills in anything you leave below, then records what it
+                made of it — so a misread note shows up as a misreading rather than a surprise.
+                Anything you set yourself is never overruled.
+              </span>
+            </label>
+
+            <!-- Framing -->
+            <fieldset>
+              <legend class="text-sm font-medium">Framing</legend>
+              <div class="mt-2 space-y-2">
+                @for (choice of framingChoices; track choice.value) {
+                  <label class="flex items-start gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="remakeFraming"
+                      class="mt-1"
+                      [checked]="remakeFraming() === choice.value"
+                      (change)="remakeFraming.set(choice.value)"
+                    />
+                    <span>
+                      <span class="font-medium text-ink">{{ choice.label }}</span>
+                      <span class="block text-xs text-ink-subtle">{{ choice.hint }}</span>
+                    </span>
+                  </label>
+                }
+              </div>
+
+              @if (remakeFraming() === 'AS_RENDERED') {
+                <div class="mt-3 flex gap-2">
+                  @for (side of ['left', 'centre', 'right']; track side) {
+                    <button
+                      type="button"
+                      class="flex-1 rounded-lg border px-3 py-2 text-sm capitalize"
+                      [class]="
+                        remakeCrop() === side
+                          ? 'border-forge-500 bg-forge-600/10 text-ink'
+                          : 'border-line-strong text-ink-muted hover:bg-line'
+                      "
+                      (click)="remakeCrop.set($any(side))"
+                    >
+                      {{ side }}
+                    </button>
+                  }
+                </div>
+              }
+
+              @if (remakeFraming() === 'FIT') {
+                <div class="mt-3 flex gap-2">
+                  @for (fill of ['BLUR', 'SOLID']; track fill) {
+                    <button
+                      type="button"
+                      class="flex-1 rounded-lg border px-3 py-2 text-sm"
+                      [class]="
+                        remakeFill() === fill
+                          ? 'border-forge-500 bg-forge-600/10 text-ink'
+                          : 'border-line-strong text-ink-muted hover:bg-line'
+                      "
+                      (click)="remakeFill.set($any(fill))"
+                    >
+                      {{ fill === 'BLUR' ? 'Blurred backdrop' : 'Solid backdrop' }}
+                    </button>
+                  }
+                </div>
+              }
+
+              @if (remakeFraming() === 'PAN') {
+                <div class="mt-3 rounded-lg bg-panel-soft p-3">
+                  <p class="text-xs text-ink-subtle">
+                    Scrub to a moment, then say where the window should sit at that point. Positions
+                    are across the <em>original</em> video, not the crop you are watching.
+                  </p>
+                  <div class="mt-2 flex gap-2">
+                    @for (spot of [10, 30, 50, 70, 90]; track spot) {
+                      <button
+                        type="button"
+                        class="flex-1 rounded-lg border border-line-strong px-2 py-2 text-xs text-ink-muted hover:bg-line"
+                        (click)="addPanPoint(spot)"
+                      >
+                        {{ spot }}%
+                      </button>
+                    }
+                  </div>
+                  @if (remakeKeyframes().length) {
+                    <ul class="mt-3 space-y-1">
+                      @for (point of remakeKeyframes(); track point.atSec) {
+                        <li class="flex items-center justify-between text-xs text-ink-muted">
+                          <span>{{ point.atSec | number: '1.1-1' }}s → {{ point.xPct }}%</span>
+                          <button
+                            type="button"
+                            class="text-danger-ink hover:underline"
+                            (click)="removePanPoint(point.atSec)"
+                          >
+                            remove
+                          </button>
+                        </li>
+                      }
+                    </ul>
+                  } @else {
+                    <p class="mt-2 text-xs text-danger-ink">
+                      A hand-moved window needs at least one point.
+                    </p>
+                  }
+                  @if (clip.remake?.keyframes?.length) {
+                    <button
+                      type="button"
+                      class="mt-2 text-xs text-accent-ink hover:underline"
+                      (click)="seedFromLastRemake()"
+                    >
+                      Start from what the last remake did
+                    </button>
+                  }
+                </div>
+              }
+
+              @if (framingNeedsSource()) {
+                <p class="mt-2 text-xs text-ink-subtle">
+                  Reframing re-cuts from the original video, so it needs the source still on the
+                  worker. Clips outlive sources, so this can fail on an older clip — changing only
+                  the voice works either way.
+                </p>
+              }
+            </fieldset>
+
+            <!-- Voice -->
+            <fieldset>
+              <label class="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  [checked]="remakeVoiceOn()"
+                  (change)="remakeVoiceOn.set(!remakeVoiceOn())"
+                />
+                Change the voice or language
+              </label>
+
+              @if (remakeVoiceOn()) {
+                <div class="mt-3 space-y-3">
+                  <label class="block">
+                    <span class="text-sm">Language</span>
+                    <select
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink"
+                      [ngModel]="remakeLanguage()"
+                      (ngModelChange)="remakeLanguage.set($event)"
+                      name="remakeLanguage"
+                    >
+                      @for (language of languages; track language.tag) {
+                        <option [value]="language.tag">{{ language.label }}</option>
+                      }
+                    </select>
+                    <span class="mt-1 block text-xs text-ink-subtle">
+                      The clip's own words are translated and then spoken. Leave the script empty to
+                      use them.
+                    </span>
+                  </label>
+
+                  <div class="flex gap-2">
+                    @for (mode of ['REPLACE', 'BED']; track mode) {
+                      <button
+                        type="button"
+                        class="flex-1 rounded-lg border px-3 py-2 text-sm"
+                        [class]="
+                          remakeSpeechMode() === mode
+                            ? 'border-forge-500 bg-forge-600/10 text-ink'
+                            : 'border-line-strong text-ink-muted hover:bg-line'
+                        "
+                        (click)="remakeSpeechMode.set($any(mode))"
+                      >
+                        {{ mode === 'REPLACE' ? 'Replace the audio' : 'Keep crowd noise under' }}
+                      </button>
+                    }
+                  </div>
+
+                  <label class="block">
+                    <span class="text-sm">Say something else instead (optional)</span>
+                    <textarea
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
+                      rows="2"
+                      [attr.maxlength]="scriptMax"
+                      placeholder="Leave empty to translate what the clip already says"
+                      [ngModel]="remakeScript()"
+                      (ngModelChange)="remakeScript.set($event)"
+                      name="remakeScript"
+                    ></textarea>
+                  </label>
+
+                  <div class="flex gap-2">
+                    @for (caption of ['REBUILD', 'KEEP', 'REMOVE']; track caption) {
+                      <button
+                        type="button"
+                        class="flex-1 rounded-lg border px-2 py-2 text-xs"
+                        [class]="
+                          remakeVoiceCaptions() === caption
+                            ? 'border-forge-500 bg-forge-600/10 text-ink'
+                            : 'border-line-strong text-ink-muted hover:bg-line'
+                        "
+                        (click)="remakeVoiceCaptions.set($any(caption))"
+                      >
+                        {{
+                          caption === 'REBUILD'
+                            ? 'Redo captions'
+                            : caption === 'KEEP'
+                              ? 'Keep captions'
+                              : 'No captions'
+                        }}
+                      </button>
+                    }
+                  </div>
+                  <p class="text-xs text-ink-subtle">
+                    Captions are burned into the picture, so a new voice makes the old ones wrong.
+                    Redoing them transcribes the new narration, which needs the source video.
+                  </p>
+
+                  <!-- The limit worth stating plainly, because it is the wrong
+                       reason people reach for this. -->
+                  <p class="rounded-lg bg-panel-soft p-2 text-xs text-ink-subtle">
+                    A new voice changes the soundtrack and nothing else. On third-party footage the
+                    picture is still the picture, and that is what a rights holder matches against —
+                    so this helps with a claim on commentary, and with reaching another audience,
+                    but it does not make footage safe to publish.
+                  </p>
+                </div>
+              }
+            </fieldset>
+
+            <!-- Timing -->
+            <fieldset>
+              <legend class="text-sm font-medium">Timing</legend>
+              <div class="mt-2 grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="text-xs text-ink-muted">Start (seconds)</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="-30"
+                    max="30"
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink"
+                    [ngModel]="remakeStartDelta()"
+                    (ngModelChange)="setTrim('start', $event)"
+                    name="remakeStartDelta"
+                  />
+                </label>
+                <label class="block">
+                  <span class="text-xs text-ink-muted">End (seconds)</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="-30"
+                    max="30"
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink"
+                    [ngModel]="remakeEndDelta()"
+                    (ngModelChange)="setTrim('end', $event)"
+                    name="remakeEndDelta"
+                  />
+                </label>
+              </div>
+              <p class="mt-1 text-xs text-ink-subtle">
+                Negative starts earlier; positive ends later. Useful when the action happens before
+                anyone says anything about it.
+              </p>
+            </fieldset>
+
+            <button
+              type="button"
+              class="w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+              [disabled]="busy() || !canRemake()"
+              (click)="remake()"
+            >
+              Remake it
+            </button>
+          </div>
+        }
+      </section>
 
       <!-- ── Publishing ────────────────────────────────────────────────────
            Only once approved. Offering an upload button beside a clip nobody

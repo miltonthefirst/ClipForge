@@ -1,5 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import type {
+  AgentDesired,
+  AgentReport,
   Candidate,
   Channel,
   Clip,
@@ -9,6 +11,7 @@ import type {
   MusicOptions,
   Publication,
   PublishOptions,
+  RemakeOptions,
   ReviewState,
   RightsBasis,
   Source,
@@ -30,6 +33,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 
+import { fromDocument } from './documents';
 import { FirebaseService } from './firebase';
 
 /**
@@ -65,7 +69,7 @@ export class ClipForgeStore {
   watchJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'jobs'), orderBy('createdAt', 'desc'), limit(25)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Job)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -85,7 +89,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       doc(this.firebase.db, 'jobs', jobId),
-      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Job) : null),
+      (snapshot) => onData(snapshot.exists() ? fromDocument<Job>(snapshot.data()) : null),
       (error) => onError?.(error),
     );
   }
@@ -115,7 +119,7 @@ export class ClipForgeStore {
         orderBy('seq', 'asc'),
         limit(200),
       ),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as JobEvent)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<JobEvent>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -124,7 +128,7 @@ export class ClipForgeStore {
   async loadSource(sourceId: string): Promise<Source | null> {
     const { getDoc } = await import('firebase/firestore');
     const snapshot = await getDoc(doc(this.firebase.db, 'sources', sourceId));
-    return snapshot.exists() ? (snapshot.data() as Source) : null;
+    return snapshot.exists() ? fromDocument<Source>(snapshot.data()) : null;
   }
 
   /**
@@ -158,7 +162,7 @@ export class ClipForgeStore {
 
     return {
       candidates: candidates.data().count,
-      clips: clips.docs.map((d) => d.data() as Clip),
+      clips: clips.docs.map((d) => fromDocument<Clip>(d.data())),
     };
   }
 
@@ -178,9 +182,56 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'workers'), limit(10)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as WorkerHeartbeat)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<WorkerHeartbeat>(d.data()))),
       (error) => onError?.(error),
     );
+  }
+
+  /**
+   * Every machine that has ever run an agent, live.
+   *
+   * The companion to {@link watchWorkers} and not a replacement for it: a
+   * heartbeat says what a worker believes it is doing, and cannot say anything
+   * at all when no worker is running — which is the state somebody looking at a
+   * stalled queue most needs explained. An agent beating with state STOPPED
+   * means the PC is on and waiting; an agent that has gone quiet means the PC
+   * is off, and no amount of worker heartbeat can tell those apart.
+   *
+   * Bounded like every other listener here. Four is generous for a system whose
+   * premise is one machine with a GPU.
+   */
+  watchAgents(
+    onData: (agents: AgentReport[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'agents'), limit(4)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<AgentReport>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Ask a machine to start or stop its worker.
+   *
+   * A wish, not a command: this writes what is wanted and returns. The agent on
+   * that machine is the only thing that can spawn a process, and what it does
+   * about the wish — and how long it takes — is reported back through the same
+   * document.
+   *
+   * `requestedAt` is written on every call, including one that repeats the
+   * current value, and that is load-bearing rather than incidental. Pressing
+   * Start on a machine whose agent has given up is how a person clears it, and
+   * a supervisor comparing only the value could not tell that press from the
+   * wish simply still being RUNNING. The rules require the field for the same
+   * reason.
+   */
+  async wish(agentId: string, uid: string, desired: AgentDesired): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'agents', agentId), {
+      desired,
+      requestedBy: uid,
+      requestedAt: new Date().toISOString(),
+    });
   }
 
   /**
@@ -197,7 +248,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       doc(this.firebase.db, 'clips', clipId),
-      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Clip) : null),
+      (snapshot) => onData(snapshot.exists() ? fromDocument<Clip>(snapshot.data()) : null),
       (error) => onError?.(error),
     );
   }
@@ -229,7 +280,7 @@ export class ClipForgeStore {
         orderBy('createdAt', 'desc'),
         limit(50),
       ),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Clip)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Clip>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -245,7 +296,7 @@ export class ClipForgeStore {
   async loadPreview(clipId: string): Promise<ClipPreview | null> {
     const { getDoc } = await import('firebase/firestore');
     const snapshot = await getDoc(doc(this.firebase.db, 'clips', clipId, 'preview', 'poster'));
-    return snapshot.exists() ? (snapshot.data() as ClipPreview) : null;
+    return snapshot.exists() ? fromDocument<ClipPreview>(snapshot.data()) : null;
   }
 
   /**
@@ -257,7 +308,7 @@ export class ClipForgeStore {
   async loadCandidate(candidateId: string): Promise<Candidate | null> {
     const { getDoc } = await import('firebase/firestore');
     const snapshot = await getDoc(doc(this.firebase.db, 'candidates', candidateId));
-    return snapshot.exists() ? (snapshot.data() as Candidate) : null;
+    return snapshot.exists() ? fromDocument<Candidate>(snapshot.data()) : null;
   }
 
   /**
@@ -504,6 +555,44 @@ export class ClipForgeStore {
   }
 
   /**
+   * Ask the worker to remake a clip with corrections.
+   *
+   * The same shape as `requestMusic`, and for the same reason: the media lives
+   * on the worker and a correction is decided while watching something that was
+   * finished hours ago. It produces a *new* clip rather than altering this one,
+   * so there is nothing here to undo.
+   *
+   * `maxAttempts` is 1. Every way a remake fails is a property of its inputs —
+   * a source the workspace collector has taken, a language with no voice, nudges
+   * that cross over — and a retry reproduces them exactly while spending the
+   * render time twice.
+   */
+  async requestRemake(uid: string, clipId: string, options: RemakeOptions): Promise<string> {
+    const reference = doc(collection(this.firebase.db, 'jobs'));
+    const now = new Date().toISOString();
+    await setDoc(reference, {
+      id: reference.id,
+      uid,
+      type: 'REMAKE',
+      status: 'QUEUED',
+      submission: null,
+      sourceId: null,
+      clipId,
+      remakeOptions: options,
+      notBefore: null,
+      stages: [{ name: 'REMAKE', lane: 'CPU', status: 'PENDING' }],
+      workerId: null,
+      leaseExpiresAt: null,
+      attempts: 0,
+      maxAttempts: 1,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return reference.id;
+  }
+
+  /**
    * A clip's publish history — the audit trail, read-only.
    *
    * Answers "who authorised this, on what basis, and what went out?" from the
@@ -512,7 +601,7 @@ export class ClipForgeStore {
   async loadPublications(clipId: string): Promise<Publication[]> {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
-    return snapshot.docs.map((d) => d.data() as Publication);
+    return snapshot.docs.map((d) => fromDocument<Publication>(d.data()));
   }
 
   /**
@@ -529,7 +618,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'channels'), limit(50)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Channel)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Channel>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -548,7 +637,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       doc(this.firebase.db, 'channels', channelId),
-      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Channel) : null),
+      (snapshot) => onData(snapshot.exists() ? fromDocument<Channel>(snapshot.data()) : null),
       (error) => onError?.(error),
     );
   }
@@ -567,7 +656,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'users'), orderBy('createdAt', 'desc'), limit(200)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as UserProfile)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<UserProfile>(d.data()))),
       (error) => onError?.(error),
     );
   }

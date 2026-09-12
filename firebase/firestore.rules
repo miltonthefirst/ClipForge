@@ -146,6 +146,52 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Agents ───────────────────────────────────────────────────────────────
+    //
+    // The one place a client may influence what runs on the machine, and the
+    // exception is narrow on purpose.
+    //
+    // ClipForge has no server-side executor: a job stays QUEUED until a process
+    // on the worker machine claims it (docs/adr/0006-lease-based-job-claiming.md).
+    // Before this collection existed, the only things that could start that
+    // process were a terminal and the desktop shell — so a job submitted from a
+    // phone waited for somebody to walk to the PC. The agent watches this
+    // document and does what it says.
+    // See docs/adr/0012-machine-agent.md.
+    //
+    // `desired` is a WISH, not a state. The client may say what it wants and
+    // nothing else; every field describing what is actually happening — the run
+    // state, the pid, the exit code, the log — is written by the agent through
+    // the Admin SDK and is read-only here. That keeps the rule this file is
+    // built on intact: the PWA may create work and review results, and may never
+    // write pipeline state.
+    //
+    // Creation is refused, and that is load-bearing rather than tidy. The agent
+    // creates its own document on first run, so "no document" means *no agent
+    // has ever run on that machine* — which is a different problem from "the
+    // agent is not reporting right now", and a client that could conjure a row
+    // would erase the difference. A phone would then offer a Start button for a
+    // machine that has never had anything listening.
+    match /agents/{agentId} {
+      allow read: if isApproved();
+      allow create, delete: if false;
+
+      // `requestedAt` is required on every write, and is what makes pressing
+      // Start on a worker that is already wanted a distinguishable event: that
+      // press is how a person clears an agent that has given up, and a rule that
+      // let the timestamp be omitted would make the recovery silently depend on
+      // the value happening to change.
+      //
+      // `requestedBy` is pinned to the caller for the same reason `uid` is on a
+      // job: a shared workspace can afford anyone starting the worker, and
+      // cannot afford not knowing who did.
+      allow update: if isApproved()
+                    && changed().hasOnly(['desired', 'requestedBy', 'requestedAt'])
+                    && request.resource.data.desired in ['RUNNING', 'STOPPED']
+                    && request.resource.data.requestedBy == request.auth.uid
+                    && request.resource.data.requestedAt is string;
+    }
+
     // ── The rights gate, client half ─────────────────────────────────────────
     //
     // The worker enforces this too, in clipforge/publish/rights.py. The
@@ -217,6 +263,101 @@ service cloud.firestore {
              && options.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
                                          'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
              && options.rights.get('attestedBy', null) == request.auth.uid;
+    }
+
+    // What a REMAKE job may ask for. Validated for the same reason the music
+    // options are: these numbers reach ffmpeg filter expressions and a speech
+    // synthesiser on the worker, and a request that cannot possibly succeed
+    // should be refused here rather than after a re-render.
+    //
+    // Every field is optional. A remake is usually one complaint — "it loses
+    // the ball", "put it in Spanish" — and demanding a fully-populated object
+    // for a single correction would be the interface failing to do its job.
+    function framingOk(framing) {
+      return framing == null
+             || (
+                  framing.keys().hasOnly(
+                    ['mode', 'crop', 'keyframes', 'fill', 'zoom', 'offsetYPct',
+                     'smoothingSec', 'maxPanPctPerSec'])
+                  && framing.mode in ['AS_RENDERED', 'FIT', 'PAN', 'TRACK']
+                  && (framing.get('crop', null) == null
+                      || framing.crop in ['centre', 'left', 'right'])
+                  && (framing.get('fill', null) == null || framing.fill in ['BLUR', 'SOLID'])
+                  && (framing.get('zoom', null) == null
+                      || (framing.zoom is number && framing.zoom >= 1 && framing.zoom <= 2))
+                  && (framing.get('offsetYPct', null) == null
+                      || (framing.offsetYPct is number
+                          && framing.offsetYPct >= -50 && framing.offsetYPct <= 50))
+                  && (framing.get('smoothingSec', null) == null
+                      || (framing.smoothingSec is number
+                          && framing.smoothingSec >= 0 && framing.smoothingSec <= 10))
+                  && (framing.get('maxPanPctPerSec', null) == null
+                      || (framing.maxPanPctPerSec is number
+                          && framing.maxPanPctPerSec >= 0 && framing.maxPanPctPerSec <= 100))
+                  // Capped rather than merely typed: keyframes become one
+                  // nested ffmpeg expression, and an unbounded list is an
+                  // unbounded expression. Sixty points is a keyframe a second
+                  // on a minute-long clip, which is far more than a person sets
+                  // by hand and more than the tracker ever emits.
+                  && (framing.get('keyframes', null) == null
+                      || (framing.keyframes is list && framing.keyframes.size() <= 60))
+                );
+    }
+
+    function voiceOk(voice) {
+      return voice == null
+             || (
+                  voice.keys().hasOnly(
+                    ['mode', 'voice', 'language', 'translate', 'script', 'speed',
+                     'gainDb', 'duckDb', 'captions'])
+                  && voice.mode in ['REPLACE', 'BED']
+                  && voice.voice is string
+                  && voice.voice.size() > 0
+                  && voice.voice.size() <= 64
+                  && voice.language is string
+                  && voice.language.size() >= 2
+                  && voice.language.size() <= 16
+                  && (voice.get('translate', null) == null || voice.translate is bool)
+                  && (voice.get('script', null) == null
+                      || (voice.script is string && voice.script.size() <= 4000))
+                  && (voice.get('speed', null) == null
+                      || (voice.speed is number && voice.speed >= 0.5 && voice.speed <= 2))
+                  && (voice.get('gainDb', null) == null
+                      || (voice.gainDb is number && voice.gainDb >= -40 && voice.gainDb <= 12))
+                  && (voice.get('duckDb', null) == null
+                      || (voice.duckDb is number && voice.duckDb >= -40 && voice.duckDb <= 0))
+                  && (voice.get('captions', null) == null
+                      || voice.captions in ['REBUILD', 'KEEP', 'REMOVE'])
+                );
+    }
+
+    function remakeOptionsOk() {
+      let options = request.resource.data.get('remakeOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['notes', 'interpretNotes', 'framing', 'voice',
+                   'startDeltaSec', 'endDeltaSec', 'profile'])
+             && (options.get('notes', null) == null
+                 || (options.notes is string && options.notes.size() <= 2000))
+             && (options.get('interpretNotes', null) == null || options.interpretNotes is bool)
+             // A profile NAME, not a path. The worker joins this into
+             // assets/profiles/<name>.toml, so a value carrying a separator or a
+             // dot reaches outside that directory — and it is stamped onto the
+             // finished clip as its renderProfile either way. Every other helper
+             // here constrains its value rather than only its type.
+             && (options.get('profile', null) == null
+                 || (options.profile is string
+                     && options.profile.size() > 0
+                     && options.profile.size() <= 64
+                     && options.profile.matches('^[A-Za-z0-9_-]+$')))
+             && (options.get('startDeltaSec', null) == null
+                 || (options.startDeltaSec is number
+                     && options.startDeltaSec >= -30 && options.startDeltaSec <= 30))
+             && (options.get('endDeltaSec', null) == null
+                 || (options.endDeltaSec is number
+                     && options.endDeltaSec >= -30 && options.endDeltaSec <= 30))
+             && framingOk(options.get('framing', null))
+             && voiceOk(options.get('voice', null));
     }
 
     // What the operator chose for one specific upload: title, description,
@@ -302,6 +443,19 @@ service cloud.firestore {
                          || (
                               request.resource.data.clipId is string
                               && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                            )
+                       )
+                    // A REMAKE job is a correction to a clip someone is
+                    // watching. Like MUSIC and UPLOAD it does not require
+                    // approval — the whole point is that the clip is *not*
+                    // right yet — but it must name a clip that exists, and its
+                    // options must be values the worker can actually render.
+                    && (
+                         request.resource.data.type != 'REMAKE'
+                         || (
+                              request.resource.data.clipId is string
+                              && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                              && remakeOptionsOk()
                             )
                        );
 

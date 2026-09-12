@@ -147,6 +147,67 @@ pwsh -File tools/doctor.ps1
 `doctor` exits with the number of failed checks and prints a suggested fix for each, so it works
 in a script as well as by eye. Use `-SkipGpu` on a machine without an NVIDIA card.
 
+### Remaking a clip that came out wrong
+
+Every clip in the review queue has a **Remake** panel. It takes a note in your own words and
+produces a *new* clip — the one you are watching is never altered, so there is nothing to undo and
+you can still prefer the original once you have seen both.
+
+**Framing.** The pipeline's default is a fixed 9:16 window that does not move, which keeps about a
+third of a landscape frame's width. That is right for a talking head and wrong for anything where
+the interesting thing moves — a ball leaves that window several times a minute. Three alternatives,
+per clip:
+
+| Mode | Use it when | It costs |
+| --- | --- | --- |
+| **Fit the whole frame** | Things are being cut off at the sides; you want the whole pitch | A smaller picture, with a blurred or solid backdrop filling the rest |
+| **Follow the action** | The subject moves and the clip loses it | It follows *motion*, not a ball — it can chase the wrong thing, and it records the path it took so you can correct it |
+| **Fix it to one side** | The subject stays put, off-centre | Nothing; it is the default with a different anchor |
+| **Move it by hand** | The automatic answers got it wrong | Your time, per clip — seedable from whatever the last remake did |
+
+**Voice and language.** Optional, and needs one extra install:
+
+```bash
+# Every extra you already have, plus speech. `uv sync` prunes whatever you do
+# not name, so dropping --extra gpu here would quietly uninstall Whisper.
+uv sync --project apps/worker --extra gpu --extra media --extra speech
+uv run --project apps/worker clipforge-worker fetch-voices   # ~330 MB, Apache-2.0
+```
+
+The weights land in `~/.clipforge/`, which is where the worker looks from
+whatever directory it was started in.
+
+The clip's own words are translated and re-spoken, or you write a script. The original audio is
+either replaced or ducked underneath. Captions are burned into the picture, so a new voice makes the
+old ones wrong — *Redo captions* transcribes the new narration to recover timings that match what
+was actually said.
+
+> **What re-voicing is not for.** It changes the soundtrack and nothing else. On third-party footage
+> the picture is still the picture, and it is the picture a rights holder's matching runs against.
+> This helps with a claim on commentary or music, and it opens a clip to an audience that does not
+> speak the original language. It does **not** make footage safe to publish — see
+> [Rights and responsible use](#rights-and-responsible-use).
+
+**From a terminal**, if you would rather not reach for a phone:
+
+```bash
+uv run --project apps/worker clipforge-worker remake CLIP_ID --framing TRACK
+uv run --project apps/worker clipforge-worker remake CLIP_ID --language es
+uv run --project apps/worker clipforge-worker remake CLIP_ID --notes "it cuts in too late"
+```
+
+Two things worth knowing before you reach for it:
+
+**Reframing needs the original video; changing the voice does not.** A rendered clip has already
+thrown away the pixels outside its window, so a reframe re-cuts from the source — which the
+workspace collector reclaims after a while. Clips outlive sources, so this fails on older clips and
+says so. Swapping the audio copies the video stream untouched, so it works either way and takes
+seconds.
+
+**The picture is never stretched to fit the narration.** A translated script often runs longer than
+the original; the clip stays the length you approved and the overrun is reported on it rather than
+absorbed. See [ADR-0013](docs/adr/0013-remake-as-a-job.md).
+
 ### Publishing to YouTube (optional)
 
 Off by default, and meant to stay off until you have read
@@ -282,6 +343,9 @@ there is nothing to play:
 ```powershell
 pwsh -File tools/worker.ps1 -Live
 ```
+
+The app's own Start button does the same thing without the terminal, and
+[the agent](#start-the-worker-from-your-phone) does it without the desktop.
 
 **Deploying to Firebase is unaffected**, and structurally so. The desktop
 frontend is staged into `apps/desktop/frontend` as its own copy, never
@@ -434,6 +498,54 @@ at all, so `--only storage` fails by definition. The file stays in the repositor
 stays tested against the emulator, and deploys as-is on the day Blaze is enabled
 ([ADR-0009](docs/adr/0009-spark-tier-local-artefacts.md)).
 
+### Start the worker from your phone
+
+Everything above needs somebody at the machine. The agent is what removes that:
+a small supervisor that starts with Windows, watches one Firestore document, and
+starts or stops the worker when the app writes to it. Install it once, on the
+worker machine:
+
+```powershell
+powershell -File tools/agent.ps1 -Install -Live   # start with Windows, watch the real project
+powershell -File tools/agent.ps1 -Status          # what is installed, what is running, recent log
+powershell -File tools/agent.ps1 -Uninstall
+powershell -File tools/agent.ps1 -Live            # run it here in this window, to debug it
+```
+
+The Worker page then has a working Start button on every device, phone included,
+and the panel above the queue says which machine it is talking to and what that
+machine is doing about it.
+
+**Why a document rather than a port.** The worker's control API is loopback-only
+and stays that way ([ADR-0011](docs/adr/0011-local-control-api.md)) — reaching it
+from a phone would mean a tunnel, a LAN exposure, or dynamic DNS standing behind
+a button. The agent holds its connection *outbound* instead, so nothing on the
+machine listens for the internet and the attack surface does not grow. The PWA
+writes what it wants (`desired: RUNNING | STOPPED`); the agent writes what is
+actually happening, and `firestore.rules` keeps those two halves apart.
+
+It also answers the question a worker heartbeat structurally cannot. A worker
+that is not running cannot send a heartbeat saying so, so "the PC is on and
+waiting" and "the PC is off" look identical from a phone. The agent keeps
+reporting either way.
+
+A few properties worth knowing, each of which exists because of the alternative:
+
+- **Stopping asks; it kills only what it started, only after 15 seconds, only
+  when asking failed.** A killed worker strands its in-flight job behind a lease
+  nobody is renewing.
+- **A worker it did not start is reported, never duplicated** — and never
+  stopped on the strength of a standing `STOPPED` that nobody has restated.
+  Pressing Stop does stop it.
+- **A worker that dies while it is wanted comes back**, with a widening backoff,
+  until it has failed five times in a row — after which the agent leaves the
+  reason on screen instead of retrying. Pressing Start again clears that.
+- **It does not stop the worker when it exits.** The agent supervises the worker,
+  it does not own it.
+
+See [ADR-0012](docs/adr/0012-machine-agent.md) for the whole design, including
+why it is a logon task rather than a Windows service.
+
 ## Testing tiers
 
 | Tier | In CI | Requires | Covers |
@@ -462,6 +574,9 @@ Stated plainly, because they are real:
   OAuth token.
 - **No push notifications yet.** FCM was scoped for the review loop and has not been built, so you
   find out a clip is ready by opening the app rather than by being told.
+- **The worker machine has to be switched on.** The agent can start the worker from anywhere, but it
+  cannot start the PC — there is no wake-on-LAN here. An agent that has stopped reporting is the app
+  saying exactly that.
 - **Publishing third-party content is your responsibility.** See below.
 - **Windows-first.** The worker is developed and tested on Windows. Nothing is deliberately
   platform-locked, but Linux and macOS are unverified.

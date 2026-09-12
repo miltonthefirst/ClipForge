@@ -24,12 +24,14 @@ from clipforge_contracts import (
     JobType,
     Lane,
     MusicOptions,
+    RemakeOptions,
     StageName,
     StageStatus,
 )
 from clipforge_contracts import Stage as ContractStage
 
 from clipforge.config import Settings
+from clipforge.media.speech import SpeechSynth
 from clipforge.media.workspace import Workspace
 from clipforge.publish.youtube import YouTubeClient
 from clipforge.stages.analyze import AnalyzeStage
@@ -48,16 +50,19 @@ __all__ = [
     "CLIP_PIPELINE",
     "MUSIC_PIPELINE",
     "PUBLISH_PIPELINE",
+    "REMAKE_PIPELINE",
     "UPLOAD_PIPELINE",
     "build_clip_registry",
     "build_clip_stages",
     "build_publish_registry",
     "build_registry_factory",
+    "build_remake_registry",
     "build_upload_registry",
     "clip_stages",
     "new_clip_job",
     "new_music_job",
     "new_publish_job",
+    "new_remake_job",
     "new_upload_job",
 ]
 
@@ -88,6 +93,14 @@ PUBLISH_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.PUBLISH, Lane
 MUSIC_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.MUSIC, Lane.CPU),)
 
 UPLOAD_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.UPLOAD, Lane.CPU),)
+
+# And so is a remake, for the third time and the same reason: a correction is
+# something someone decides while watching a clip that was finished hours ago.
+# The CPU lane even though it may take a GPU lease part-way through — to read the
+# reviewer's note, or to re-align captions against a new narration. Those are
+# seconds of a job that is otherwise minutes of ffmpeg, and occupying the GPU
+# lane for the whole of it would block a transcription for no reason.
+REMAKE_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.REMAKE, Lane.CPU),)
 
 
 def build_clip_stages(
@@ -294,6 +307,95 @@ def new_music_job(
     )
 
 
+def build_remake_registry(
+    *,
+    settings: Settings,
+    clips: ClipStore,
+    candidates: CandidateStore,
+    sources: SourceStore,
+    archive: TranscriptArchive,
+    workspace: Workspace,
+    blobs: BlobStore,
+) -> StageRegistry:
+    """The one-stage registry for REMAKE jobs.
+
+    The synthesiser is constructed here but loads nothing: a worker with no
+    speech extra installed must still start, and must still be able to reframe a
+    clip — reframing is the half of this stage that needs no models at all, and
+    it is the half the football case needs. A *voice* request is what produces
+    the install instruction, from the stage, where the message can name the
+    command that fixes it.
+
+    The transcriber is deliberately not built here. It needs the worker's own
+    `ModelBroker`, which arrives on the stage context: a second broker would be
+    a second lock over one GPU, and two "exclusive" leases held at once is
+    precisely the 6 GB overcommit the broker exists to prevent.
+    """
+    from clipforge.stages.remake import RemakeStage
+
+    registry = StageRegistry()
+    registry.register(
+        RemakeStage(
+            settings=settings,
+            clips=clips,
+            candidates=candidates,
+            sources=sources,
+            archive=archive,
+            workspace=workspace,
+            blobs=blobs,
+            speech=_speech_synth(settings),
+        )
+    )
+    return registry
+
+
+def _speech_synth(settings: Settings) -> SpeechSynth:
+    """The Kokoro adapter, or None when it cannot be constructed.
+
+    Construction does not load the model — that happens on first use — so this
+    is cheap and the failure it guards against is an import error, not a missing
+    weights file. A missing weights file is reported by the stage, where the
+    message can name the command that fetches it.
+    """
+    from clipforge.media.speech import KokoroSynth
+
+    return KokoroSynth(
+        model_path=settings.speech_model_path.expanduser(),
+        voices_path=settings.speech_voices_path.expanduser(),
+    )
+
+
+def new_remake_job(
+    *,
+    uid: str,
+    clip_id: str,
+    options: RemakeOptions,
+    job_id: str | None = None,
+    max_attempts: int = 1,
+) -> Job:
+    """Build a REMAKE job for one finished clip.
+
+    ``max_attempts`` is 1, as with MUSIC. Every way this stage fails is a
+    property of its inputs — a source the collector has taken, a language with
+    no voice, nudges that cross over — and a retry reproduces them exactly while
+    spending the render time again.
+    """
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.REMAKE,
+        status=JobStatus.QUEUED,
+        clip_id=clip_id,
+        remake_options=options,
+        stages=clip_stages(REMAKE_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def build_upload_registry(*, settings: Settings, clips: ClipStore) -> StageRegistry:
     """The one-stage registry for UPLOAD jobs.
 
@@ -433,6 +535,16 @@ def build_registry_factory(
         blobs=blobs,
     )
 
+    remake = build_remake_registry(
+        settings=settings,
+        clips=clips,
+        candidates=candidates,
+        sources=sources,
+        archive=archive,
+        workspace=workspace,
+        blobs=blobs,
+    )
+
     def factory(job_type: JobType) -> StageRegistry:
         if job_type is JobType.ECHO:
             return echo_registry()
@@ -444,6 +556,8 @@ def build_registry_factory(
             return music
         if job_type is JobType.UPLOAD:
             return upload
+        if job_type is JobType.REMAKE:
+            return remake
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")
 
     return factory
