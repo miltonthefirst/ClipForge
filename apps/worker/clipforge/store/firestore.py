@@ -47,10 +47,14 @@ from clipforge_contracts import (
 from google.api_core import exceptions as gcloud_exceptions
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
+from pydantic import BaseModel, ValidationError
 
 from clipforge.config import Settings
+from clipforge.observability import get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.lease import Transition
+
+log = get_logger(__name__)
 
 JOBS = "jobs"
 WORKERS = "workers"
@@ -137,7 +141,56 @@ def _is_contention(exc: BaseException) -> bool:
 
 
 def _to_job(data: dict[str, Any]) -> Job:
-    return Job.model_validate(data)
+    return _read(Job, data)
+
+
+def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
+    """One Firestore document, as a model, tolerating fields we do not know.
+
+    The contracts set ``extra="forbid"`` and that is right for *writing*: it
+    turns a mistyped field name into an error rather than a value that silently
+    goes nowhere. On *reading* it is the wrong rule, and the difference cost a
+    live failure.
+
+    A worker holds the models it imported at start-up. Add a field to the
+    schema, let a newer process write documents carrying it, and every
+    already-running reader begins failing on documents that are perfectly
+    valid — with a pydantic error naming the new field, which reads like
+    corruption rather than like a version skew. That is exactly what happened
+    when ``lineageId`` and ``version`` were added to ``Clip`` and backfilled
+    onto every existing document: a worker six hours older than the schema
+    rejected all seventeen of them.
+
+    So the compatibility rule is **tolerate additions, refuse changes**. An
+    unknown field is dropped and logged once; anything else — a missing
+    required field, a value of the wrong type — still raises, because those
+    are the failures that mean something is genuinely wrong rather than merely
+    newer.
+
+    The log line is the part that matters operationally. It names the fields,
+    which is enough to tell an operator their worker is behind the schema and
+    wants restarting.
+    """
+    try:
+        return model.model_validate(data)
+    except ValidationError as first:
+        unknown = {
+            str(error["loc"][0])
+            for error in first.errors()
+            if error["type"] == "extra_forbidden" and error["loc"]
+        }
+        if not unknown or len(unknown) != len(first.errors()):
+            # Something other than an unrecognised field is wrong. Raise the
+            # original error rather than a second one from a stripped retry,
+            # which would describe the symptom and not the cause.
+            raise
+        log.warning(
+            "store.unknown_fields",
+            model=model.__name__,
+            fields=sorted(unknown),
+            detail="written by a newer version of the contracts; restart the worker to use them",
+        )
+        return model.model_validate({k: v for k, v in data.items() if k not in unknown})
 
 
 class JobStore:
@@ -412,7 +465,7 @@ class SourceStore:
         snapshot = self._db.collection(SOURCES).document(source_id).get()
         if not snapshot.exists:
             return None
-        return Source.model_validate(snapshot.to_dict() or {})
+        return _read(Source, snapshot.to_dict() or {})
 
     def find_by_external_id(self, *, provider: SourceProvider, external_id: str) -> Source | None:
         """Dedupe *before* downloading.
@@ -436,7 +489,7 @@ class SourceStore:
             .limit(1)
         )
         for doc in query.stream():
-            return Source.model_validate(doc.to_dict() or {})
+            return _read(Source, doc.to_dict() or {})
         return None
 
     def find_by_content_hash(self, *, content_hash: str) -> Source | None:
@@ -447,7 +500,7 @@ class SourceStore:
             .limit(1)
         )
         for doc in query.stream():
-            return Source.model_validate(doc.to_dict() or {})
+            return _read(Source, doc.to_dict() or {})
         return None
 
     def save(self, source: Source) -> None:
@@ -476,7 +529,7 @@ class SourceStore:
             if uid is not None
             else collection
         )
-        return [Source.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+        return [_read(Source, doc.to_dict() or {}) for doc in query.stream()]
 
 
 class CandidateStore:
@@ -496,13 +549,13 @@ class CandidateStore:
         snapshot = self._db.collection(CANDIDATES).document(candidate_id).get()
         if not snapshot.exists:
             return None
-        return Candidate.model_validate(snapshot.to_dict() or {})
+        return _read(Candidate, snapshot.to_dict() or {})
 
     def for_job(self, job_id: str) -> list[Candidate]:
         query = self._db.collection(CANDIDATES).where(
             filter=firestore.FieldFilter("jobId", "==", job_id)
         )
-        return [Candidate.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+        return [_read(Candidate, doc.to_dict() or {}) for doc in query.stream()]
 
     def replace_for_job(self, job_id: str, candidates: list[Candidate]) -> None:
         """Write this job's candidates, removing any from a previous attempt.
@@ -533,13 +586,13 @@ class ClipStore:
         snapshot = self._db.collection(CLIPS).document(clip_id).get()
         if not snapshot.exists:
             return None
-        return Clip.model_validate(snapshot.to_dict() or {})
+        return _read(Clip, snapshot.to_dict() or {})
 
     def for_job(self, job_id: str) -> list[Clip]:
         query = self._db.collection(CLIPS).where(
             filter=firestore.FieldFilter("jobId", "==", job_id)
         )
-        return [Clip.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+        return [_read(Clip, doc.to_dict() or {}) for doc in query.stream()]
 
     def preview(self, clip_id: str) -> ClipPreview | None:
         snapshot = (
@@ -551,7 +604,7 @@ class ClipStore:
         )
         if not snapshot.exists:
             return None
-        return ClipPreview.model_validate(snapshot.to_dict() or {})
+        return _read(ClipPreview, snapshot.to_dict() or {})
 
     def save(self, clip: Clip, *, preview: ClipPreview | None = None) -> None:
         """Write a clip and its poster together.
@@ -590,7 +643,7 @@ class PreferenceStore:
         the rejected ones too so it does not propose them a second time.
         """
         rows = [
-            Preference.model_validate(doc.to_dict() or {})
+            _read(Preference, doc.to_dict() or {})
             for doc in self._db.collection(PREFERENCES).limit(limit).stream()
         ]
         return [
@@ -657,12 +710,11 @@ class PublicationStore:
         snapshot = self._collection(clip_id).document(publication_id).get()
         if not snapshot.exists:
             return None
-        return Publication.model_validate(snapshot.to_dict() or {})
+        return _read(Publication, snapshot.to_dict() or {})
 
     def for_clip(self, clip_id: str) -> list[Publication]:
         return [
-            Publication.model_validate(doc.to_dict() or {})
-            for doc in self._collection(clip_id).stream()
+            _read(Publication, doc.to_dict() or {}) for doc in self._collection(clip_id).stream()
         ]
 
     def save(self, publication: Publication) -> None:
@@ -706,11 +758,11 @@ class WorkerStore:
         snapshot = self._db.collection(WORKERS).document(worker_id).get()
         if not snapshot.exists:
             return None
-        return WorkerHeartbeat.model_validate(snapshot.to_dict() or {})
+        return _read(WorkerHeartbeat, snapshot.to_dict() or {})
 
     def all(self) -> Sequence[WorkerHeartbeat]:
         return [
-            WorkerHeartbeat.model_validate(doc.to_dict() or {})
+            _read(WorkerHeartbeat, doc.to_dict() or {})
             for doc in self._db.collection(WORKERS).stream()
         ]
 
