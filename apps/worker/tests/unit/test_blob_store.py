@@ -27,6 +27,11 @@ from clipforge.store.blobs import (
     LocalBlobStore,
 )
 
+# Every test in this file is the unit tier. Without this marker CI's
+# `pytest -m unit` silently deselects the whole file — the tests pass locally,
+# run nowhere, and protect nothing.
+pytestmark = pytest.mark.unit
+
 
 class FakeBlob:
     def __init__(self, key: str, fails: Exception | None) -> None:

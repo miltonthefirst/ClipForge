@@ -32,6 +32,11 @@ from clipforge_contracts import (
     StageStatus,
 )
 
+# Every test in this file is the unit tier. Without this marker CI's
+# `pytest -m unit` silently deselects the whole file — the tests pass locally,
+# run nowhere, and protect nothing.
+pytestmark = pytest.mark.unit
+
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 
 
@@ -130,7 +135,7 @@ def job_for(clip_id: str | None) -> Job:
 
 
 def test_a_job_without_a_clip_is_refused_without_retrying(tmp_path: Path) -> None:
-    stage = UploadStage(clips=FakeClipStore(None), blobs=FakeBlobStore())
+    stage = UploadStage(clips=FakeClipStore(None), blobs=FakeBlobStore())  # type: ignore[arg-type]
     with pytest.raises(UploadStageError) as caught:
         stage.run(context(job_for(None)))
     assert caught.value.retryable is False
@@ -141,7 +146,7 @@ def test_a_missing_local_file_is_not_retried(tmp_path: Path) -> None:
     """Retrying cannot make a file reappear, and burning three attempts on it
     only delays the message that says which machine was asked."""
     store = FakeClipStore(clip(tmp_path))  # the path is never created
-    stage = UploadStage(clips=store, blobs=FakeBlobStore())
+    stage = UploadStage(clips=store, blobs=FakeBlobStore())  # type: ignore[arg-type]
 
     with pytest.raises(UploadStageError) as caught:
         stage.run(context(job_for("clip-1")))
@@ -164,7 +169,7 @@ def test_a_worker_with_no_bucket_says_so_rather_than_reporting_success(tmp_path:
     source = tmp_path / "clip-1.mp4"
     source.write_bytes(b"video")
     store = FakeClipStore(clip(tmp_path))
-    stage = UploadStage(clips=store, blobs=LocalBlobStore(tmp_path / "workspace"))
+    stage = UploadStage(clips=store, blobs=LocalBlobStore(tmp_path / "workspace"))  # type: ignore[arg-type]
 
     with pytest.raises(UploadStageError) as caught:
         stage.run(context(job_for("clip-1")))
@@ -188,7 +193,7 @@ def test_a_refused_upload_says_what_went_wrong_and_is_retried(tmp_path: Path) ->
     source.write_bytes(b"video")
     store = FakeClipStore(clip(tmp_path))
     blobs = FakeBlobStore(fails=BlobUploadError("uploading clips/user-1/clip-1.mp4 failed: 403"))
-    stage = UploadStage(clips=store, blobs=blobs)
+    stage = UploadStage(clips=store, blobs=blobs)  # type: ignore[arg-type]
 
     with pytest.raises(UploadStageError) as caught:
         stage.run(context(job_for("clip-1")))
@@ -218,7 +223,7 @@ def test_the_upload_job_demands_a_bucket_copy(tmp_path: Path) -> None:
             size_bytes=5,
         )
     )
-    stage = UploadStage(clips=FakeClipStore(clip(tmp_path)), blobs=blobs)
+    stage = UploadStage(clips=FakeClipStore(clip(tmp_path)), blobs=blobs)  # type: ignore[arg-type]
 
     stage.run(context(job_for("clip-1")))
 
@@ -240,7 +245,7 @@ def test_a_clip_already_in_the_bucket_is_skipped_not_reuploaded(tmp_path: Path) 
             location=ClipLocation.REMOTE,
         )
     )
-    stage = UploadStage(clips=store, blobs=blobs)
+    stage = UploadStage(clips=store, blobs=blobs)  # type: ignore[arg-type]
 
     outcome = stage.run(context(job_for("clip-1")))
 
@@ -271,7 +276,7 @@ def test_an_expired_bucket_copy_is_uploaded_again(tmp_path: Path) -> None:
             location=ClipLocation.REMOTE,
         )
     )
-    stage = UploadStage(clips=store, blobs=blobs)
+    stage = UploadStage(clips=store, blobs=blobs)  # type: ignore[arg-type]
 
     outcome = stage.run(context(job_for("clip-1")))
 
@@ -293,7 +298,7 @@ def test_a_successful_upload_marks_the_clip_reachable(tmp_path: Path) -> None:
         )
     )
     store = FakeClipStore(clip(tmp_path))
-    stage = UploadStage(clips=store, blobs=blobs)
+    stage = UploadStage(clips=store, blobs=blobs)  # type: ignore[arg-type]
 
     outcome = stage.run(context(job_for("clip-1")))
 

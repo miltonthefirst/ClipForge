@@ -20,6 +20,11 @@ import pytest
 from clipforge.media.tracking import _best_window as best_window
 from clipforge.media.tracking import column_energy, smooth_path, window_fraction
 
+# Every test in this file is the unit tier. Without this marker CI's
+# `pytest -m unit` silently deselects the whole file — the tests pass locally,
+# run nowhere, and protect nothing.
+pytestmark = pytest.mark.unit
+
 
 def field(width: int = 160, **spikes: float) -> np.ndarray:
     """One row of column energy, with motion at named positions.

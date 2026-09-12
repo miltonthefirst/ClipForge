@@ -24,6 +24,11 @@ from clipforge.media.framing import (
 from clipforge.media.profiles import RenderProfile
 from clipforge_contracts import FitFill, Framing, FramingMode, PanKeyframe
 
+# Every test in this file is the unit tier. Without this marker CI's
+# `pytest -m unit` silently deselects the whole file — the tests pass locally,
+# run nowhere, and protect nothing.
+pytestmark = pytest.mark.unit
+
 
 def media(width: int = 1920, height: int = 1080) -> MediaInfo:
     return MediaInfo(

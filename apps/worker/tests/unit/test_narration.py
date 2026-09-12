@@ -19,6 +19,11 @@ from clipforge.media.narration import (
 )
 from clipforge_contracts import SpeechMode
 
+# Every test in this file is the unit tier. Without this marker CI's
+# `pytest -m unit` silently deselects the whole file — the tests pass locally,
+# run nowhere, and protect nothing.
+pytestmark = pytest.mark.unit
+
 
 def plan(**overrides: object) -> NarrationPlan:
     defaults = {
