@@ -639,6 +639,19 @@ class RemakeStage:
         if client is None or not client.is_available():
             return None
 
+        # **Outside the lease, and that is not a style choice.** `_look` takes a
+        # lease of its own, and the broker's lock is not reentrant, so calling
+        # it from inside this block is a self-deadlock — the thread waits
+        # forever for a lock it is already holding.
+        #
+        # It looked safe because the narration usually looks first and `_look`
+        # caches. It does not always: a clip that already speaks the language
+        # asked for skips the translation branch entirely, never looks, and this
+        # is then the first call. That is exactly what happened — a remake of an
+        # English clip into English ran for fifty-five minutes, had its lease
+        # expire, was reclaimed, and started again.
+        visual = self._look(context, original, cut)
+
         try:
             with context.broker.acquire(f"ollama:{client.model}", NOTE_LLM_VRAM_MB):
                 written = write_metadata(
@@ -646,8 +659,7 @@ class RemakeStage:
                     language=voice.language,
                     spoken_text=spoken_text,
                     duration_sec=cut.duration_sec,
-                    # Already paid for by the narration, when there was one.
-                    visual=self._look(context, original, cut),
+                    visual=visual,
                     source_title=self._source_title(original),
                 )
         except InsufficientVramError as exc:

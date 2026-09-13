@@ -136,6 +136,29 @@ on the score bug. What changed is that it no longer does so silently: the tag is
 dropped, the description carries a warning naming the words, and the reviewer
 can still overrule the title at publish time.
 
+## The bug this shipped with, and what it cost
+
+`_metadata` called `_look` from inside `broker.acquire`. The broker's lock is a
+plain `threading.Lock`, so that is a thread waiting for a lock it already holds
+— forever.
+
+It looked safe. The narration looks first and `_look` caches, so by the time
+metadata is written there is normally nothing to acquire. *Normally.* A clip
+that already speaks the language being asked for skips the translation branch
+entirely and never looks, and metadata is then the first caller.
+
+That case arrived within the day: a remake of an English clip into English ran
+for fifty-five minutes, had its lease expire, was reclaimed by the next worker
+and deadlocked in the same place. It never errored and never timed out. From
+outside it was a job that was simply always RUNNING.
+
+Two fixes, because the first one alone would leave the trap armed. The call was
+hoisted out of the block, and `ModelBroker.acquire` now **raises**
+`NestedLeaseError` when the calling thread already holds a lease. "Do not call a
+brokered function from inside a brokered block" is an invisible rule about code
+somebody else wrote, and it was broken within a day of the broker gaining a
+second caller.
+
 ## Alternatives considered
 
 **Fix the transcription instead.** Whisper `large-v3-turbo` is already the model

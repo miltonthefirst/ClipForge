@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 
 import pytest
-from clipforge.models.broker import InsufficientVramError, ModelBroker
+from clipforge.models.broker import InsufficientVramError, ModelBroker, NestedLeaseError
 from clipforge.models.vram import GpuProcess, VramSnapshot
 
 RTX_3050_TOTAL = 6144
@@ -258,3 +258,56 @@ def test_peak_vram_is_observed_through_the_lease() -> None:
 
     with broker.acquire("whisper", required_mb=1600) as leased:
         assert leased.observe() == RTX_3050_TOTAL - 4000
+
+
+# ── Nesting ──────────────────────────────────────────────────────────────────
+
+
+def test_a_second_lease_on_one_thread_is_refused_rather_than_waited_for() -> None:
+    """The lock is not reentrant, so a nested acquire waits for itself forever.
+
+    That is the worst failure this class can produce. It does not error, it does
+    not time out, and it does not look like a hang from outside: the stage sits
+    RUNNING, the lease expires, the reaper hands the job on, and the next worker
+    deadlocks in the same place. A REMAKE ran for fifty-five minutes that way.
+    """
+    broker = ModelBroker(reserve_mb=0, probe=lambda: snapshot(free_mb=8000))
+
+    with (
+        broker.acquire("whisper", 2000),
+        pytest.raises(NestedLeaseError, match="do not nest"),
+        broker.acquire("ollama", 1000),
+    ):
+        pass  # pragma: no cover - reaching the body is the failure
+
+
+def test_a_refused_nesting_does_not_leak_the_lock() -> None:
+    """The refusal happens before the lock is taken, so the outer block can
+    still release and the next caller is not wedged behind a ghost."""
+    broker = ModelBroker(reserve_mb=0, probe=lambda: snapshot(free_mb=8000))
+
+    with (
+        broker.acquire("whisper", 2000),
+        pytest.raises(NestedLeaseError),
+        broker.acquire("ollama", 1000),
+    ):
+        pass  # pragma: no cover
+
+    with broker.acquire("ollama", 1000) as lease:
+        assert lease.model == "ollama"
+
+
+def test_the_message_names_both_models() -> None:
+    """Whoever reads this is looking at a stack trace and needs to know which
+    two calls collided."""
+    broker = ModelBroker(reserve_mb=0, probe=lambda: snapshot(free_mb=8000))
+
+    with (
+        broker.acquire("whisper", 2000),
+        pytest.raises(NestedLeaseError) as caught,
+        broker.acquire("vision", 4500),
+    ):
+        pass  # pragma: no cover
+
+    assert "vision" in str(caught.value)
+    assert "whisper" in str(caught.value)
