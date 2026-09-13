@@ -197,6 +197,22 @@ middle out — is listed on the finished clip instead of being quietly skipped.
 > speak the original language. It does **not** make footage safe to publish — see
 > [Rights and responsible use](#rights-and-responsible-use).
 
+**It looks at the clip before it says anything about it.** Re-voicing used to be "translate the
+transcript", which is right exactly as often as the transcript is — and on stadium commentary that
+is not often. A clip once went out saying *"very bad beauty glim this pure left lateral munitions
+shot"*, because a speech recogniser mangled the French and a translator rendered the mangling
+faithfully. Now three frames go to a vision model first, and the narration is **written** from what
+is on screen and what was said together. Same clip, same footage: *"Pavlovitch makes a good pass to
+break through the first line. Kane can curl it with his right foot."*
+
+**Titles, descriptions and tags follow the language.** Change a clip to English and its title,
+description and tags are rewritten in English, for a feed rather than for an archive: the hook in
+the first few words, the searchable nouns in the tags, hashtags on their own line. They used to be a
+fragment of raw transcript and a sentence explaining why the clip had been selected. Anything the
+system names but cannot back up from the clip or its source is flagged on the clip, so a guessed
+opponent is something you are told about rather than something you publish.
+See [ADR-0016](docs/adr/0016-looking-at-the-clip-before-speaking.md).
+
 **It can hide what the broadcaster burnt in.** Tick *Hide logos, watermarks and burnt-in text* on
 a remake, or just write "blur the channel logo" in the note, and it looks through the footage for
 anything holding still while the rest of the picture moves — a channel bug, a score bar, a clock

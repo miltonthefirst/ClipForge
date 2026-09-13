@@ -344,6 +344,97 @@ class NoteTopic(StrEnum):
     OBSCURE = "OBSCURE"
 
 
+class OnScreenTextItem(RootModel[str]):
+    root: str = Field(..., max_length=80)
+
+
+class LlmVisualContext(BaseModel):
+    """
+    What a vision model sees in a handful of frames from one clip.
+
+    This exists because the pipeline was narrating footage it had never looked at. A speech recogniser handed French football commentary returns "très mal à beaude glim cette frappe pure latérale gauche municois", a translator faithfully renders that as "very bad beauty glim this pure left lateral munitions shot", and a synthesiser reads it aloud over a goal. Every step did its job. Nothing in the chain could tell that the words were nonsense, because nothing in the chain had seen a football.
+
+    It is **description, never inference**. What is in the frame, what the scoreboard says, what colours the teams wear. Not who is about to score.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    subject: str = Field(..., max_length=200)
+    """
+    What kind of footage this is, in a phrase. 'A football match, one side in red, the other in yellow.'
+    """
+    happens: str = Field(..., max_length=700)
+    """
+    What actually occurs across the frames, in order. The part a narration can be built on.
+    """
+    on_screen_text: list[OnScreenTextItem] = Field(
+        ..., alias="onScreenText", max_length=8
+    )
+    """
+    Text readable in the frames — a scoreline, a clock, team abbreviations, hoardings. Worth having separately because it is the one part of a frame that is unambiguous, and because it is often the thing a caption got wrong.
+    """
+
+
+class LlmNarration(BaseModel):
+    """
+    A spoken line for one clip, in the language that was asked for.
+
+    Replaces "translate the transcript", which is correct exactly as often as the transcript is. Handed both the transcript AND what is visible, the model can tell which words survived the recogniser and which did not, and can write around the ones that did not.
+
+    `transcriptUsable` comes first and is the whole point of the shape: a model that has committed to an answer about the transcript's quality writes a different script than one that has not been asked. It is the same device `LlmPreferenceProposal` uses, for the same reason — make the decision before the thing that depends on it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    transcript_usable: bool = Field(..., alias="transcriptUsable")
+    """
+    Does the transcript carry meaning a listener would want, or has the recogniser mangled it past rescue? Answered before the script exists.
+    """
+    reasoning: str = Field(..., max_length=300)
+    """
+    One sentence on that judgement. Not stored — it exists to make the model state a position it then has to write consistently with.
+    """
+    script: str = Field(..., max_length=1200)
+    """
+    The words to speak, in the target language and nothing else. No speaker labels, no stage directions, no quotation marks around the whole thing: a synthesiser reads whatever is here, literally.
+    """
+
+
+class Tag(RootModel[str]):
+    root: str = Field(..., max_length=40)
+
+
+class LlmClipMetadata(BaseModel):
+    """
+    A title, a description and tags for one finished clip.
+
+    The fields they replace were never written to be read. `Clip.title` was `Candidate.hook`, which the analysis prompt defines as "the actual opening line, quoted from the transcript" — so a real clip went out titled `"on a franchi un premier rideau kane peut enroulé du plat"`, lowercase, in French, on a clip that had been re-voiced into English. `Clip.description` was `Candidate.reason`, which is one sentence on *why the clip was selected*: "This segment captures the high-tension moment where Kane breaks through the defense, creating an immediate visual hook for football fans." That is a note from an analyst to a pipeline, and it was being shown to viewers.
+
+    Written for reach rather than for accuracy about the selection: the first few words of a title and the first line of a description are what a feed shows, and they decide whether anything else is read.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    title: str = Field(..., max_length=100)
+    """
+    The hook, front-loaded, in the target language. What happened and who it happened to, in the first few words, because that is all a feed shows before it truncates.
+    """
+    description: str = Field(..., max_length=900)
+    """
+    First line carries the hook again — it is the only line most viewers see. Then a sentence or two of context, then hashtags on their own line.
+    """
+    tags: list[Tag] = Field(..., max_length=15, min_length=5)
+    """
+    Search terms, lowercase, broad ones and specific ones together. `minItems` rather than a request in the prompt, because an empty array satisfies an array schema trivially and a small model takes the cheapest answer that validates — the lesson LlmPreferenceProposal paid for.
+    """
+
+
 class LlmRemakeNote(BaseModel):
     """
     The schema-constrained reading of a reviewer's note. Handed to Ollama as a format constraint, like LlmClipResponse, so the model cannot answer with prose.
@@ -1545,8 +1636,18 @@ class Clip(BaseModel):
     height_px: int | None = Field(None, alias="heightPx", ge=1)
     size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
     render_profile: str | None = Field(None, alias="renderProfile")
-    title: str | None = None
-    description: str | None = None
+    title: str | None = Field(None, max_length=200)
+    """
+    What this clip is called, written to be read. Until LlmClipMetadata existed this was `Candidate.hook` — a line quoted out of the transcript — so clips went out titled with lowercase French ASR fragments.
+    """
+    description: str | None = Field(None, max_length=2000)
+    """
+    The text that goes out with the clip. Previously `Candidate.reason`, which is one sentence on why the window was SELECTED — an analyst's note to a pipeline, shown to viewers.
+    """
+    tags: list[Tag] | None = Field([], max_length=15, validate_default=True)
+    """
+    Search terms for this clip, written with its title and description. Carried here rather than only on the channel because they are about THIS clip — a channel-wide list is the same on a goal and on a press conference.
+    """
     review: ReviewState
     reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
     lineage_id: str | None = Field(None, alias="lineageId", min_length=1)

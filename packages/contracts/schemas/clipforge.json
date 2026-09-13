@@ -495,6 +495,83 @@
       "enum": ["FRAMING", "LANGUAGE", "AUDIO", "TIMING", "OBSCURE"]
     },
 
+    "LlmVisualContext": {
+      "title": "LlmVisualContext",
+      "description": "What a vision model sees in a handful of frames from one clip.\n\nThis exists because the pipeline was narrating footage it had never looked at. A speech recogniser handed French football commentary returns \"tr\u00e8s mal \u00e0 beaude glim cette frappe pure lat\u00e9rale gauche municois\", a translator faithfully renders that as \"very bad beauty glim this pure left lateral munitions shot\", and a synthesiser reads it aloud over a goal. Every step did its job. Nothing in the chain could tell that the words were nonsense, because nothing in the chain had seen a football.\n\nIt is **description, never inference**. What is in the frame, what the scoreboard says, what colours the teams wear. Not who is about to score.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "happens", "onScreenText"],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "What kind of footage this is, in a phrase. 'A football match, one side in red, the other in yellow.'"
+        },
+        "happens": {
+          "type": "string",
+          "maxLength": 700,
+          "description": "What actually occurs across the frames, in order. The part a narration can be built on."
+        },
+        "onScreenText": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 80 },
+          "maxItems": 8,
+          "description": "Text readable in the frames \u2014 a scoreline, a clock, team abbreviations, hoardings. Worth having separately because it is the one part of a frame that is unambiguous, and because it is often the thing a caption got wrong."
+        }
+      }
+    },
+
+    "LlmNarration": {
+      "title": "LlmNarration",
+      "description": "A spoken line for one clip, in the language that was asked for.\n\nReplaces \"translate the transcript\", which is correct exactly as often as the transcript is. Handed both the transcript AND what is visible, the model can tell which words survived the recogniser and which did not, and can write around the ones that did not.\n\n`transcriptUsable` comes first and is the whole point of the shape: a model that has committed to an answer about the transcript's quality writes a different script than one that has not been asked. It is the same device `LlmPreferenceProposal` uses, for the same reason \u2014 make the decision before the thing that depends on it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcriptUsable", "reasoning", "script"],
+      "properties": {
+        "transcriptUsable": {
+          "type": "boolean",
+          "description": "Does the transcript carry meaning a listener would want, or has the recogniser mangled it past rescue? Answered before the script exists."
+        },
+        "reasoning": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "One sentence on that judgement. Not stored \u2014 it exists to make the model state a position it then has to write consistently with."
+        },
+        "script": {
+          "type": "string",
+          "maxLength": 1200,
+          "description": "The words to speak, in the target language and nothing else. No speaker labels, no stage directions, no quotation marks around the whole thing: a synthesiser reads whatever is here, literally."
+        }
+      }
+    },
+
+    "LlmClipMetadata": {
+      "title": "LlmClipMetadata",
+      "description": "A title, a description and tags for one finished clip.\n\nThe fields they replace were never written to be read. `Clip.title` was `Candidate.hook`, which the analysis prompt defines as \"the actual opening line, quoted from the transcript\" \u2014 so a real clip went out titled `\"on a franchi un premier rideau kane peut enroul\u00e9 du plat\"`, lowercase, in French, on a clip that had been re-voiced into English. `Clip.description` was `Candidate.reason`, which is one sentence on *why the clip was selected*: \"This segment captures the high-tension moment where Kane breaks through the defense, creating an immediate visual hook for football fans.\" That is a note from an analyst to a pipeline, and it was being shown to viewers.\n\nWritten for reach rather than for accuracy about the selection: the first few words of a title and the first line of a description are what a feed shows, and they decide whether anything else is read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "description", "tags"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "The hook, front-loaded, in the target language. What happened and who it happened to, in the first few words, because that is all a feed shows before it truncates."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 900,
+          "description": "First line carries the hook again \u2014 it is the only line most viewers see. Then a sentence or two of context, then hashtags on their own line."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 40 },
+          "minItems": 5,
+          "maxItems": 15,
+          "description": "Search terms, lowercase, broad ones and specific ones together. `minItems` rather than a request in the prompt, because an empty array satisfies an array schema trivially and a small model takes the cheapest answer that validates \u2014 the lesson LlmPreferenceProposal paid for."
+        }
+      }
+    },
+
     "LlmRemakeNote": {
       "title": "LlmRemakeNote",
       "description": "The schema-constrained reading of a reviewer's note. Handed to Ollama as a format constraint, like LlmClipResponse, so the model cannot answer with prose.\n\nThree details of this shape are load-bearing, and all three were measured against qwen3.5:4b rather than reasoned about.\n\n**`topics` comes first and bounds everything after it.** Fields belonging to a topic the model did not declare are discarded by the caller. This exists because the two obvious shapes both fail: with nullable optional fields a 4B writes a summary saying it chose TRACK and then emits null for the mode, and with every field required it fills all of them, inventing a crop and a language for a note about timing. Neither a prompt asking for restraint nor one asking for completeness fixes the other. Declaring scope first is a question the model answers reliably, and it makes the scope a property of the protocol rather than a hope.\n\n**Every decision is still required, with 'the note did not say' as a value rather than a null,** so that within a declared topic there is no lazy path that satisfies the schema while deciding nothing.\n\n**`summary` is last.** Constrained decoding emits properties in declaration order, so a model asked to explain itself first explains a decision it has not made yet and then fails to make it.",
@@ -1426,8 +1503,25 @@
         "heightPx": { "type": ["integer", "null"], "minimum": 1, "default": null },
         "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "default": null },
         "renderProfile": { "type": ["string", "null"], "default": null },
-        "title": { "type": ["string", "null"], "default": null },
-        "description": { "type": ["string", "null"], "default": null },
+        "title": {
+          "type": ["string", "null"],
+          "maxLength": 200,
+          "default": null,
+          "description": "What this clip is called, written to be read. Until LlmClipMetadata existed this was `Candidate.hook` — a line quoted out of the transcript — so clips went out titled with lowercase French ASR fragments."
+        },
+        "description": {
+          "type": ["string", "null"],
+          "maxLength": 2000,
+          "default": null,
+          "description": "The text that goes out with the clip. Previously `Candidate.reason`, which is one sentence on why the window was SELECTED — an analyst's note to a pipeline, shown to viewers."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 40 },
+          "default": [],
+          "maxItems": 15,
+          "description": "Search terms for this clip, written with its title and description. Carried here rather than only on the channel because they are about THIS clip — a channel-wide list is the same on a goal and on a press conference."
+        },
         "review": { "$ref": "#/definitions/ReviewState" },
         "reviewedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
         "lineageId": {

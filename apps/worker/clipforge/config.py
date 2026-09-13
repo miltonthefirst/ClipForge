@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     ollama_host: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3.5:4b"
     ollama_num_ctx: int = 16384
+    # A multimodal model, for the one call per clip that looks at the picture.
+    # Separate from `ollama_model` because looking and reading are not the same
+    # weights: this one is several times the size, does not fit in 6 GB, and is
+    # worth its minute exactly once. Set it to "" to turn looking off entirely —
+    # every caller has a path that works without it.
+    vision_model: str = "mistral-small3.2:latest"
+    vision_frames: int = 3
     vram_reserve_mb: int = Field(default=700, ge=0)
 
     # ── Media ────────────────────────────────────────────────────────────────

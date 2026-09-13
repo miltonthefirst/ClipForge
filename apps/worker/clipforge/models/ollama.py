@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,8 +105,12 @@ class OllamaClient:
     def model(self) -> str:
         return self._model
 
-    def _client(self) -> httpx.Client:
-        return httpx.Client(base_url=self._host, timeout=self._timeout_s, transport=self._transport)
+    def _client(self, timeout_s: float | None = None) -> httpx.Client:
+        return httpx.Client(
+            base_url=self._host,
+            timeout=timeout_s if timeout_s is not None else self._timeout_s,
+            transport=self._transport,
+        )
 
     def is_available(self) -> bool:
         try:
@@ -122,8 +127,19 @@ class OllamaClient:
         prompt: str,
         temperature: float = 0.0,
         seed: int = 0,
+        images: Sequence[str] | None = None,
+        model: str | None = None,
+        timeout_s: float | None = None,
     ) -> T:
         """Generate a response guaranteed to parse as ``schema_model``.
+
+        `images` are base64-encoded stills, for a multimodal model. `model`
+        overrides the configured one, because looking at a picture and reading
+        a sentence are not the same job and are not the same weights — the
+        vision model is several times the size and is used for one call per
+        clip, so it is named per call rather than made the client's identity.
+        `timeout_s` exists for the same reason: a 15 GB model that does not fit
+        in 6 GB of VRAM answers in a minute, not in seconds.
 
         Temperature 0 and a fixed seed by default, because Phase 5's golden test
         requires a fixed transcript to produce a stable candidate set. Selection
@@ -135,11 +151,30 @@ class OllamaClient:
         schema = schema_model.model_json_schema()
 
         try:
-            raw = self._call(system, prompt, schema, temperature, seed)
+            raw = self._call(
+                system,
+                prompt,
+                schema,
+                temperature,
+                seed,
+                images=images,
+                model=model,
+                timeout_s=timeout_s,
+            )
             parsed = schema_model.model_validate_json(raw)
         except ValidationError as first_error:
             parsed = self._repair(
-                schema_model, system, prompt, schema, temperature, seed, raw, first_error
+                schema_model,
+                system,
+                prompt,
+                schema,
+                temperature,
+                seed,
+                raw,
+                first_error,
+                images=images,
+                model=model,
+                timeout_s=timeout_s,
             )
         else:
             self.stats.first_attempt_ok += 1
@@ -159,6 +194,9 @@ class OllamaClient:
         seed: int,
         raw: str,
         error: ValidationError,
+        images: Sequence[str] | None = None,
+        model: str | None = None,
+        timeout_s: float | None = None,
     ) -> T:
         """One retry, with the validation error fed back verbatim.
 
@@ -174,7 +212,16 @@ class OllamaClient:
             "Return corrected JSON that satisfies the schema. Nothing else."
         )
         try:
-            repaired_raw = self._call(system, repair_prompt, schema, temperature, seed + 1)
+            repaired_raw = self._call(
+                system,
+                repair_prompt,
+                schema,
+                temperature,
+                seed + 1,
+                images=images,
+                model=model,
+                timeout_s=timeout_s,
+            )
             parsed = schema_model.model_validate_json(repaired_raw)
         except ValidationError as second_error:
             self.stats.failed += 1
@@ -195,9 +242,13 @@ class OllamaClient:
         schema: dict[str, Any],
         temperature: float,
         seed: int,
+        *,
+        images: Sequence[str] | None = None,
+        model: str | None = None,
+        timeout_s: float | None = None,
     ) -> str:
-        payload = {
-            "model": self._model,
+        payload: dict[str, Any] = {
+            "model": model or self._model,
             "system": system,
             "prompt": prompt,
             "stream": False,
@@ -223,9 +274,14 @@ class OllamaClient:
             # dozens of windows. Models without a thinking mode ignore this.
             "think": False,
         }
+        if images:
+            # Base64 stills, as Ollama's /api/generate takes them. Absent for
+            # every text call, because a `images: []` key changes how some
+            # models route the request — they are not the same code path.
+            payload["images"] = list(images)
 
         try:
-            with self._client() as client:
+            with self._client(timeout_s) as client:
                 response = client.post("/api/generate", json=payload)
         except httpx.HTTPError as exc:
             raise OllamaError(

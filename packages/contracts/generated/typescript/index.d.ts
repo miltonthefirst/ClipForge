@@ -753,8 +753,94 @@ export interface Clip {
   heightPx?: number | null;
   sizeBytes?: number | null;
   renderProfile?: string | null;
+  /**
+   * What this clip is called, written to be read. Until LlmClipMetadata existed this was `Candidate.hook` — a line quoted out of the transcript — so clips went out titled with lowercase French ASR fragments.
+   */
   title?: string | null;
+  /**
+   * The text that goes out with the clip. Previously `Candidate.reason`, which is one sentence on why the window was SELECTED — an analyst's note to a pipeline, shown to viewers.
+   */
   description?: string | null;
+  /**
+   * Search terms for this clip, written with its title and description. Carried here rather than only on the channel because they are about THIS clip — a channel-wide list is the same on a goal and on a press conference.
+   *
+   * @maxItems 15
+   */
+  tags?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string, string]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ];
   review: ReviewState;
   reviewedAt?: string | null;
   /**

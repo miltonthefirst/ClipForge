@@ -78,7 +78,9 @@ from clipforge_contracts import (
     VoiceOptions,
 )
 
-from clipforge.analysis.feedback import ClipFacts, speakability, translation_landed
+from clipforge.analysis.feedback import ClipFacts, speakability
+from clipforge.analysis.metadata import ClipMetadata, write_metadata
+from clipforge.analysis.narrate import reads_as, write_narration
 from clipforge.analysis.preferences import (
     apply_to_options,
     dedupe,
@@ -91,7 +93,6 @@ from clipforge.analysis.remake import (
     describe,
     different_language,
     interpret_note,
-    translate,
 )
 from clipforge.config import Settings
 from clipforge.media.captions import build_ass, group_into_cues
@@ -110,6 +111,7 @@ from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, RenderRequest, render_clip
 from clipforge.media.speech import DEFAULT_VOICES, SpeechError, SpeechSynth, kokoro_language
 from clipforge.media.tracking import TrackError, plan_track
+from clipforge.media.vision import VISION_VRAM_MB, VisualContext, look
 from clipforge.media.workspace import Workspace
 from clipforge.models.broker import InsufficientVramError
 from clipforge.models.ollama import OllamaClient
@@ -279,6 +281,10 @@ class RemakeStage:
         self._refusals: list[str] = []
         # A corner the note named for detection to search in, when it named one.
         self._obscure_where: str | None = None
+        # One look at the footage per run, shared by everything that writes
+        # words about it. A minute is affordable once and not three times.
+        self._visual: VisualContext | None = None
+        self._looked = False
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -303,6 +309,8 @@ class RemakeStage:
         self._notes = []
         self._refusals = []
         self._obscure_where = None
+        self._visual = None
+        self._looked = False
 
         accepted = self._accepted_preferences(original)
         resolved, interpretation = self._resolve(context, options, original, accepted)
@@ -353,6 +361,7 @@ class RemakeStage:
                 context, resolved, original, cut, profile, scratch, voice, utterance_text
             )
             final = self._mix(resolved.voice, picture.path, voice, original, cut, scratch)
+            metadata = self._metadata(context, original, cut, voice, utterance_text)
             outcome = self._publish(
                 context,
                 clip_id=clip_id,
@@ -367,6 +376,7 @@ class RemakeStage:
                 voice=voice,
                 cut=cut,
                 scratch=scratch,
+                metadata=metadata,
             )
             # After the clip exists, never before. Learning is a bonus pass over
             # a finished result — a model that is unreachable, slow or unhelpful
@@ -591,6 +601,114 @@ class RemakeStage:
 
     # ── The voice ────────────────────────────────────────────────────────────
 
+    def _source_title(self, original: Clip) -> str | None:
+        """What the video this was cut from is called.
+
+        The one piece of context nothing else supplies: a transcript does not
+        say which match it is and the pictures rarely do either, but "Le Bayern
+        fait le show a domicile - LDC 2026/2027" says both.
+        """
+        if not original.source_id:
+            return None
+        source = self._sources.get(original.source_id)
+        return source.title if source is not None else None
+
+    def _metadata(
+        self,
+        context: StageContext,
+        original: Clip,
+        cut: _Cut,
+        voice: AppliedVoice | None,
+        spoken_text: str,
+    ) -> ClipMetadata | None:
+        """Rewrite the title, description and tags when the language moved.
+
+        Asked for by the reviewer in as many words: *"when I change to English
+        all descriptions and titles and tags should also be changed"*. It is not
+        a nicety. A clip re-voiced into English keeps a French title, so it goes
+        to an English-speaking feed under a line nobody there can read — and
+        the title it kept was a fragment of raw transcript anyway.
+
+        Only when a voice was produced. A reframe or a blur changes nothing
+        anyone reads, and regenerating on every correction would mean a title
+        that drifts each time somebody nudges a crop.
+        """
+        if voice is None:
+            return None
+        client = self._ollama()
+        if client is None or not client.is_available():
+            return None
+
+        try:
+            with context.broker.acquire(f"ollama:{client.model}", NOTE_LLM_VRAM_MB):
+                written = write_metadata(
+                    client,
+                    language=voice.language,
+                    spoken_text=spoken_text,
+                    duration_sec=cut.duration_sec,
+                    # Already paid for by the narration, when there was one.
+                    visual=self._look(context, original, cut),
+                    source_title=self._source_title(original),
+                )
+        except InsufficientVramError as exc:
+            # A clip with a stale title is worth far more than no clip.
+            log.info("remake.metadata_no_vram", error=str(exc))
+            return None
+
+        if written is not None and written.unverified:
+            # Published as written, because a sentence cannot be filtered the
+            # way a tag list can without leaving a hole in it. Said out loud
+            # instead: a description that named the Europa League on a Champions
+            # League tie went out silently, and the reviewer had no way to know
+            # which words nothing stood behind.
+            self._notes.append(
+                "the description mentions "
+                + ", ".join(written.unverified[:4])
+                + " — nothing in the clip or its source says so, so check before publishing"
+            )
+        return written
+
+    def _look(self, context: StageContext, original: Clip, cut: _Cut) -> VisualContext | None:
+        """What the footage actually shows, once per run.
+
+        Everything that writes words about this clip wants it — the narration,
+        the title, the tags — and it costs about a minute, so it is computed on
+        first ask and kept. Failure is always None: a clip narrated without
+        having looked is the behaviour that existed before this, and it is worth
+        far more than a job that failed because a vision model was busy.
+        """
+        if self._looked:
+            return self._visual
+        self._looked = True
+
+        model = (self._settings.vision_model or "").strip()
+        if not model:
+            return None
+        client = self._ollama()
+        if client is None or not client.is_available():
+            return None
+        try:
+            source = self._source_media(original)
+        except RemakeStageError:
+            # The collector has taken the source. A voice-only remake of an old
+            # clip is exactly when this happens, and it still has a transcript.
+            return None
+
+        try:
+            with context.broker.acquire(f"ollama:{model}", VISION_VRAM_MB):
+                self._visual = look(
+                    source,
+                    start_sec=cut.start_sec,
+                    end_sec=cut.end_sec,
+                    client=client,
+                    model=model,
+                    frames=self._settings.vision_frames,
+                    ffmpeg_bin=self._settings.ffmpeg_bin,
+                )
+        except InsufficientVramError as exc:
+            log.info("remake.vision_no_vram", error=str(exc))
+        return self._visual
+
     def _narrate(
         self,
         context: StageContext,
@@ -636,44 +754,69 @@ class RemakeStage:
             raise RemakeStageError(verdict.refusal or "there is nothing worth narrating here")
 
         if voice.translate and script and not different_language(already_speaks, voice.language):
-            # Already in the language asked for. Translating it would hand the
-            # model English and ask for English, which returns the same text and
-            # trips the no-op gate below — refusing a remake whose narration was
-            # correct all along, with a message blaming the transcript.
+            # Already in the language asked for. Nothing to do, and doing it
+            # anyway hands the model English and asks for English, which returns
+            # the same text and used to fail the whole remake with a message
+            # blaming the transcript.
             self._notes.append(
-                f"this clip already speaks {voice.language}, so nothing was translated"
+                f"this clip already speaks {voice.language}, so the words were kept as they were"
             )
         elif voice.translate and script:
             client = self._ollama()
             if client is None or not client.is_available():
                 raise RemakeStageError(
-                    "a translation was asked for but the local model is not reachable. "
+                    "a new language was asked for but the local model is not reachable. "
                     "Speaking the original words with another language's voice produces "
                     "something no listener wants, so this stops rather than guessing."
                 )
+
+            # **Look before writing.** This used to be a translation, and a
+            # translation's job is fidelity: handed "tres mal a beaude glim
+            # cette frappe" it faithfully produced "very bad beauty glim this
+            # pure left lateral munitions shot" and a synthesiser read it out
+            # over a goal. A writer holding the same words AND a description of
+            # the pictures has both the licence and the evidence to write the
+            # sentence the commentator was obviously saying.
+            visual = self._look(context, original, cut)
             try:
                 with context.broker.acquire(f"ollama:{client.model}", NOTE_LLM_VRAM_MB):
-                    source_text = script
-                    script = translate(client, script, target_language=voice.language)
-                    # Did it actually translate? Handed unpunctuated ASR text, a
-                    # 4B will restore the punctuation and hand back the same
-                    # language — a plausible reading of the input, and one that
-                    # produced a clip recorded as English that spoke French.
-                    if not translation_landed(source_text, script, target_language=voice.language):
-                        raise RemakeStageError(
-                            f"the translation into {voice.language} came back as the same "
-                            "text it was given, which happens when the transcript is too "
-                            "rough to translate. Nothing was narrated. Write the line you "
-                            "want spoken, or keep the clip's own audio."
-                        )
+                    written = write_narration(
+                        client,
+                        transcript=script,
+                        target_language=voice.language,
+                        duration_sec=cut.duration_sec,
+                        visual=visual,
+                        source_title=self._source_title(original),
+                    )
             except InsufficientVramError as exc:
-                # Unlike the note, this one is load-bearing: speaking the original
-                # words with another language's voice is not a degraded result, it
-                # is a wrong one. Refuse, and say what to do about it.
+                # Load-bearing, unlike the note: speaking the original words
+                # with another language's voice is not a degraded result, it is
+                # a wrong one. Refuse, and say what to do about it.
                 raise RemakeStageError(
-                    f"there was not enough free VRAM to translate the script ({exc}). "
+                    f"there was not enough free VRAM to write the narration ({exc}). "
                     "Wait for the running job to finish, or write the script by hand."
                 ) from exc
+
+            if written is None:
+                raise RemakeStageError(
+                    f"the narration for {voice.language} could not be written. Nothing was "
+                    "narrated. Write the line you want spoken, or keep the clip's own audio."
+                )
+            # The model is not a witness to its own output: handed French and
+            # asked for English, a 4B returns the French and reports success.
+            # This is counted, not asked.
+            if not reads_as(written.script, voice.language):
+                raise RemakeStageError(
+                    f"what came back does not read as {voice.language}, which happens when "
+                    "the clip's own words are too rough to work from. Nothing was narrated. "
+                    "Write the line you want spoken, or keep the clip's own audio."
+                )
+            if not written.from_transcript:
+                self._notes.append(
+                    "the clip's own commentary transcribed too poorly to carry across, so "
+                    "the narration was written from what is on screen as well"
+                )
+            script = written.script
             translated = True
 
         destination = scratch / "narration.wav"
@@ -1178,6 +1321,7 @@ class RemakeStage:
         voice: AppliedVoice | None,
         cut: _Cut,
         scratch: Path,
+        metadata: ClipMetadata | None = None,
     ) -> StageOutcome:
         media = probe(final, ffprobe_bin=self._settings.ffprobe_bin)
         ref = self._blobs.put(
@@ -1227,8 +1371,12 @@ class RemakeStage:
             height_px=media.height,
             size_bytes=ref.size_bytes,
             render_profile=profile.identifier,
-            title=original.title,
-            description=original.description,
+            # Rewritten when the language moved, inherited otherwise. A remake
+            # that only reframed should not quietly acquire a new name — the
+            # reviewer is comparing it against the version it came from.
+            title=metadata.title if metadata else original.title,
+            description=metadata.description if metadata else original.description,
+            tags=list(metadata.tags) if metadata else list(original.tags or []),
             # PENDING, always. The clip that was approved is the one this was
             # made from; a correction is a different edit and deserves to be
             # watched before it goes anywhere.

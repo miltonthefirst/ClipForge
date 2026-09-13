@@ -1112,6 +1112,47 @@ the mark stayed legible while the filtergraph looked correct. See
 
 ---
 
+#### Phase 8e — Looking at the clip before speaking about it
+
+**Goal.** Stop the pipeline narrating and naming footage it has never seen.
+
+**Why it jumped the queue.** A reviewer's clip went out captioned *"7,000 flaps go. She is
+magnificent one and"*, titled with a lowercase French transcript fragment, and described with the
+analyst's note explaining why the window had been selected. Every component was working correctly;
+none of them had seen a football.
+
+**In scope**
+
+- `clipforge.media.vision`: three frames to a multimodal model, described plainly — subject, what
+  happens, text on screen. Optional everywhere, None on any failure.
+- `clipforge.analysis.narrate`: the spoken line is **written** from the transcript and the pictures
+  together, not translated. `reads_as` counts function words to verify the language, because a model
+  that has just produced French reports that it produced English.
+- `clipforge.analysis.metadata`: a title, a description and tags written for a feed, in the clip's
+  own language. RENDER writes them; REMAKE rewrites them whenever the voice changes.
+- Grounding: every word of a tag must trace to the material or to a short generic list; ungrounded
+  words in prose are reported on the clip rather than removed.
+
+**Explicitly out of scope.** A vision pass per candidate during a harvest — a minute each is not
+affordable for a dozen clips, and the reviewer who corrects one gets the grounded version then.
+
+**Exit criteria** — met, 2026-09-13
+
+1. ✅ Both real cuts from the reviewer's match produce coherent English. The word-salad one becomes
+   *"A beautiful left-sided cross from the corner"*; the good one becomes *"Pavlovitch makes a good
+   pass to break through the first line."*
+2. ✅ French returned as English is refused by `reads_as`, which is the bug that shipped.
+3. ✅ `laliga`, `bayer leipzig`, `lck`, `liverpool vs bayern` and `diaz real madrid` are all dropped
+   from tags; `bayern munich`, `kane` and `futbol` survive.
+4. ✅ A description naming a competition the material never mentions is flagged by name on the clip.
+
+**The lesson, again.** The prompt forbade every one of those invented tags in as many words and the
+model produced them anyway. Prompts do not fix what the shape permits, and they do not fix
+fabrication either — only a check outside the model does. See
+[ADR-0016](adr/0016-looking-at-the-clip-before-speaking.md).
+
+---
+
 #### Phase 9 — Analytics and calibration → **v0.2.0**
 
 **Goal.** Close the loop: find out whether the scores predicted anything.
