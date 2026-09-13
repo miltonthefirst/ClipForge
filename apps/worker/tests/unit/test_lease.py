@@ -509,3 +509,24 @@ def test_an_unrelated_value_error_is_not_mistaken_for_contention() -> None:
     assert not _is_contention(ValueError("Failed to commit transaction in 5 attempts."))
     assert not _is_contention(ValueError("something else went wrong"))
     assert not _is_contention(RuntimeError("unrelated"))
+
+
+def test_a_stage_failure_says_which_stage() -> None:
+    """A job's history is read by someone working out why a clip never arrived.
+
+    An unnamed failure renders as "null failed" directly above the only line
+    that says what went wrong, which reads like a second, separate fault.
+    """
+    job = running_job(
+        stages=[
+            Stage(name=StageName.ECHO_ONE, lane=Lane.CPU, status=StageStatus.DONE),
+            Stage(name=StageName.ECHO_TWO, lane=Lane.CPU, status=StageStatus.RUNNING),
+        ]
+    )
+    transition = lease.fail_stage(
+        job,
+        error=StageError(type="RemakeStageError", retryable=False, message="nothing was narrated"),
+        now=T0,
+    )
+    failed = next(e for e in transition.events if e.kind is JobEventKind.STAGE_FAILED)
+    assert failed.stage is StageName.ECHO_TWO

@@ -74,6 +74,7 @@ __all__ = [
     "apply_interpretation",
     "build_note_prompt",
     "describe",
+    "different_language",
     "interpret_note",
     "translate",
 ]
@@ -376,7 +377,7 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
                     captions=VoiceCaptions.REBUILD,
                 )
                 changes.append(f"set the language to {language}")
-            elif _different_language(updated.voice.language, language):
+            elif different_language(updated.voice.language, language):
                 # The note named a language and the form named another. The
                 # note wins: it is the more specific and more recent statement,
                 # and a form cannot distinguish a deliberate choice from an
@@ -522,13 +523,20 @@ def _names_a_side(note: str | None) -> bool:
     return any(word in lowered for word in _SIDE_WORDS)
 
 
-def _different_language(a: str, b: str) -> bool:
+def different_language(a: str | None, b: str | None) -> bool:
     """Do two tags name different languages?
 
     Compared on the primary subtag: `en-us` and `en-GB` are the same argument
     about accents, not about language, and overruling a reviewer's chosen
     accent because the note said "English" would be the same mistake in reverse.
+
+    An unknown language counts as different, which is the safe direction for
+    both callers. The note reader treats it as "the note named something the
+    form did not", and the narrator treats it as "translate, because nothing
+    says you do not have to".
     """
+    if not a or not b:
+        return True
     return a.strip().lower().split("-")[0] != b.strip().lower().split("-")[0]
 
 

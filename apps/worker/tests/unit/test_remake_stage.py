@@ -43,6 +43,7 @@ from clipforge_contracts import (
     NoteFraming,
     NoteObscure,
     NoteTopic,
+    ObscureOptions,
     PanKeyframe,
     RemakeOptions,
     ReviewState,
@@ -819,3 +820,220 @@ def test_a_clip_render_made_still_gets_the_profiles_own_crop(tmp_path: Path) -> 
     remade = clips.saved[0].remake
     assert remade is not None
     assert remade.framing_mode is FramingMode.AS_RENDERED
+
+
+# ── A re-cut must not silently un-voice the clip ─────────────────────────────
+
+
+def voiced(tmp_path: Path, *, local_path: str | None = None, **voice_overrides: object) -> Clip:
+    """A clip that has already been re-voiced, as a second correction finds it."""
+    defaults: dict[str, object] = {
+        "mode": SpeechMode.REPLACE,
+        "voice": "af_heart",
+        "language": "en-us",
+        "engine": "kokoro-v1.0-onnx",
+        "translated": True,
+        "spoken_text": "Pavlovic finds the pass and Bayern are in behind.",
+    }
+    clip_overrides: dict[str, object] = {"local_path": local_path} if local_path else {}
+    return clip(
+        tmp_path,
+        remake=AppliedRemake(
+            framing_mode=FramingMode.FIT,
+            start_sec=100.0,
+            end_sec=108.0,
+            voice=AppliedVoice(**{**defaults, **voice_overrides}),
+        ),
+        **clip_overrides,
+    )
+
+
+def test_hiding_a_logo_keeps_the_narration_the_clip_already_had(tmp_path: Path) -> None:
+    """The bug the reviewer hit: an English clip came back speaking French.
+
+    Re-voicing leaves the picture alone and re-cutting left the voice alone,
+    which was fine while a re-cut only happened when someone asked for
+    different framing. Hiding a logo re-cuts too, so a correction about a
+    watermark rebuilt the soundtrack from the source and put the original
+    commentary back without saying anything.
+    """
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=voiced(tmp_path),
+        the_source=source(media),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(context(job(RemakeOptions(obscure=ObscureOptions(auto=True)))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.voice is not None
+    assert remade.voice.language == "en-us"
+    assert remade.voice.voice == "af_heart"
+
+
+def test_the_inherited_narration_is_reproduced_not_re_derived(tmp_path: Path) -> None:
+    """The exact words a synthesiser was handed last time, spoken again.
+
+    Re-deriving them would go back to the transcript and the translator, which
+    is a second opinion from a model that might read the sentence differently
+    today — and is how the words were lost in the first place.
+    """
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=voiced(tmp_path),
+        the_source=source(media),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(context(job(RemakeOptions(start_delta_sec=-1.0))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.voice is not None
+    assert remade.voice.spoken_text == "Pavlovic finds the pass and Bayern are in behind."
+
+
+def test_reusing_the_words_over_a_moved_cut_is_said_out_loud(tmp_path: Path) -> None:
+    """Right when the window is the same, a guess when it is not."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=voiced(tmp_path),
+        the_source=source(media),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(context(job(RemakeOptions(end_delta_sec=2.0))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert any("no longer line up" in str(w.root) for w in remade.warnings or [])
+
+
+def test_a_stated_voice_still_wins_over_the_inherited_one(tmp_path: Path) -> None:
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=voiced(tmp_path),
+        the_source=source(media),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(
+        context(
+            job(
+                RemakeOptions(
+                    obscure=ObscureOptions(auto=True),
+                    voice=VoiceOptions(
+                        mode=SpeechMode.REPLACE,
+                        voice="ef_dora",
+                        language="es",
+                        translate=False,
+                        script="Pavlovic encuentra el pase.",
+                        captions=VoiceCaptions.REBUILD,
+                    ),
+                )
+            )
+        )
+    )
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.voice is not None
+    assert remade.voice.language == "es"
+
+
+def test_a_voice_only_remake_still_copies_the_picture(tmp_path: Path) -> None:
+    """Inheriting must not become a reason to re-encode.
+
+    The gate is the things that force a re-cut regardless of the voice. Put the
+    voice in that test and every correction becomes a full render.
+    """
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=voiced(tmp_path, local_path=str(existing)),
+        # No source on this machine: a re-cut would fail outright, so getting a
+        # clip back at all is the assertion.
+        the_source=source(None),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(
+        context(
+            job(
+                RemakeOptions(
+                    voice=VoiceOptions(
+                        mode=SpeechMode.REPLACE,
+                        voice="af_heart",
+                        language="en-us",
+                        translate=False,
+                        script="A different line entirely.",
+                        captions=VoiceCaptions.KEEP,
+                    )
+                )
+            )
+        )
+    )
+
+    assert clips.saved, "a voice-only remake must not need the source"
+
+
+def test_a_clip_that_was_never_re_voiced_inherits_nothing(tmp_path: Path) -> None:
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+
+    stage.run(context(job(RemakeOptions(start_delta_sec=-1.0))))
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.voice is None
+
+
+def test_asking_for_the_language_it_already_speaks_is_not_a_failure(tmp_path: Path) -> None:
+    """It used to fail, blaming the transcript.
+
+    Translating English into English returns the same text, which trips the
+    no-op gate — so a remake whose narration was correct all along was refused
+    with "the transcript is too rough to translate".
+    """
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=voiced(tmp_path),
+        the_source=source(media),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(
+        context(
+            job(
+                RemakeOptions(
+                    voice=VoiceOptions(
+                        mode=SpeechMode.REPLACE,
+                        voice="af_heart",
+                        language="en-gb",
+                        translate=True,
+                        captions=VoiceCaptions.REBUILD,
+                    )
+                )
+            )
+        )
+    )
+
+    remade = clips.saved[0].remake
+    assert remade is not None
+    assert remade.voice is not None
+    assert any("already speaks" in str(w.root) for w in remade.warnings or [])

@@ -89,6 +89,7 @@ from clipforge.analysis.preferences import (
 from clipforge.analysis.remake import (
     apply_interpretation,
     describe,
+    different_language,
     interpret_note,
     translate,
 )
@@ -308,6 +309,39 @@ class RemakeStage:
         resolved, used = _prefill(resolved, accepted)
         cut = self._cut(original, resolved)
         profile = load_profile(resolved.profile or _profile_name(original.render_profile))
+
+        # **A re-cut rebuilds the soundtrack from the source, and the source is
+        # not what this clip sounds like.** Re-voicing leaves the picture alone
+        # and re-cutting leaves the voice alone, which was fine while a re-cut
+        # only happened when someone asked for different framing — the clip
+        # being corrected was nearly always the one RENDER made. Hiding a logo
+        # re-cuts too, and the first two real ones took an English clip, put the
+        # French commentary back, and said nothing about it.
+        #
+        # Gated on the things that force a re-cut *regardless* of the voice.
+        # Including the voice itself in that test would make inheriting one the
+        # reason to re-cut, and a voice-only remake would start re-encoding a
+        # picture nobody complained about.
+        recutting = (
+            resolved.framing is not None
+            or bool(resolved.start_delta_sec or resolved.end_delta_sec)
+            or (
+                resolved.obscure is not None and (resolved.obscure.auto or resolved.obscure.regions)
+            )
+        )
+        if recutting and resolved.voice is None:
+            inherited = _inherited_voice(original)
+            if inherited is not None:
+                resolved.voice = inherited
+                log.info("remake.voice_inherited", language=inherited.language)
+                if resolved.start_delta_sec or resolved.end_delta_sec:
+                    # Reusing the words is right when the window is the same and
+                    # a guess when it is not. Said out loud rather than silently
+                    # re-derived, because re-deriving is what lost them.
+                    self._notes.append(
+                        "the narration from the previous version was reused and the cut has "
+                        "moved, so the words may no longer line up with the picture"
+                    )
 
         clip_id = uuid.uuid4().hex
         scratch = self._workspace.tmp_dir / f"remake-{clip_id}"
@@ -583,8 +617,14 @@ class RemakeStage:
         script = (voice.script or "").strip()
         translated = False
         from_transcript = False
+        already_speaks: str | None = None
         if not script:
             script, from_transcript = self._spoken_words(original, cut)
+            # What those words are already in, when it is known. A clip that has
+            # been re-voiced records the language it was re-voiced into, so
+            # asking for that language again is a request to do nothing — and
+            # doing nothing is the correct answer, not a failure.
+            already_speaks = self._spoken_language(original)
 
         # Is this worth saying at all? Every check here exists because a clip
         # shipped without it: a hallucinated "thanks for watching" over a goal,
@@ -595,7 +635,15 @@ class RemakeStage:
         if not verdict.ok:
             raise RemakeStageError(verdict.refusal or "there is nothing worth narrating here")
 
-        if voice.translate and script:
+        if voice.translate and script and not different_language(already_speaks, voice.language):
+            # Already in the language asked for. Translating it would hand the
+            # model English and ask for English, which returns the same text and
+            # trips the no-op gate below — refusing a remake whose narration was
+            # correct all along, with a message blaming the transcript.
+            self._notes.append(
+                f"this clip already speaks {voice.language}, so nothing was translated"
+            )
+        elif voice.translate and script:
             client = self._ollama()
             if client is None or not client.is_available():
                 raise RemakeStageError(
@@ -684,6 +732,16 @@ class RemakeStage:
             can_rebuild_captions=self._transcriber is not None,
             is_derived=bool(original.derived_from_clip_id),
         )
+
+    def _spoken_language(self, original: Clip) -> str | None:
+        """The language this clip's words are already in, when that is known.
+
+        Only a clip that has been re-voiced knows: the source transcript's
+        language is not recorded against the cut, so for a clip RENDER made this
+        is None and the translation runs as it always did.
+        """
+        previous = original.remake.voice if original.remake else None
+        return previous.language if previous is not None and previous.spoken_text else None
 
     def _spoken_words(self, original: Clip, cut: _Cut) -> tuple[str, bool]:
         """What this clip says, and whether the words came from the recogniser.
@@ -1286,6 +1344,36 @@ class RemakeStage:
             model=self._settings.ollama_model,
             num_ctx=self._settings.ollama_num_ctx,
         )
+
+
+def _inherited_voice(original: Clip) -> VoiceOptions | None:
+    """The narration a re-cut has to put back, when the clip had one.
+
+    Reproduced from `AppliedVoice.spokenText` rather than re-derived: those are
+    the exact words a synthesiser was handed last time, so passing them as a
+    script means no transcript, no translation and no second opinion from a
+    model that might read the sentence differently today. The same voice at the
+    same language yields the same narration.
+
+    A clip old enough to have no `spokenText` falls back to re-deriving it,
+    which is a worse answer than reproduction and a much better one than
+    silence.
+    """
+    applied = original.remake.voice if original.remake is not None else None
+    if applied is None:
+        return None
+    spoken = (applied.spoken_text or "").strip()
+    return VoiceOptions(
+        mode=applied.mode,
+        voice=applied.voice,
+        language=applied.language,
+        script=spoken or None,
+        # Nothing to translate when the words are already the finished ones.
+        translate=bool(applied.translated) if not spoken else False,
+        # The picture is being rebuilt, so burnt-in captions have to be too or
+        # they show words against the wrong frames.
+        captions=VoiceCaptions.REBUILD,
+    )
 
 
 def _inherited_framing(original: Clip) -> Framing | None:
