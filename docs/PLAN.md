@@ -1181,8 +1181,7 @@ its own items there without shell APIs.
 
 1. ✅ A real clip moves to the bin over the local API, disappears from `clips/`, is listed with its
    original path, and is restored to exactly where it was.
-2. ✅ `C:\Windows
-otepad.exe` is refused by name, as is `..` out of the workspace and a trash id
+2. ✅ A path outside the workspace is refused by name, as is `..` out of the workspace and a trash id
    whose parent is not the bin.
 3. ✅ 187 emulator specs: clips, sources and candidates delete; publications and preferences do not;
    candidates still cannot be edited.
