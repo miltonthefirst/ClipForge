@@ -39,6 +39,11 @@ import {
 import { fromDocument } from './documents';
 import { FirebaseService } from './firebase';
 
+// Firestore's own ceiling on a batched write. Paging at this size means one
+// enormous source needs no different code path from a small one — it just takes
+// more trips.
+const BATCH_LIMIT = 500;
+
 /**
  * Firestore reads and writes, as signals.
  *
@@ -478,6 +483,97 @@ export class ClipForgeStore {
    */
   async rememberObscure(sourceId: string, obscure: ObscureOptions | null): Promise<void> {
     await updateDoc(doc(this.firebase.db, 'sources', sourceId), { obscure });
+  }
+
+
+  // ── Tidying up ─────────────────────────────────────────────────────────────
+  //
+  // **Deleting a record never touches a file.** The two are separate acts
+  // because they answer separate questions: whether a clip belongs in the
+  // review queue is decided dozens of times a day and is cheap to get wrong,
+  // and whether the 400 MB behind it is still wanted is decided rarely and is
+  // expensive to get wrong. Removing media lives on the worker's local API,
+  // reachable only from the machine holding it — see `LocalApiService`.
+
+  /**
+   * Forget one clip. Its media stays on whichever machine holds it.
+   *
+   * Publications are left behind on purpose. They are the record of what was
+   * actually posted and under what rights, and an audit trail that vanishes
+   * when somebody tidies their queue is not an audit trail.
+   */
+  async deleteClip(clipId: string): Promise<void> {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'clips', clipId));
+  }
+
+  /** Forget a proposal nobody acted on. */
+  async deleteCandidate(candidateId: string): Promise<void> {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'candidates', candidateId));
+  }
+
+  /** Forget one job and its event log. */
+  async deleteJob(jobId: string): Promise<void> {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'jobs', jobId));
+  }
+
+  /**
+   * What deleting a source would take with it.
+   *
+   * Asked before the confirmation rather than after, because "delete this
+   * source" and "delete this source, eleven clips and forty candidates" are
+   * different decisions and only one of them was offered.
+   */
+  async sourceFootprint(sourceId: string): Promise<{ clips: number; candidates: number }> {
+    const { getCountFromServer } = await import('firebase/firestore');
+    const ofSource = where('sourceId', '==', sourceId);
+    const [clips, candidates] = await Promise.all([
+      getCountFromServer(query(collection(this.firebase.db, 'clips'), ofSource)),
+      getCountFromServer(query(collection(this.firebase.db, 'candidates'), ofSource)),
+    ]);
+    return {
+      clips: clips.data().count,
+      candidates: candidates.data().count,
+    };
+  }
+
+  /**
+   * Forget a source and everything cut from it.
+   *
+   * The cascade is here rather than in the rules because rules see one document
+   * at a time and cannot express "and its children". Doing it in batches is
+   * what keeps it close to atomic: each batch commits or does not, so a failure
+   * leaves a partly-cleared tree rather than a half-written document, and
+   * running it again finishes the job.
+   *
+   * Returns how much went, so the confirmation can be answered with a fact.
+   */
+  async deleteSource(sourceId: string): Promise<{ clips: number; candidates: number }> {
+    const { getDocs, writeBatch } = await import('firebase/firestore');
+    const ofSource = where('sourceId', '==', sourceId);
+
+    let removed = { clips: 0, candidates: 0 };
+    for (const name of ['clips', 'candidates'] as const) {
+      // Firestore caps a batch at 500 writes. Looping a bounded page at a time
+      // keeps one enormous source from needing a different code path.
+      for (;;) {
+        const page = await getDocs(
+          query(collection(this.firebase.db, name), ofSource, limit(BATCH_LIMIT)),
+        );
+        if (page.empty) break;
+        const batch = writeBatch(this.firebase.db);
+        page.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        removed = { ...removed, [name]: removed[name] + page.size };
+        if (page.size < BATCH_LIMIT) break;
+      }
+    }
+
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'sources', sourceId));
+    return removed;
   }
 
   /** Approved clips, the publish queue's input. */

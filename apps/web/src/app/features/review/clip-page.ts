@@ -10,7 +10,7 @@ import {
   signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import type {
   Candidate,
   Channel,
@@ -169,6 +169,7 @@ const SUB_SCORE_MAXIMA: readonly (readonly [keyof SubScores, string, number])[] 
 })
 export class ClipPage implements OnDestroy {
   private readonly store = inject(ClipForgeStore);
+  private readonly router = inject(Router);
   private readonly session = inject(SessionService);
   private readonly playback = inject(PlaybackService);
 
@@ -867,6 +868,32 @@ export class ClipPage implements OnDestroy {
     const down = midY < 40 ? 'top' : midY > 60 ? 'bottom' : 'middle';
     const across = midX < 40 ? 'left' : midX > 60 ? 'right' : 'centre';
     return `${down} ${across} (${Math.round(region.wPct)}% x ${Math.round(region.hPct)}%)`;
+  }
+
+  /**
+   * Forget this clip.
+   *
+   * The record only. Its file stays on whichever machine holds it, and its
+   * publications stay too — those are the record of what was actually posted
+   * and under what rights, and an audit trail that vanishes when somebody tidies
+   * their queue is not an audit trail.
+   */
+  protected async deleteClip(): Promise<void> {
+    const clip = this.clip();
+    if (!clip) return;
+    const name = clip.title?.trim() || clip.id;
+    if (
+      !confirm(
+        `Delete "${name}" from the review queue? Its video file stays on this machine until you ` +
+          'remove it in Settings, Storage.',
+      )
+    ) {
+      return;
+    }
+    await this.run('Clip deleted', async () => {
+      await this.store.deleteClip(clip.id);
+      await this.router.navigate(['/review']);
+    });
   }
 
   protected async remake(): Promise<void> {

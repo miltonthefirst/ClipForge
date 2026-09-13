@@ -543,7 +543,14 @@ service cloud.firestore {
     match /sources/{sourceId} {
       allow read: if isApproved();
       allow create: if ownsIncoming();
-      allow delete: if false;
+
+      // Deleting a source is the client's job to cascade: it deletes the
+      // candidates and clips cut from it in the same batch, so the tree goes in
+      // one atomic write rather than leaving clips pointing at a source that is
+      // no longer there. Rules cannot enforce that — they see one document at
+      // a time — so it is enforced where it can be, in `deleteSource`, and the
+      // worker tolerates the orphan either way.
+      allow delete: if isApproved();
 
       // `obscure` is the one field on a source a person owns, and it is here
       // rather than on each clip because what it describes is a property of the
@@ -588,7 +595,12 @@ service cloud.firestore {
     // write these could fabricate a score and corrupt the Phase 9 feedback loop.
     match /candidates/{candidateId} {
       allow read: if isApproved();
-      allow write: if false;
+      // Read-only to the client: a user who could write these could fabricate a
+      // score and corrupt the Phase 9 feedback loop. Deleting one fabricates
+      // nothing — it is a proposal nobody acted on, and the ones that were
+      // acted on are identifiable from the clips that carry their ids.
+      allow create, update: if false;
+      allow delete: if isApproved();
     }
 
     // ── Clips ────────────────────────────────────────────────────────────────
@@ -621,7 +633,21 @@ service cloud.firestore {
 
     match /clips/{clipId} {
       allow read: if isApproved();
-      allow create, delete: if false;
+      allow create: if false;
+
+      // **Deleting a clip deletes the record, never the file.** They are
+      // separate acts because they answer separate questions, and the second
+      // one is the expensive one to get wrong: a clip is a render that cost GPU
+      // time and a source is a download that may no longer be available. So
+      // this clears the review queue, and the media stays exactly where it is
+      // until somebody removes it from the machine that holds it — which is a
+      // different surface, on the worker, because nothing in Firestore knows
+      // what is on a particular disk.
+      //
+      // A publication is NOT deleted with its clip. It is the record of what
+      // was actually posted and under what rights, and an audit trail that
+      // disappears when somebody tidies their queue is not an audit trail.
+      allow delete: if isApproved();
 
       // Review is the decision the people own; everything else about a clip
       // belongs to the render that produced it. Restricting the writable field

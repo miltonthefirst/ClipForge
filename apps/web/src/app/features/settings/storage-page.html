@@ -1,0 +1,215 @@
+<h1 class="text-xl font-semibold">Storage on this machine</h1>
+<p class="mt-2 text-sm text-ink-muted">
+  What is actually on this computer's disk, whether or not anything in the review queue still points
+  at it. Deleting a clip from the queue never removes its file — this is where the file goes.
+</p>
+
+@if (error(); as message) {
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    {{ message }}
+  </p>
+}
+
+@if (!report()) {
+  <!-- The one place somebody would otherwise wonder why the page is empty.
+       The local API answers on loopback and hands out its token through Tauri,
+       so a phone cannot reach it — which is correct, not a limitation: a phone
+       cannot free space on a computer it is not. -->
+  <section class="mt-6 rounded-xl border border-line bg-panel p-4">
+    <p class="text-sm text-ink-muted">
+      This page talks to the worker on the machine holding the files, so it only works in the
+      ClipForge desktop app with the worker running.
+    </p>
+    <button
+      type="button"
+      class="mt-3 rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+      [disabled]="busy()"
+      (click)="refresh()"
+    >
+      {{ busy() ? 'Looking…' : 'Recheck' }}
+    </button>
+    <p class="mt-3 text-xs text-ink-subtle">
+      <a routerLink="/settings" class="text-accent-ink hover:underline">← Settings</a>
+    </p>
+  </section>
+} @else {
+  @let r = report()!;
+
+  <!-- ── What it is costing ─────────────────────────────────────────────────
+       `trashBytes` is deliberately NOT part of `usedBytes`: the bin sits
+       outside the disk budget so the collector never evicts a live download to
+       make room for a deleted one. The price of that is that the bin can fill a
+       disk while the workspace reports itself comfortable, so the number is
+       shown here, next to the button that empties it. -->
+  <section class="mt-6 grid gap-3 sm:grid-cols-3">
+    <div class="rounded-xl border border-line bg-panel p-4">
+      <p class="text-xs text-ink-subtle">Workspace</p>
+      <p class="mt-1 text-lg font-semibold text-ink">
+        {{ gb(r.usedBytes) | number: '1.1-1' }} <span class="text-sm text-ink-muted">GB</span>
+      </p>
+      <p class="text-xs text-ink-subtle">of {{ gb(r.maxBytes) | number: '1.0-0' }} GB budget</p>
+    </div>
+    <div class="rounded-xl border border-line bg-panel p-4">
+      <p class="text-xs text-ink-subtle">Bin</p>
+      <p class="mt-1 text-lg font-semibold text-ink">
+        {{ gb(r.trashBytes) | number: '1.1-1' }} <span class="text-sm text-ink-muted">GB</span>
+      </p>
+      <p class="text-xs text-ink-subtle">kept until you empty it</p>
+    </div>
+    <div class="rounded-xl border border-line bg-panel p-4">
+      <p class="text-xs text-ink-subtle">Free on this drive</p>
+      <p class="mt-1 text-lg font-semibold text-ink">
+        {{ gb(r.freeDiskBytes) | number: '1.1-1' }} <span class="text-sm text-ink-muted">GB</span>
+      </p>
+      <p class="truncate text-xs text-ink-subtle" [title]="r.root">{{ r.root }}</p>
+    </div>
+  </section>
+
+  <!-- ── Tabs ──────────────────────────────────────────────────────────────── -->
+  <div class="mt-6 flex items-center gap-2">
+    <button
+      type="button"
+      class="rounded-lg px-3 py-1.5 text-sm"
+      [class]="
+        tab() === 'files'
+          ? 'bg-accent text-accent-contrast'
+          : 'border border-line-strong text-ink-muted hover:bg-line'
+      "
+      (click)="show('files')"
+    >
+      Files ({{ files().length }})
+    </button>
+    <button
+      type="button"
+      class="rounded-lg px-3 py-1.5 text-sm"
+      [class]="
+        tab() === 'trash'
+          ? 'bg-accent text-accent-contrast'
+          : 'border border-line-strong text-ink-muted hover:bg-line'
+      "
+      (click)="show('trash')"
+    >
+      Bin ({{ trash().length }})
+    </button>
+    <span class="flex-1"></span>
+    <button
+      type="button"
+      class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+      [disabled]="busy()"
+      (click)="refresh()"
+    >
+      Refresh
+    </button>
+  </div>
+
+  <!-- ── The actions for whatever is ticked ─────────────────────────────────── -->
+  <div class="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-panel-soft px-3 py-2">
+    <button
+      type="button"
+      class="text-sm text-accent-ink hover:underline"
+      (click)="pickAll()"
+    >
+      Select all
+    </button>
+    <span class="text-xs text-ink-subtle">
+      {{ picked().size }} selected · {{ mb(pickedBytes()) | number: '1.0-0' }} MB
+    </span>
+    <span class="flex-1"></span>
+
+    @if (tab() === 'files') {
+      <button
+        type="button"
+        class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+        [disabled]="busy() || !picked().size"
+        (click)="remove()"
+      >
+        Move to bin
+      </button>
+    } @else {
+      <button
+        type="button"
+        class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+        [disabled]="busy() || !picked().size"
+        (click)="restore()"
+      >
+        Put back
+      </button>
+      <button
+        type="button"
+        class="rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+        [disabled]="busy() || !picked().size"
+        (click)="purge()"
+      >
+        Delete permanently
+      </button>
+      <button
+        type="button"
+        class="rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+        [disabled]="busy() || !trash().length"
+        (click)="purge(true)"
+      >
+        Empty the bin
+      </button>
+    }
+  </div>
+
+  <!-- ── The rows ──────────────────────────────────────────────────────────── -->
+  <section class="mt-3 overflow-hidden rounded-xl border border-line">
+    @if (tab() === 'files') {
+      @for (file of files(); track file.path) {
+        <label
+          class="flex cursor-pointer items-center gap-3 border-b border-line bg-panel px-3 py-2 last:border-b-0 hover:bg-panel-soft"
+        >
+          <input type="checkbox" [checked]="isPicked(file)" (change)="toggle(file)" />
+          <span
+            class="rounded px-1.5 py-0.5 text-xs"
+            [class]="
+              file.kind === 'source'
+                ? 'bg-panel-soft text-ink-muted'
+                : 'bg-accent-bg text-accent-ink'
+            "
+            >{{ file.kind }}</span
+          >
+          <span class="min-w-0 flex-1 truncate text-sm text-ink" [title]="file.path">{{
+            file.name
+          }}</span>
+          <span class="shrink-0 text-xs text-ink-subtle"
+            >{{ mb(file.sizeBytes) | number: '1.0-0' }} MB</span
+          >
+        </label>
+      } @empty {
+        <p class="bg-panel px-3 py-6 text-center text-sm text-ink-subtle">
+          Nothing on disk. Every clip and source has been removed.
+        </p>
+      }
+    } @else {
+      @for (item of trash(); track item.id) {
+        <label
+          class="flex cursor-pointer items-center gap-3 border-b border-line bg-panel px-3 py-2 last:border-b-0 hover:bg-panel-soft"
+        >
+          <input type="checkbox" [checked]="isPicked(item)" (change)="toggle(item)" />
+          <span class="rounded bg-panel-soft px-1.5 py-0.5 text-xs text-ink-muted">{{
+            item.kind
+          }}</span>
+          <span class="min-w-0 flex-1 truncate text-sm text-ink" [title]="item.originalPath">{{
+            item.name
+          }}</span>
+          <span class="shrink-0 text-xs text-ink-subtle">{{ item.trashedAt.slice(0, 10) }}</span>
+          <span class="shrink-0 text-xs text-ink-subtle"
+            >{{ mb(item.sizeBytes) | number: '1.0-0' }} MB</span
+          >
+        </label>
+      } @empty {
+        <p class="bg-panel px-3 py-6 text-center text-sm text-ink-subtle">
+          The bin is empty. Things you remove land here and stay until you delete them.
+        </p>
+      }
+    }
+  </section>
+
+  <p class="mt-3 text-xs text-ink-subtle">
+    <a routerLink="/settings" class="text-accent-ink hover:underline">← Settings</a>
+  </p>
+}

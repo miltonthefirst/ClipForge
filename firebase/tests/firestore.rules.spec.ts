@@ -530,3 +530,88 @@ describe('the rules are actually loaded', () => {
     expect(true).toBe(true);
   });
 });
+
+
+/**
+ * Tidying up.
+ *
+ * Deleting a record and removing a file are separate acts on purpose: whether a
+ * clip belongs in the review queue is decided dozens of times a day and is cheap
+ * to get wrong, and whether the 400 MB behind it is still wanted is decided
+ * rarely and is expensive to get wrong. These rules govern only the first —
+ * nothing in Firestore knows what is on a particular disk, and removing media
+ * lives on the worker's loopback API.
+ */
+describe('deleting records to keep the database tidy', () => {
+  beforeEach(async () => {
+    await seed('sources/src-1', source(ALICE));
+    await seed('clips/clip-del', pendingClip(ALICE, { id: 'clip-del' }));
+    await seed('candidates/cand-del', candidate(ALICE, { id: 'cand-del' }));
+  });
+
+  it('lets an approved member delete a clip', async () => {
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'clips/clip-del')));
+  });
+
+  it('lets another approved member delete it too, because the workspace is shared', async () => {
+    await assertSucceeds(deleteDoc(doc(bobDb(), 'clips/clip-del')));
+  });
+
+  it('lets a candidate be deleted', async () => {
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'candidates/cand-del')));
+  });
+
+  it('still refuses to let a candidate be edited', async () => {
+    /**
+     * Deleting fabricates nothing. Writing does: a user who could edit a score
+     * would corrupt the Phase 9 feedback loop, which is what this collection is
+     * read-only for.
+     */
+    await assertFails(
+      setDoc(doc(aliceDb(), 'candidates/cand-del'), candidate(ALICE, { id: 'cand-del', total: 99 })),
+    );
+  });
+
+  it('lets a source be deleted', async () => {
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'sources/src-1')));
+  });
+
+  it('refuses a signed-out visitor', async () => {
+    await assertFails(deleteDoc(doc(testEnv.unauthenticatedContext().firestore(), 'clips/clip-del')));
+  });
+
+  it('keeps a publication when its clip goes', async () => {
+    /**
+     * The record of what was actually posted, and under what rights. An audit
+     * trail that vanishes when somebody tidies their queue is not an audit
+     * trail — so publications are not deletable at all.
+     */
+    await seed('clips/clip-del/publications/pub-1', {
+      id: 'pub-1',
+      uid: ALICE,
+      clipId: 'clip-del',
+      platform: 'YOUTUBE',
+      state: 'PUBLISHED',
+      createdAt: '2026-09-01T09:00:00.000Z',
+    });
+    await assertFails(deleteDoc(doc(aliceDb(), 'clips/clip-del/publications/pub-1')));
+  });
+
+  it('still refuses to delete a preference', async () => {
+    /**
+     * Unchanged and deliberate: a rejection is itself the thing worth
+     * remembering, and removing the row would let the same suggestion come back
+     * on the next correction.
+     */
+    await seed('preferences/pref-1', {
+      id: 'pref-1',
+      uid: ALICE,
+      scope: 'SOURCE',
+      category: 'FRAMING',
+      lesson: 'follow the ball',
+      status: 'REJECTED',
+      createdAt: '2026-09-01T09:00:00.000Z',
+    });
+    await assertFails(deleteDoc(doc(aliceDb(), 'preferences/pref-1')));
+  });
+});

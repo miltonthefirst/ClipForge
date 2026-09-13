@@ -8,7 +8,7 @@ import {
   input,
   signal,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import type { Clip, Job, JobEvent, Source, Stage, StageStatus } from '@clipforge/contracts';
 
 import { ClipForgeStore } from '../../core/store';
@@ -41,6 +41,7 @@ import { ClipForgeStore } from '../../core/store';
   templateUrl: './job-page.html',
 })
 export class JobPage implements OnDestroy {
+  private readonly router = inject(Router);
   private readonly store = inject(ClipForgeStore);
 
   /** From the route: `jobs/:id`. */
@@ -56,6 +57,7 @@ export class JobPage implements OnDestroy {
   protected readonly results = signal<{ candidates: number; clips: Clip[] } | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly cancelling = signal(false);
+  protected readonly busy = signal(false);
   protected readonly showLog = signal(true);
 
   /** Ticks so "held for 3m" keeps counting rather than freezing at load. */
@@ -218,6 +220,62 @@ export class JobPage implements OnDestroy {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.cancelling.set(false);
+    }
+  }
+
+  /**
+   * Forget this job and its event log.
+   *
+   * Records only. Whatever the job downloaded or rendered stays on the machine
+   * that holds it — see Settings ▸ Storage, which is the only surface that can
+   * reach a particular disk.
+   */
+  protected async removeJob():Promise<void> {
+    const job = this.job();
+    if (!job) return;
+    if (!confirm(`Delete job ${job.id} and its log? The files it produced stay on disk.`)) return;
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      await this.store.deleteJob(job.id);
+      await this.router.navigate(['/jobs']);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  /**
+   * Forget the source and everything cut from it.
+   *
+   * Counted before it is offered, because "delete this source" and "delete this
+   * source, eleven clips and forty candidates" are different decisions and only
+   * one of them was on the button.
+   */
+  protected async removeSource(): Promise<void> {
+    const source = this.source();
+    if (!source) return;
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      const { clips, candidates } = await this.store.sourceFootprint(source.id);
+      const what = [
+        `the source "${source.title ?? source.id}"`,
+        clips ? `${clips} clip(s)` : '',
+        candidates ? `${candidates} candidate(s)` : '',
+      ]
+        .filter(Boolean)
+        .join(', ');
+      if (!confirm(`Delete ${what}? The media stays on disk until you remove it in Storage.`)) {
+        return;
+      }
+      await this.store.deleteSource(source.id);
+      this.source.set(null);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(false);
     }
   }
 

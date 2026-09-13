@@ -46,6 +46,7 @@ def run(
     from clipforge.media.workspace import Workspace
     from clipforge.publish.channels import ChannelRoutes
     from clipforge.scheduler.control import WorkerRoutes
+    from clipforge.scheduler.storage import StorageRoutes
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
     from clipforge.store.blobs import build_blob_store
@@ -122,6 +123,10 @@ def run(
         routes = {
             **ChannelRoutes(settings, ChannelStore(client, settings)).table(),
             **WorkerRoutes(worker, pid=os.getpid()).table(),
+            # Seeing and clearing what is on THIS disk. Firestore knows which
+            # clips exist; only the worker knows which files do, and a record
+            # deleted last week leaves a file nothing else can even list.
+            **StorageRoutes(workspace).table(),
         }
         control = LocalControlApi(
             routes,

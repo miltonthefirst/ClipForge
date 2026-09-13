@@ -1153,6 +1153,50 @@ fabrication either — only a check outside the model does. See
 
 ---
 
+#### Phase 8f — Tidying up, without losing anything
+
+**Goal.** Make the database deletable from the web app, and the media deletable only from the
+machine that holds it.
+
+**Why it jumped the queue.** Everything accumulated and nothing could be removed: `clips`, `sources`
+and `candidates` were all `allow delete: if false`. That rule was protecting the wrong thing — the
+expensive artefact is the media, not the record, and the records were being guarded as though they
+were the costly half.
+
+**In scope**
+
+- Delete on `clips`, `sources` and `candidates`; `deleteSource` cascades in batches from the client,
+  counting the tree before it offers the confirmation.
+- `clipforge.media.trash`: a bin at `workspace/trash/<id>/`, file plus manifest, no database.
+  Restore refuses to overwrite; nothing empties it on a schedule.
+- `clipforge.scheduler.storage`: `GET /storage` and the bin's routes on the loopback API, because
+  nothing in Firestore knows what is on a particular disk.
+- **Settings ▸ Storage** in the PWA: what is on the disk, what is in the bin, what each costs.
+
+**Explicitly out of scope.** The Windows Recycle Bin. It auto-purges on size, which contradicts
+"keep them forever" exactly when the bin is large enough to matter, and the app cannot list or purge
+its own items there without shell APIs.
+
+**Exit criteria** — met, 2026-09-14
+
+1. ✅ A real clip moves to the bin over the local API, disappears from `clips/`, is listed with its
+   original path, and is restored to exactly where it was.
+2. ✅ `C:\Windows
+otepad.exe` is refused by name, as is `..` out of the workspace and a trash id
+   whose parent is not the bin.
+3. ✅ 187 emulator specs: clips, sources and candidates delete; publications and preferences do not;
+   candidates still cannot be edited.
+4. ✅ Binned bytes do not count against the disk budget, so the collector never evicts a live source
+   to make room for a deleted clip.
+
+**The decision worth remembering.** The bin sits outside `Workspace.used_bytes` on purpose. Counting
+it would be more truthful about the disk and catastrophic in practice, because `collect` evicts
+sources — live data would be deleted to house dead data. The price is that the bin can fill a disk
+while the workspace reports itself comfortable, which is why its size is shown next to the button
+that empties it. See [ADR-0017](adr/0017-deleting-a-record-is-not-deleting-a-file.md).
+
+---
+
 #### Phase 9 — Analytics and calibration → **v0.2.0**
 
 **Goal.** Close the loop: find out whether the scores predicted anything.

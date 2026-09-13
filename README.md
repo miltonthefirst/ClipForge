@@ -197,6 +197,14 @@ middle out — is listed on the finished clip instead of being quietly skipped.
 > speak the original language. It does **not** make footage safe to publish — see
 > [Rights and responsible use](#rights-and-responsible-use).
 
+**You can tidy up, and the tidying cannot cost you a file.** Clips, sources, candidates and jobs
+can be deleted from the web app; deleting a source takes its clips and candidates with it, and the
+confirmation counts them first. **None of that touches the media.** Removing the video itself is a
+separate act on a separate screen — **Settings ▸ Storage**, which works in the desktop app because
+it talks to the machine holding the files — and what it removes goes to a bin that nothing empties
+on a schedule. Put it back, or delete it for good, whenever you like. Anything you published keeps
+its record either way. See [ADR-0017](docs/adr/0017-deleting-a-record-is-not-deleting-a-file.md).
+
 **It looks at the clip before it says anything about it.** Re-voicing used to be "translate the
 transcript", which is right exactly as often as the transcript is — and on stadium commentary that
 is not often. A clip once went out saying *"very bad beauty glim this pure left lateral munitions

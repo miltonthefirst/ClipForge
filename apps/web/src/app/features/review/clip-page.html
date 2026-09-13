@@ -1208,6 +1208,28 @@
           }
         </section>
       }
+
+      <!-- ── Tidying up ─────────────────────────────────────────────────────
+           The record and the file are separate on purpose: whether a clip
+           belongs in the queue is decided often and cheaply, and whether the
+           video behind it is still wanted is decided rarely and expensively. -->
+      <section class="rounded-xl border border-line bg-panel p-4">
+        <h2 class="text-sm font-semibold">Tidy up</h2>
+        <p class="mt-1 text-xs text-ink-subtle">
+          Takes this clip out of the database. The video file stays on the machine that made it
+          until you remove it in
+          <a routerLink="/settings/storage" class="text-accent-ink hover:underline">Storage</a>, and
+          anything already published keeps its record.
+        </p>
+        <button
+          type="button"
+          class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+          [disabled]="busy()"
+          (click)="deleteClip()"
+        >
+          Delete this clip
+        </button>
+      </section>
     </div>
   </div>
 }
