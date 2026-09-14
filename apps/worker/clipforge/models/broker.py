@@ -37,7 +37,17 @@ from clipforge.models.vram import GpuProcess, VramProbe, VramSnapshot, probe_vra
 
 log = structlog.get_logger(__name__)
 
-__all__ = ["InsufficientVramError", "ModelBroker", "ModelLease"]
+__all__ = ["InsufficientVramError", "ModelBroker", "ModelLease", "NestedLeaseError"]
+
+
+class NestedLeaseError(RuntimeError):
+    """A thread asked for a second lease while holding one.
+
+    Its own class rather than a ValueError because the callers of `acquire`
+    already catch `InsufficientVramError` and degrade gracefully — a nested
+    lease is a bug in the calling code, not a busy GPU, and must not be
+    swallowed by a handler written for the latter.
+    """
 
 
 class InsufficientVramError(RuntimeError):
@@ -125,6 +135,9 @@ class ModelBroker:
         self._poll_interval_s = poll_interval_s
         self._lock = threading.Lock()
         self._current: ModelLease | None = None
+        # Which thread is inside `acquire`, so a nested one can be told
+        # rather than left to wait for itself. See `acquire`.
+        self._owner: int | None = None
 
     # ── Introspection ────────────────────────────────────────────────────────
 
@@ -162,8 +175,31 @@ class ModelBroker:
         Blocks until no other model is resident, then checks the budget. If the
         budget check fails the lock is released before raising, so a foreign
         process holding memory cannot wedge the whole worker.
+
+        **A nested acquire raises rather than blocking.** The lock is not
+        reentrant, so a thread that already holds a lease and asks for another
+        waits for itself, forever. That is the worst failure this class can
+        produce: it does not error, it does not time out, and it does not even
+        look like a hang from outside — the stage sits RUNNING, its lease
+        expires, the reaper hands the job to the next worker, and that one
+        deadlocks in the same place. A REMAKE ran for fifty-five minutes that
+        way before anyone could see why.
+
+        Named here rather than left to the caller because "do not call a
+        brokered function from inside a brokered block" is an invisible rule
+        about code somebody else wrote, and it was broken within a day of this
+        class gaining a second caller.
         """
+        held_by = self._owner
+        if held_by is not None and held_by == threading.get_ident():
+            raise NestedLeaseError(
+                f"{model} was asked for while this thread already holds the lease for "
+                f"{self._current.model if self._current else 'another model'}. "
+                "Leases do not nest; take the inner one before the outer block."
+            )
+
         self._lock.acquire()
+        self._owner = threading.get_ident()
         try:
             self._ensure_capacity(model, required_mb)
             lease = ModelLease(
@@ -185,6 +221,7 @@ class ModelBroker:
                 self._current = None
                 self._verify_release(lease)
         finally:
+            self._owner = None
             self._lock.release()
 
     def _ensure_capacity(self, model: str, required_mb: int) -> None:

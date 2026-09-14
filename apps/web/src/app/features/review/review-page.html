@@ -17,6 +17,68 @@
   </p>
 }
 
+<!-- ── What it thinks it has learned ────────────────────────────────────────
+     Proposed after a remake, applied to nothing until it is kept. A wrong
+     standing rule shapes every later clip and you would have no reason to
+     suspect it; a missed one costs one more sentence in a note. -->
+@if (proposals().length) {
+  <section class="mt-4 rounded-xl border border-accent-line bg-accent-soft p-4">
+    <h2 class="text-sm font-semibold text-ink">
+      Should I remember {{ proposals().length === 1 ? 'this' : 'these' }}?
+    </h2>
+    <p class="mt-1 text-xs text-ink-muted">
+      Worked out from your last correction. Nothing is applied until you keep it, and anything you
+      turn down is never suggested again.
+    </p>
+    <ul class="mt-3 space-y-2">
+      @for (preference of proposals(); track preference.id) {
+        <li class="rounded-lg bg-panel p-3">
+          <p class="text-sm text-ink">{{ preference.lesson }}</p>
+          <p class="mt-1 text-xs text-ink-subtle">
+            {{ preference.scope === 'EVERYTHING' ? 'every clip' : 'this source only' }} ·
+            {{ preference.category | lowercase }}
+            @if (preference.fromNote) {
+              · from “{{ preference.fromNote }}”
+            }
+          </p>
+          <div class="mt-2 flex gap-2">
+            <button
+              type="button"
+              class="rounded-lg bg-forge-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+              [disabled]="busy() === preference.id"
+              (click)="decidePreference(preference, 'ACCEPTED')"
+            >
+              Remember this
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-line-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-line disabled:opacity-50"
+              [disabled]="busy() === preference.id"
+              (click)="decidePreference(preference, 'REJECTED')"
+            >
+              No, don't
+            </button>
+          </div>
+        </li>
+      }
+    </ul>
+  </section>
+}
+
+@if (blockedReason(); as reason) {
+  <!-- Above the queue rather than on a card: being refused the bucket is one
+       fact about the project, not a property of any one clip. Shown here
+       because the queue is where someone notices that nothing plays, and
+       because the alternative — a row of posters offering an upload that
+       silently skips — is what made this look like a broken worker. -->
+  <div
+    class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    <p class="font-medium">Clips are uploaded, but this device cannot fetch them.</p>
+    <p class="mt-1 leading-relaxed">{{ reason }}</p>
+  </div>
+}
+
 @if (error(); as message) {
   <p
     class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
@@ -82,6 +144,11 @@
             {{ card.clip.durationSec | number: '1.0-0' }}s
             @if (card.source.kind === 'poster') {
               · <span class="text-warn-ink">no cloud copy</span>
+            } @else if (card.source.kind === 'blocked') {
+              <!-- Not "no cloud copy": there is one, and it was refused. Saying
+                   the former sent people to the upload button, which cannot
+                   help with a clip that is already uploaded. -->
+              · <span class="text-danger-ink">cloud copy refused</span>
             }
           </p>
 

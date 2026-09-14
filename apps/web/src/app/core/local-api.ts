@@ -69,6 +69,47 @@ interface TauriGlobal {
   core?: { invoke?: (cmd: string, args?: unknown) => Promise<unknown> };
 }
 
+/** One file on the worker's disk. */
+export interface StorageFile {
+  path: string;
+  name: string;
+  kind: 'clip' | 'source' | 'other';
+  recordId: string;
+  sizeBytes: number;
+  modifiedAt: number;
+}
+
+/** One item in the bin, and where it came from. */
+export interface TrashItem {
+  id: string;
+  kind: string;
+  name: string;
+  originalPath: string;
+  sizeBytes: number;
+  trashedAt: string;
+  recordId: string | null;
+}
+
+/**
+ * What is actually on the machine, as opposed to what Firestore remembers.
+ *
+ * `trashBytes` is reported separately from `usedBytes` and is not included in
+ * it: the bin is outside the disk budget on purpose, so the collector never
+ * evicts a live download to make room for a deleted one. The consequence is
+ * that the bin can fill a disk while the workspace reports itself comfortable,
+ * which is exactly why this number is shown next to the button that empties it.
+ */
+export interface StorageReport {
+  root: string;
+  clips: StorageFile[];
+  sources: StorageFile[];
+  trash: TrashItem[];
+  usedBytes: number;
+  maxBytes: number;
+  freeDiskBytes: number;
+  trashBytes: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class LocalApiService {
   private handshake: LocalApiHandshake | null = null;
@@ -165,6 +206,39 @@ export class LocalApiService {
 
   async setDefaults(defaults: Record<string, unknown>): Promise<void> {
     await this.request('POST', '/youtube/defaults', defaults);
+  }
+
+  // ── What is on this disk ───────────────────────────────────────────────────
+  //
+  // Only reachable from the machine holding the files, which is the point.
+  // Deleting a record is a statement about a review queue and happens from
+  // anywhere; removing media is a statement about one computer.
+
+  async storage(): Promise<StorageReport | null> {
+    return this.request<StorageReport>('GET', '/storage');
+  }
+
+  /** Move files to the bin. Nothing is deleted, and nothing is irreversible. */
+  async moveToTrash(paths: string[]): Promise<StorageReport | null> {
+    await this.request('POST', '/storage/trash', { paths });
+    return this.storage();
+  }
+
+  async restoreFromTrash(ids: string[]): Promise<StorageReport | null> {
+    await this.request('POST', '/storage/trash/restore', { ids });
+    return this.storage();
+  }
+
+  /**
+   * Delete for good. The one irreversible call on this service.
+   *
+   * `all` is a flag rather than "an empty list means everything", because an
+   * empty list is what a buggy caller sends by accident and emptying the bin
+   * must never be the accident.
+   */
+  async purgeTrash(ids: string[], all = false): Promise<StorageReport | null> {
+    await this.request('POST', '/storage/trash/purge', all ? { all: true } : { ids });
+    return this.storage();
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {

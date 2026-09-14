@@ -25,6 +25,18 @@ export type PlaybackSource =
   | { readonly kind: 'remote'; readonly url: string }
   | { readonly kind: 'local'; readonly url: string }
   | { readonly kind: 'bucket'; readonly url: string }
+  /**
+   * There is a bucket copy, and this device was refused it.
+   *
+   * Split out from `poster` because the two look identical on screen and call
+   * for opposite actions. "No cloud copy" is answered by asking the worker to
+   * upload one. "A cloud copy exists and Storage said no" is answered by fixing
+   * access — and asking for another upload is precisely useless, because the
+   * worker will find the clip already there and skip. That loop is what a
+   * reviewer hit: press the button, watch the job complete, see no change,
+   * conclude the upload never happened.
+   */
+  | { readonly kind: 'blocked'; readonly reason: string }
   | { readonly kind: 'poster' };
 
 /**
@@ -114,11 +126,28 @@ export class PlaybackService {
     this.probedAt = 0;
   }
 
-  /** Whether the bucket still holds a playable copy of this clip. */
+  /**
+   * Whether the bucket still holds a playable copy of this clip.
+   *
+   * An expiry that will not parse is treated as *live*, which is the opposite
+   * of what this used to do and the reason it is spelled out rather than left
+   * to `Date.parse`. `storagePath` is the fact — something was uploaded — and
+   * `playbackExpiresAt` is only a hint about when it stops being true. Letting
+   * a bad hint override a good fact is what turned a date-format mismatch into
+   * "every uploaded clip reports that it was never uploaded": `Date.parse` of a
+   * Firestore Timestamp returns NaN, `NaN > now` is false, and the clip fell
+   * through to the poster with an upload button beside it. See
+   * `core/documents.ts` for the mismatch itself, now fixed at the read
+   * boundary; this stays because the safe direction is worth stating.
+   *
+   * Being wrong this way costs one refused fetch, which `resolve` already
+   * handles. Being wrong the other way hides a clip that is sitting right there.
+   */
   bucketCopyLive(clip: Clip, now: number = Date.now()): boolean {
     if (!clip.storagePath) return false;
     if (!clip.playbackExpiresAt) return true;
-    return Date.parse(clip.playbackExpiresAt) > now;
+    const expires = Date.parse(clip.playbackExpiresAt);
+    return Number.isNaN(expires) || expires > now;
   }
 
   /** Resolve one clip against the precedence above. */
@@ -142,8 +171,26 @@ export class PlaybackService {
         // token in a database row, valid to anyone who ever read it.
         const url = await getDownloadURL(ref(this.firebase.storage, clip.storagePath!));
         return { kind: 'bucket', url };
-      } catch {
-        // Collected early, or never uploaded. The poster is still true.
+      } catch (error) {
+        // This used to be a bare `catch {}` falling through to the poster, on
+        // the reasoning that a collected object and an absent one look the same
+        // to a viewer. They do — and that is exactly why the distinction has to
+        // survive: running storage.rules at fetch time means this call is also
+        // where *access* is decided, and a refusal arrived here looking like a
+        // clip that had never been uploaded.
+        //
+        // It cost a release. Every bucket read in the project was denied — the
+        // rules ask Firestore whether the viewer is approved, and that
+        // cross-service call needs an IAM grant the deploy never made — so
+        // every uploaded clip showed a poster and an upload button, and every
+        // upload the button asked for was skipped as already done.
+        const code = storageErrorCode(error);
+        if (code === 'storage/object-not-found') {
+          // The one case the old comment was right about: collected early by the
+          // lifecycle rule. Nothing is wrong and the poster is the honest answer.
+          return { kind: 'poster' };
+        }
+        return { kind: 'blocked', reason: describeStorageFailure(code) };
       }
     }
 
@@ -164,5 +211,43 @@ export class PlaybackService {
     const index = normalised.lastIndexOf('/clips/');
     if (index === -1) return null;
     return normalised.slice(index + 1);
+  }
+}
+
+/** The `storage/…` code off a Firebase Storage error, when there is one. */
+function storageErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : 'storage/unknown';
+}
+
+/**
+ * What to tell someone who cannot play a clip that is definitely in the bucket.
+ *
+ * Written for the person holding the phone, not for a log: each of these has a
+ * different fix and only one of them is "try again". The unauthorized case is
+ * spelled out at length because it is the one that has actually happened, and
+ * because nothing about it is discoverable from the app — the clip is there,
+ * the account is approved, and Storage still says no.
+ */
+function describeStorageFailure(code: string): string {
+  switch (code) {
+    case 'storage/unauthorized':
+    case 'storage/unauthenticated':
+      return (
+        'This clip is in the cloud, but Cloud Storage refused this device access to it. ' +
+        'That is a project setting rather than anything about this clip: storage.rules ' +
+        'asks Firestore whether the signed-in account is approved, and that cross-service ' +
+        'lookup needs an IAM grant that deploying the rules does not make. ' +
+        'Run tools/deploy.ps1 -GrantStorageRulesAccess, or grant ' +
+        'roles/firebaserules.firestoreServiceAgent to the Cloud Storage service agent. ' +
+        'Asking the worker to upload it again will not help — the clip is already there.'
+      );
+    case 'storage/retry-limit-exceeded':
+    case 'storage/server-file-wrong-size':
+      return 'The cloud copy would not download. Worth another try in a moment.';
+    case 'storage/quota-exceeded':
+      return 'The project is over its Cloud Storage quota, so the clip cannot be fetched.';
+    default:
+      return `The cloud copy could not be fetched (${code}).`;
   }
 }

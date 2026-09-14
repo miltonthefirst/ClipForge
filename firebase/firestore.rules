@@ -146,6 +146,52 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Agents ───────────────────────────────────────────────────────────────
+    //
+    // The one place a client may influence what runs on the machine, and the
+    // exception is narrow on purpose.
+    //
+    // ClipForge has no server-side executor: a job stays QUEUED until a process
+    // on the worker machine claims it (docs/adr/0006-lease-based-job-claiming.md).
+    // Before this collection existed, the only things that could start that
+    // process were a terminal and the desktop shell — so a job submitted from a
+    // phone waited for somebody to walk to the PC. The agent watches this
+    // document and does what it says.
+    // See docs/adr/0012-machine-agent.md.
+    //
+    // `desired` is a WISH, not a state. The client may say what it wants and
+    // nothing else; every field describing what is actually happening — the run
+    // state, the pid, the exit code, the log — is written by the agent through
+    // the Admin SDK and is read-only here. That keeps the rule this file is
+    // built on intact: the PWA may create work and review results, and may never
+    // write pipeline state.
+    //
+    // Creation is refused, and that is load-bearing rather than tidy. The agent
+    // creates its own document on first run, so "no document" means *no agent
+    // has ever run on that machine* — which is a different problem from "the
+    // agent is not reporting right now", and a client that could conjure a row
+    // would erase the difference. A phone would then offer a Start button for a
+    // machine that has never had anything listening.
+    match /agents/{agentId} {
+      allow read: if isApproved();
+      allow create, delete: if false;
+
+      // `requestedAt` is required on every write, and is what makes pressing
+      // Start on a worker that is already wanted a distinguishable event: that
+      // press is how a person clears an agent that has given up, and a rule that
+      // let the timestamp be omitted would make the recovery silently depend on
+      // the value happening to change.
+      //
+      // `requestedBy` is pinned to the caller for the same reason `uid` is on a
+      // job: a shared workspace can afford anyone starting the worker, and
+      // cannot afford not knowing who did.
+      allow update: if isApproved()
+                    && changed().hasOnly(['desired', 'requestedBy', 'requestedAt'])
+                    && request.resource.data.desired in ['RUNNING', 'STOPPED']
+                    && request.resource.data.requestedBy == request.auth.uid
+                    && request.resource.data.requestedAt is string;
+    }
+
     // ── The rights gate, client half ─────────────────────────────────────────
     //
     // The worker enforces this too, in clipforge/publish/rights.py. The
@@ -217,6 +263,155 @@ service cloud.firestore {
              && options.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
                                          'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
              && options.rights.get('attestedBy', null) == request.auth.uid;
+    }
+
+    // What a REMAKE job may ask for. Validated for the same reason the music
+    // options are: these numbers reach ffmpeg filter expressions and a speech
+    // synthesiser on the worker, and a request that cannot possibly succeed
+    // should be refused here rather than after a re-render.
+    //
+    // Every field is optional. A remake is usually one complaint — "it loses
+    // the ball", "put it in Spanish" — and demanding a fully-populated object
+    // for a single correction would be the interface failing to do its job.
+    function framingOk(framing) {
+      return framing == null
+             || (
+                  framing.keys().hasOnly(
+                    ['mode', 'crop', 'keyframes', 'fill', 'zoom', 'offsetYPct',
+                     'smoothingSec', 'maxPanPctPerSec'])
+                  && framing.mode in ['AS_RENDERED', 'FIT', 'PAN', 'TRACK']
+                  && (framing.get('crop', null) == null
+                      || framing.crop in ['centre', 'left', 'right'])
+                  && (framing.get('fill', null) == null || framing.fill in ['BLUR', 'SOLID'])
+                  && (framing.get('zoom', null) == null
+                      || (framing.zoom is number && framing.zoom >= 1 && framing.zoom <= 2))
+                  && (framing.get('offsetYPct', null) == null
+                      || (framing.offsetYPct is number
+                          && framing.offsetYPct >= -50 && framing.offsetYPct <= 50))
+                  && (framing.get('smoothingSec', null) == null
+                      || (framing.smoothingSec is number
+                          && framing.smoothingSec >= 0 && framing.smoothingSec <= 10))
+                  && (framing.get('maxPanPctPerSec', null) == null
+                      || (framing.maxPanPctPerSec is number
+                          && framing.maxPanPctPerSec >= 0 && framing.maxPanPctPerSec <= 100))
+                  // Capped rather than merely typed: keyframes become one
+                  // nested ffmpeg expression, and an unbounded list is an
+                  // unbounded expression. Sixty points is a keyframe a second
+                  // on a minute-long clip, which is far more than a person sets
+                  // by hand and more than the tracker ever emits.
+                  && (framing.get('keyframes', null) == null
+                      || (framing.keyframes is list && framing.keyframes.size() <= 60))
+                );
+    }
+
+    function voiceOk(voice) {
+      return voice == null
+             || (
+                  voice.keys().hasOnly(
+                    ['mode', 'voice', 'language', 'translate', 'script', 'speed',
+                     'gainDb', 'duckDb', 'captions'])
+                  && voice.mode in ['REPLACE', 'BED']
+                  && voice.voice is string
+                  && voice.voice.size() > 0
+                  && voice.voice.size() <= 64
+                  && voice.language is string
+                  && voice.language.size() >= 2
+                  && voice.language.size() <= 16
+                  && (voice.get('translate', null) == null || voice.translate is bool)
+                  && (voice.get('script', null) == null
+                      || (voice.script is string && voice.script.size() <= 4000))
+                  && (voice.get('speed', null) == null
+                      || (voice.speed is number && voice.speed >= 0.5 && voice.speed <= 2))
+                  && (voice.get('gainDb', null) == null
+                      || (voice.gainDb is number && voice.gainDb >= -40 && voice.gainDb <= 12))
+                  && (voice.get('duckDb', null) == null
+                      || (voice.duckDb is number && voice.duckDb >= -40 && voice.duckDb <= 0))
+                  && (voice.get('captions', null) == null
+                      || voice.captions in ['REBUILD', 'KEEP', 'REMOVE'])
+                );
+    }
+
+    // What to hide in the picture: rectangles, in percentages of the SOURCE
+    // frame, plus a flag asking the worker to go and find some.
+    //
+    // **This is written against an evaluation budget, not for elegance.** A
+    // Firestore rule may evaluate a thousand expressions and no more, and the
+    // first version of this — eleven named keys and a typed range check on
+    // every field, unrolled over eight regions — exceeded it, denying a write
+    // that was perfectly valid with an error naming neither the field nor the
+    // reason. So it checks the two things only the rule can check, and leaves
+    // the rest to the worker's own schema, which rejects an unknown method or
+    // an out-of-range strength with a message that says so.
+    //
+    // What only the rule can check is the **key set** — a field nobody
+    // recognises is how something gets smuggled past a validator — and the
+    // **geometry**, because a zero-width rectangle is clamped to nothing on the
+    // worker and would hide neither the logo nor the reason it was not hidden.
+    //
+    // The cap is six because each region becomes a split/crop/overlay triple or
+    // a delogo in the filtergraph AND a full-frame filter pass at encode time.
+    // Detection never returns more than four, and no broadcast carries six
+    // marks, so this is headroom rather than a limit anyone meets.
+    function obscureRegionOk(region) {
+      return region.keys().hasOnly(
+               ['xPct', 'yPct', 'wPct', 'hPct', 'method', 'strength',
+                'fromSec', 'toSec', 'label', 'found', 'confidence'])
+             && region.xPct >= 0 && region.yPct >= 0
+             && region.wPct > 0 && region.hPct > 0
+             && region.xPct + region.wPct <= 100
+             && region.yPct + region.hPct <= 100;
+    }
+
+    function obscureRegionsOk(regions) {
+      // Rules have no map over a list, so the members are checked positionally.
+      // Short-circuiting means the ordinary one- or two-region write evaluates
+      // almost none of this.
+      return regions.size() <= 6
+             && (regions.size() < 1 || obscureRegionOk(regions[0]))
+             && (regions.size() < 2 || obscureRegionOk(regions[1]))
+             && (regions.size() < 3 || obscureRegionOk(regions[2]))
+             && (regions.size() < 4 || obscureRegionOk(regions[3]))
+             && (regions.size() < 5 || obscureRegionOk(regions[4]))
+             && (regions.size() < 6 || obscureRegionOk(regions[5]));
+    }
+
+    function obscureOk(obscure) {
+      return obscure == null
+             || (
+                  obscure.keys().hasOnly(['auto', 'regions', 'method', 'strength'])
+                  && (obscure.get('regions', null) == null
+                      || obscureRegionsOk(obscure.regions))
+                );
+    }
+
+    function remakeOptionsOk() {
+      let options = request.resource.data.get('remakeOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['notes', 'interpretNotes', 'framing', 'voice',
+                   'startDeltaSec', 'endDeltaSec', 'profile', 'obscure'])
+             && (options.get('notes', null) == null
+                 || (options.notes is string && options.notes.size() <= 2000))
+             && (options.get('interpretNotes', null) == null || options.interpretNotes is bool)
+             // A profile NAME, not a path. The worker joins this into
+             // assets/profiles/<name>.toml, so a value carrying a separator or a
+             // dot reaches outside that directory — and it is stamped onto the
+             // finished clip as its renderProfile either way. Every other helper
+             // here constrains its value rather than only its type.
+             && (options.get('profile', null) == null
+                 || (options.profile is string
+                     && options.profile.size() > 0
+                     && options.profile.size() <= 64
+                     && options.profile.matches('^[A-Za-z0-9_-]+$')))
+             && (options.get('startDeltaSec', null) == null
+                 || (options.startDeltaSec is number
+                     && options.startDeltaSec >= -30 && options.startDeltaSec <= 30))
+             && (options.get('endDeltaSec', null) == null
+                 || (options.endDeltaSec is number
+                     && options.endDeltaSec >= -30 && options.endDeltaSec <= 30))
+             && framingOk(options.get('framing', null))
+             && voiceOk(options.get('voice', null))
+             && obscureOk(options.get('obscure', null));
     }
 
     // What the operator chose for one specific upload: title, description,
@@ -303,6 +498,19 @@ service cloud.firestore {
                               request.resource.data.clipId is string
                               && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
                             )
+                       )
+                    // A REMAKE job is a correction to a clip someone is
+                    // watching. Like MUSIC and UPLOAD it does not require
+                    // approval — the whole point is that the clip is *not*
+                    // right yet — but it must name a clip that exists, and its
+                    // options must be values the worker can actually render.
+                    && (
+                         request.resource.data.type != 'REMAKE'
+                         || (
+                              request.resource.data.clipId is string
+                              && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
+                              && remakeOptionsOk()
+                            )
                        );
 
       // The only state transition a user may drive is cancellation. Everything
@@ -335,7 +543,30 @@ service cloud.firestore {
     match /sources/{sourceId} {
       allow read: if isApproved();
       allow create: if ownsIncoming();
-      allow update, delete: if false;
+
+      // Deleting a source is the client's job to cascade: it deletes the
+      // candidates and clips cut from it in the same batch, so the tree goes in
+      // one atomic write rather than leaving clips pointing at a source that is
+      // no longer there. Rules cannot enforce that — they see one document at
+      // a time — so it is enforced where it can be, in `deleteSource`, and the
+      // worker tolerates the orphan either way.
+      allow delete: if isApproved();
+
+      // `obscure` is the one field on a source a person owns, and it is here
+      // rather than on each clip because what it describes is a property of the
+      // channel: a broadcaster's bug is in the same place on every video it
+      // will ever publish, so the rectangle is worth recording once against the
+      // source and applying at RENDER ever after.
+      //
+      // Everything else about a source is a fact about a file — its hash, its
+      // path on the worker, how large it is — and a client that could write
+      // those could point a render at a file nobody ingested. So the field set
+      // is pinned to exactly one name, and `uid` is compared so the write
+      // cannot also reassign ownership.
+      allow update: if isApproved()
+                    && changed().hasOnly(['obscure'])
+                    && request.resource.data.uid == resource.data.uid
+                    && obscureOk(request.resource.data.get('obscure', null));
 
       // Transcripts are expensive to produce and are cached by content hash.
       // Nothing about them is user-editable.
@@ -364,13 +595,59 @@ service cloud.firestore {
     // write these could fabricate a score and corrupt the Phase 9 feedback loop.
     match /candidates/{candidateId} {
       allow read: if isApproved();
-      allow write: if false;
+      // Read-only to the client: a user who could write these could fabricate a
+      // score and corrupt the Phase 9 feedback loop. Deleting one fabricates
+      // nothing — it is a proposal nobody acted on, and the ones that were
+      // acted on are identifiable from the clips that carry their ids.
+      allow create, update: if false;
+      allow delete: if isApproved();
     }
 
     // ── Clips ────────────────────────────────────────────────────────────────
+    // ── Preferences ──────────────────────────────────────────────────────────
+    //
+    // What the system has worked out about a reviewer from their corrections,
+    // proposed after a remake and applied to later ones only once accepted.
+    //
+    // The client's only power here is the decision. It cannot create a
+    // preference — the worker proposes them through the Admin SDK — and it
+    // cannot edit the text of one, because a preference whose wording could be
+    // rewritten after it was accepted would be a rule nobody had agreed to.
+    // Accepting and rejecting are the same write: `status` plus who decided and
+    // when, and nothing else in the document may move.
+    match /preferences/{preferenceId} {
+      allow read: if isApproved();
+
+      allow update: if isApproved()
+                    && changed().hasOnly(['status', 'decidedAt', 'decidedBy'])
+                    && request.resource.data.status in ['ACCEPTED', 'REJECTED']
+                    && request.resource.data.decidedBy == request.auth.uid
+                    && request.resource.data.decidedAt is string;
+
+      // Proposing is the worker's job; deleting is nobody's. A rejected
+      // preference is kept deliberately, so the same suggestion cannot come
+      // back on the next correction — the rejection is itself the thing worth
+      // remembering, and removing the row would restart the loop it ended.
+      allow create, delete: if false;
+    }
+
     match /clips/{clipId} {
       allow read: if isApproved();
-      allow create, delete: if false;
+      allow create: if false;
+
+      // **Deleting a clip deletes the record, never the file.** They are
+      // separate acts because they answer separate questions, and the second
+      // one is the expensive one to get wrong: a clip is a render that cost GPU
+      // time and a source is a download that may no longer be available. So
+      // this clears the review queue, and the media stays exactly where it is
+      // until somebody removes it from the machine that holds it — which is a
+      // different surface, on the worker, because nothing in Firestore knows
+      // what is on a particular disk.
+      //
+      // A publication is NOT deleted with its clip. It is the record of what
+      // was actually posted and under what rights, and an audit trail that
+      // disappears when somebody tidies their queue is not an audit trail.
+      allow delete: if isApproved();
 
       // Review is the decision the people own; everything else about a clip
       // belongs to the render that produced it. Restricting the writable field

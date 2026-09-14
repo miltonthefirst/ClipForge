@@ -74,7 +74,7 @@ class Workspace:
     def __init__(self, root: Path, *, max_gb: int) -> None:
         self._root = root.expanduser().resolve()
         self._max_bytes = max_gb * BYTES_PER_GB
-        for child in ("sources", "clips", "transcripts", "tmp"):
+        for child in ("sources", "clips", "transcripts", "tmp", "trash"):
             (self._root / child).mkdir(parents=True, exist_ok=True)
 
     @property
@@ -98,6 +98,11 @@ class Workspace:
         return self._root / "tmp"
 
     @property
+    def trash_dir(self) -> Path:
+        """Where files go when the operator removes them. See media/trash.py."""
+        return self._root / "trash"
+
+    @property
     def max_bytes(self) -> int:
         return self._max_bytes
 
@@ -111,14 +116,28 @@ class Workspace:
         drift would always be in the dangerous direction.
         """
         total = 0
+        trash = self.trash_dir
         for path in self._root.rglob("*"):
-            if path.is_file():
-                try:
-                    total += path.stat().st_size
-                except OSError:
-                    # A file vanished mid-walk — another stage cleaning up. Not
-                    # worth failing a GC pass over.
-                    continue
+            if not path.is_file():
+                continue
+            if trash in path.parents:
+                # The bin is deliberately outside the budget, and this is the
+                # line that makes it so. Counting it would be more truthful
+                # about the disk and catastrophic in practice: `collect` evicts
+                # SOURCES, so a full bin would have it delete live downloads to
+                # make room for deleted ones. Live data is never evicted to
+                # house dead data.
+                #
+                # The price is that the bin can fill a disk while this reports
+                # the workspace comfortable, so its size is shown wherever the
+                # bin is shown and emptying it stays the operator's call.
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                # A file vanished mid-walk — another stage cleaning up. Not
+                # worth failing a GC pass over.
+                continue
         return total
 
     def free_disk_bytes(self) -> int:

@@ -188,6 +188,17 @@ workers/{workerId}                # heartbeat and capability advertisement
   gpu: { name, vramTotalMb, vramFreeMb }
   lastSeenAt, version
 
+agents/{machineId}                # the supervisor that starts and stops a worker,
+                                  # so the PWA can do it from anywhere. The only
+                                  # document where a client may influence what runs.
+                                  # See docs/adr/0012-machine-agent.md
+  desired: RUNNING|STOPPED         # the WISH — the client's three writable fields
+  requestedBy, requestedAt         # who asked, and when. Freshness is load-bearing
+  state: STOPPED|STARTING|RUNNING|FOREIGN|STOPPING|FAILED
+  detail, workerPid, lastExitCode, restarts, log[]
+  lastSeenAt                       # keeps beating when no worker runs, which is
+                                   # the one thing workers/{workerId} cannot do
+
 sources/{sourceId}                # one ingested long-form video (uid: who submitted it)
   provider: youtube|local
   externalId, title, channel, durationSec, contentHash
@@ -246,7 +257,7 @@ minutes it took to download and transcribe.
 | **M0 — Foundations** | 0, 1, 2 | A control plane and a worker that can run a no-op job reliably |
 | **M1 — Pipeline** | 3, 4, 5, 6 | URL in, rendered vertical clip on disk. No UI |
 | **M2 — Product** | 7 | **v0.1.0** — the phone review loop |
-| **M3 — Feedback loop** | 8, 9 | **v0.2.0** — publish and measure |
+| **M3 — Feedback loop** | 8, 8b, 9 | **v0.2.0** — publish, correct and measure |
 | **M4 — Autonomy** | 10, 12 | **v0.3.0** — trend-driven sourcing, then **v0.4.0** — several channels |
 | **M5 — Release** | 11 | Public open-source launch |
 | **M6 — Synthesis** | 13, 14 | **v0.6.0** — an idea becomes a finished video |
@@ -885,6 +896,303 @@ the reaper notices it, which is the behaviour scheduling exists to guarantee.
 - *Quota.* The default YouTube Data API quota is 10,000 units/day and an upload costs **1,600 units** —
   roughly **six uploads per day**. The scheduler must budget quota and surface it in the UI rather than
   failing opaquely on the seventh upload.
+
+---
+
+#### Phase 8b — The correction channel
+
+**Goal.** A reviewer who thinks a clip was made wrong can say so and get a better one.
+
+**Why it jumped the queue.** Not planned here; it arrived from use. Reviewing football clips surfaced
+two complaints that no existing screen could answer, and both were structural rather than cosmetic:
+
+- **The framing loses the ball.** `RENDER` took one 9:16 window, anchored by the render profile, and
+  held it for the whole clip. On a 1920-wide broadcast frame that keeps 608 pixels — 31.6% of the
+  width, measured in `tests/integration/test_framing_renders.py` — and it never moves. Worse, `crop`
+  was a field of the *profile*, which is one global setting: changing it for a football clip changed
+  it for every talking head too.
+- **The voice and language cannot be changed.** Planned for M6 ([Phase 13](#phase-13--the-synthesis-spine--v050)),
+  gated behind M5, and therefore a long way off.
+
+Underneath both: there was no feedback channel at all. Approve, reject, retitle, score with music,
+publish — every one of those accepts the clip as rendered.
+
+**In scope**
+
+- A `REMAKE` job type and a `RemakeOptions` contract, following `MUSIC` exactly: it names a clip, it
+  produces a *new* clip carrying `derivedFromClipId`, and it never alters the one that was reviewed.
+- **Framing as a per-clip decision**, with the three answers that are actually different —
+  `FIT` (the whole frame, nothing croppable), `TRACK` (a window that follows the motion), `PAN` (a
+  window the reviewer moves), plus `AS_RENDERED` for today's fixed crop, now overridable per clip.
+- **`clipforge.media.tracking`**: a motion-saliency pass over the source, ffmpeg to numpy, no new
+  dependency and no model. It scores window *positions* rather than taking a motion centroid, and it
+  is rate-limited so it lags the action rather than whip-panning to meet it.
+- **Narration** behind a `SpeechSynth` port, Kokoro-82M on onnxruntime as the first adapter — the
+  ONNX build rather than the PyPI one, which depends on the PyTorch this project does not have
+  ([ADR-0002](adr/0002-ctranslate2-without-pytorch.md)). This is D11 arriving early, on the CPU lane,
+  never touching the broker.
+- **Translation and note-reading** on the Ollama model `ANALYZE` already uses. No second model class.
+- Caption `REBUILD`: transcribe the generated narration *back* to recover word timings that match
+  what was said rather than what was scripted, then feed `build_ass` unchanged. D-level machinery
+  from Phase 13, built here because a new voice makes the burned-in captions a lie.
+- The remake panel on the clip page, and `clipforge-worker remake` / `fetch-voices`.
+
+**Explicitly out of scope.** A real object detector for tracking — that is a model, a VRAM budget and
+a third broker-managed class, and `plan_track` is the seam it goes behind if it ever pays. Generated
+visuals, scripts and briefs: those are M6 and stay there.
+
+**Exit criteria** — met, 2026-09-12; one item is honestly outstanding
+
+1. ✅ Each framing mode does what it claims, measured rather than inspected. The source is a
+   horizontal gradient, so brightness encodes horizontal position: a left window comes back dark, a
+   right window bright, a pan gets brighter over time, and `FIT` spans the full gradient because it
+   crops nothing. 12 tests in `tests/integration/test_framing_renders.py`, plus 28 pure-function tests
+   on the filtergraph strings themselves — a wrong crop expression does not fail, it renders the wrong
+   third of the pitch.
+2. ✅ Tracking follows a moving subject into the rendered clip, settles on a stationary one, reports
+   still footage as nothing-to-follow rather than guessing, and honours its speed limit.
+   Three bugs surfaced here and all three were invisible in a rendered clip: ties broken leftward
+   pinned a stationary subject to the edge of frame; a silent instant voted for dead centre, so the
+   crop drifted to the halfway line every time play stopped; and edge-padding was needed to stop the
+   smoothing pass sagging at both ends of a short clip.
+3. ✅ The picture is never retimed to fit the narration. A translated script routinely runs 20-30%
+   longer; the overrun is recorded on the clip and shown in the UI, and the video is untouched.
+4. ✅ A note the reviewer writes is read into settings, never overrides a setting they stated, and
+   never touches a topic the note was not about. `tests/gpu/test_remake_notes.py`, against the real
+   model — the shape of `LlmRemakeNote` is the record of two simpler shapes that each failed in their
+   own direction (see [ADR-0013](adr/0013-remake-as-a-job.md)).
+5. ✅ Refusals name the alternative. Reframing needs the source, which the workspace collector
+   reclaims; re-voicing does not, because it copies the video stream. A remake that cannot reframe
+   says so *and* says that a voice change would still work.
+6. ✅ **Kokoro runs end to end**, verified 2026-09-12 after installing the extra and fetching the
+   model: 54 voices load, English and Spanish both synthesise, and three real remakes — tracked
+   reframe, fit-plus-Spanish-narration, and voice-only — each produced a valid 1080x1920 clip with
+   audio. This was outstanding at the time the phase was written and is no longer.
+
+**One defect this phase surfaced, and it was not in this phase's code.**
+
+`extract_poster` read its dimensions through the strict media probe, which refuses a file with no
+duration. ffmpeg picks a demuxer per file — a detailed JPEG is read by `image2` and reports a
+nominal 0.04s, a plain one by `jpeg_pipe` and reports `N/A` — so the poster measured successfully or
+not *according to how busy the frame happened to be*, and on failure reported a height of 0.
+`ClipPreview` requires positive dimensions, so a render that had already finished then died saving
+its thumbnail. A flat green pitch reproduces it; the test suite's colour-bar pattern does not, which
+is why it survived. Fixed at the root — the poster helper asks ffprobe for width and height and
+nothing else — with a regression test on plain footage, plus a guard in both RENDER and REMAKE so an
+unmeasurable poster costs a thumbnail rather than a clip.
+
+**Delivered.** `RemakeStage` and the `REMAKE` job type · `clipforge.media.framing` (now the single
+crop implementation, with `RENDER` delegating to it) · `clipforge.media.tracking` ·
+`clipforge.media.speech` and `clipforge.media.narration` · `clipforge.analysis.remake` ·
+the remake panel on the clip page · `remakeOptionsOk` in the rules, with 27 emulator tests ·
+`clipforge-worker remake` and `fetch-voices` · [ADR-0013](adr/0013-remake-as-a-job.md).
+
+**A note on what re-voicing is for.** It changes the soundtrack and nothing else. On third-party
+footage the picture is still the picture, and it is the picture a rights holder's matching runs
+against. It helps with a claim on commentary or music, and it opens a clip to an audience that does
+not speak the original language; it does **not** make footage safe to publish. The rights attestation
+is what does that, and the review screen says so where the option is offered.
+
+**What this changes about M6.** Three of Phase 13's pieces now exist: the `SpeechSynth` port and its
+Kokoro adapter, the transcribe-our-own-narration alignment trick, and the CPU-lane discipline for
+both. Phase 13 inherits them rather than building them, and `COMPOSE` should reuse `SpeechSynth`
+rather than introducing a second path to a voice.
+
+---
+
+#### Phase 8c — One clip, and a system that remembers
+
+**Goal.** Stop the queue filling with versions of the same clip, and stop the reviewer typing the
+same correction every time.
+
+**Why it jumped the queue.** Both came from using 8b for an afternoon. Thirteen rows in the review
+queue were nine actual clips — a remake is a new clip, a remake is always PENDING, and its parent
+usually still is too. And two of the first five corrections carried the same two asks, written out
+longhand both times, because nothing in the system could notice.
+
+**In scope**
+
+- `Clip.lineageId` and `Clip.version`: a clip and every correction of it are one row in the queue,
+  showing the latest, with the rest as history carrying each step's note, reading and refusals.
+  `MUSIC` joins the same lineage.
+- A `Preference` contract and the `preferences` collection: what the system has worked out about a
+  reviewer, **proposed and never applied** until accepted.
+- `clipforge.analysis.preferences`: propose after a remake that carried a note, dedupe against
+  everything already held in any status, feed accepted ones into the note prompt and into the
+  remake's defaults.
+- Rules giving the PWA exactly one power over a preference — the decision — and the review-queue UI
+  to exercise it.
+
+**Explicitly out of scope.** Applying a preference without being told to. Inferring preferences from
+approve/reject decisions rather than from notes — a rejection says *no*, not *why*, and that kind of
+statistical inference is Phase 9's business, over published performance.
+
+**Exit criteria** — met, 2026-09-13
+
+1. ✅ The live queue collapses from 13 rows to 9 on the existing clips, and the two lineages with
+   three and four versions each show one row apiece. Backfilled by walking `derivedFromClipId`.
+2. ✅ A note teaching a standing preference produces one; *"it cuts in three seconds too late on
+   this one"* produces none; something already accepted and something already rejected both produce
+   none. Measured against the real model in `tests/gpu/test_preference_learning.py`.
+3. ✅ Nothing is applied without a decision. 11 emulator tests in
+   `firebase/tests/preferences.rules.spec.ts` hold the write surface to `status`, `decidedBy` and
+   `decidedAt` — no creating, no editing the wording, no deleting a rejection.
+4. ✅ An accepted preference fills only what the current request left open, and the most recent of
+   two that disagree wins.
+
+**The shape lesson, paid for twice.** `LlmPreferenceProposal` first asked only for a list of
+preferences, and qwen3.5:4b returned an empty one on every case measured, including a note that
+plainly taught two things — an empty array satisfies an array schema trivially, so it is the
+cheapest answer available. Making it answer a required boolean and justify it *before* the list
+exists fixed it. That is the same failure `LlmRemakeNote` records about nullable fields. **Where a
+schema offers a lazy path, a small model takes it**, and prompting does not fix what the shape
+permits.
+
+**Borrowed from `sarungano`.** The propose-never-apply loop, the dedupe-against-every-status rule,
+and the scoping of a lesson to one work versus all of them come from that project's chapter
+feedback loop, which solves the same problem for adapted prose. See
+[ADR-0014](adr/0014-learning-from-feedback.md).
+
+---
+
+#### Phase 8d — Hiding what the broadcaster burnt in
+
+**Goal.** Cover a channel bug, a score bar or a watermark, find them without being told where they
+are, and remember them against the channel so nobody has to ask twice.
+
+**Why it jumped the queue.** A reviewer asked for the same thing three times in three separate
+remakes. Every time the note was read correctly, filed as `UnsupportedAsk.REMOVE_WATERMARK`, and
+answered with a clip that still had the Canal+ logo on it. The refusal was honest and useless: a
+pipeline that cuts shorts from broadcast footage and cannot cover a channel bug produces clips that
+cannot be published, which makes this a missing floor rather than a missing feature.
+
+**In scope**
+
+- `clipforge.media.obscure`: find regions that hold still while the rest of the frame does not, and
+  build the filtergraph that hides them — `delogo` for a mark small enough to reconstruct, blur or
+  mosaic for anything larger, a flat box when flat is the point.
+- `ObscureRegion` in percentages of the **source** frame, applied at the head of the graph before
+  any crop, so a tracked window does not drag the blur across the picture.
+- `RemakeOptions.obscure` and `AppliedRemake.obscured`: ask for it, and see exactly what was hidden
+  and where each rectangle came from.
+- `NoteTopic.OBSCURE` and `NoteObscure`, plus **absorbing** `REMOVE_WATERMARK` and
+  `REMOVE_OVERLAY_TEXT` rather than refusing them.
+- `Source.obscure`, applied by RENDER: the rectangles become a property of the channel, so the next
+  clip arrives clean instead of arriving wrong.
+- `propose_obscure`: the one lesson written without consulting the model, because its value is its
+  coordinates.
+
+**Explicitly out of scope.** A rectangle editor in the PWA. The regions are percentages of the
+source frame and the app never sees one — media does not leave the worker, and the poster it does
+see is the finished 9:16 clip, already cropped out of those coordinates. Worth building only if
+detection turns out to miss.
+
+**Exit criteria** — met, 2026-09-13
+
+1. ✅ On the reviewer's own football source, detection finds the Canal+ bug at 0.98 confidence on
+   one cut and 0.96 on another, plus the score bar and the competition clock, with no false
+   positives. The rendered frame has the logo gone.
+2. ✅ All four methods leave nothing readable, and the rest of the frame is byte-identical. 14
+   integration tests against real ffmpeg in `tests/integration/test_obscure_renders.py`.
+3. ✅ A note saying "blur the canal+" turns detection on by both routes — the OBSCURE topic and a
+   model that still files it as impossible — and is not also refused.
+4. ✅ 17 emulator tests hold the write surface: six regions at most, geometry inside the frame, no
+   unrecognised field, and exactly one writable field on a source.
+
+**Two things the first real render taught.** `delogo` over a 30%-wide score bar drew a smear more
+conspicuous than the graphic, so the limits are on the sides as much as the area. And a match
+clock's digits change every second, so only the badge beside them is static — detection covered
+the badge and left "34:37" in the open, which reads as a fault. Two finds at the same height with a
+small gap are now treated as one plate.
+
+**The bug a test measured rather than read.** Pixelation scaled down with `flags=neighbor`, which
+samples one pixel per cell instead of averaging, so a mosaic kept whichever bars it landed on and
+the mark stayed legible while the filtergraph looked correct. See
+[ADR-0015](adr/0015-hiding-what-is-burnt-into-the-picture.md).
+
+---
+
+#### Phase 8e — Looking at the clip before speaking about it
+
+**Goal.** Stop the pipeline narrating and naming footage it has never seen.
+
+**Why it jumped the queue.** A reviewer's clip went out captioned *"7,000 flaps go. She is
+magnificent one and"*, titled with a lowercase French transcript fragment, and described with the
+analyst's note explaining why the window had been selected. Every component was working correctly;
+none of them had seen a football.
+
+**In scope**
+
+- `clipforge.media.vision`: three frames to a multimodal model, described plainly — subject, what
+  happens, text on screen. Optional everywhere, None on any failure.
+- `clipforge.analysis.narrate`: the spoken line is **written** from the transcript and the pictures
+  together, not translated. `reads_as` counts function words to verify the language, because a model
+  that has just produced French reports that it produced English.
+- `clipforge.analysis.metadata`: a title, a description and tags written for a feed, in the clip's
+  own language. RENDER writes them; REMAKE rewrites them whenever the voice changes.
+- Grounding: every word of a tag must trace to the material or to a short generic list; ungrounded
+  words in prose are reported on the clip rather than removed.
+
+**Explicitly out of scope.** A vision pass per candidate during a harvest — a minute each is not
+affordable for a dozen clips, and the reviewer who corrects one gets the grounded version then.
+
+**Exit criteria** — met, 2026-09-13
+
+1. ✅ Both real cuts from the reviewer's match produce coherent English. The word-salad one becomes
+   *"A beautiful left-sided cross from the corner"*; the good one becomes *"Pavlovitch makes a good
+   pass to break through the first line."*
+2. ✅ French returned as English is refused by `reads_as`, which is the bug that shipped.
+3. ✅ `laliga`, `bayer leipzig`, `lck`, `liverpool vs bayern` and `diaz real madrid` are all dropped
+   from tags; `bayern munich`, `kane` and `futbol` survive.
+4. ✅ A description naming a competition the material never mentions is flagged by name on the clip.
+
+**The lesson, again.** The prompt forbade every one of those invented tags in as many words and the
+model produced them anyway. Prompts do not fix what the shape permits, and they do not fix
+fabrication either — only a check outside the model does. See
+[ADR-0016](adr/0016-looking-at-the-clip-before-speaking.md).
+
+---
+
+#### Phase 8f — Tidying up, without losing anything
+
+**Goal.** Make the database deletable from the web app, and the media deletable only from the
+machine that holds it.
+
+**Why it jumped the queue.** Everything accumulated and nothing could be removed: `clips`, `sources`
+and `candidates` were all `allow delete: if false`. That rule was protecting the wrong thing — the
+expensive artefact is the media, not the record, and the records were being guarded as though they
+were the costly half.
+
+**In scope**
+
+- Delete on `clips`, `sources` and `candidates`; `deleteSource` cascades in batches from the client,
+  counting the tree before it offers the confirmation.
+- `clipforge.media.trash`: a bin at `workspace/trash/<id>/`, file plus manifest, no database.
+  Restore refuses to overwrite; nothing empties it on a schedule.
+- `clipforge.scheduler.storage`: `GET /storage` and the bin's routes on the loopback API, because
+  nothing in Firestore knows what is on a particular disk.
+- **Settings ▸ Storage** in the PWA: what is on the disk, what is in the bin, what each costs.
+
+**Explicitly out of scope.** The Windows Recycle Bin. It auto-purges on size, which contradicts
+"keep them forever" exactly when the bin is large enough to matter, and the app cannot list or purge
+its own items there without shell APIs.
+
+**Exit criteria** — met, 2026-09-14
+
+1. ✅ A real clip moves to the bin over the local API, disappears from `clips/`, is listed with its
+   original path, and is restored to exactly where it was.
+2. ✅ A path outside the workspace is refused by name, as is `..` out of the workspace and a trash id
+   whose parent is not the bin.
+3. ✅ 187 emulator specs: clips, sources and candidates delete; publications and preferences do not;
+   candidates still cannot be edited.
+4. ✅ Binned bytes do not count against the disk budget, so the collector never evicts a live source
+   to make room for a deleted clip.
+
+**The decision worth remembering.** The bin sits outside `Workspace.used_bytes` on purpose. Counting
+it would be more truthful about the disk and catastrophic in practice, because `collect` evicts
+sources — live data would be deleted to house dead data. The price is that the bin can fill a disk
+while the workspace reports itself comfortable, which is why its size is shown next to the button
+that empties it. See [ADR-0017](adr/0017-deleting-a-record-is-not-deleting-a-file.md).
 
 ---
 

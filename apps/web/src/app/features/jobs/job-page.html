@@ -75,7 +75,7 @@
     </div>
     <div>
       <dt class="text-ink-subtle">Attempt</dt>
-      <dd class="mt-0.5 text-ink">{{ job.attempts + 1 }} of {{ job.maxAttempts }}</dd>
+      <dd class="mt-0.5 text-ink">{{ attemptLabel(job) }}</dd>
     </div>
     <div>
       <dt class="text-ink-subtle">Worker</dt>
@@ -278,4 +278,37 @@
       {{ cancelling() ? 'Cancelling…' : 'Cancel this job' }}
     </button>
   }
+
+  <!-- ── Tidying up ───────────────────────────────────────────────────────────
+       Records only. Deleting a job or a source never removes a file, because
+       the two answer different questions and only the worker knows what is on
+       a particular disk. Settings ▸ Storage is where media goes. -->
+  <section class="mt-6 rounded-xl border border-line bg-panel p-4">
+    <h2 class="text-sm font-semibold">Tidy up</h2>
+    <p class="mt-1 text-xs text-ink-subtle">
+      Removes records from the database. Downloaded video and rendered clips stay on this machine
+      until you remove them in
+      <a routerLink="/settings/storage" class="text-accent-ink hover:underline">Storage</a>.
+    </p>
+    <div class="mt-3 flex flex-wrap gap-2">
+      <button
+        type="button"
+        class="rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+        [disabled]="busy()"
+        (click)="removeJob()"
+      >
+        Delete this job
+      </button>
+      @if (source(); as src) {
+        <button
+          type="button"
+          class="rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+          [disabled]="busy()"
+          (click)="removeSource()"
+        >
+          Delete the source and everything from it
+        </button>
+      }
+    </div>
+  </section>
 }

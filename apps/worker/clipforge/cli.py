@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import sys
+from pathlib import Path
 
 import typer
 
@@ -43,6 +46,7 @@ def run(
     from clipforge.media.workspace import Workspace
     from clipforge.publish.channels import ChannelRoutes
     from clipforge.scheduler.control import WorkerRoutes
+    from clipforge.scheduler.storage import StorageRoutes
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
     from clipforge.store.blobs import build_blob_store
@@ -51,6 +55,7 @@ def run(
         CandidateStore,
         ClipStore,
         JobStore,
+        PreferenceStore,
         PublicationStore,
         SourceStore,
         WorkerStore,
@@ -84,6 +89,10 @@ def run(
             # same store the local API writes them through, so what the settings
             # page saved is what the next publish uses.
             channels=ChannelStore(client, settings),
+            # What this reviewer has already taught. Read by REMAKE before it
+            # decides anything, and written to afterwards — as proposals only,
+            # which do nothing until a human accepts them.
+            preferences=PreferenceStore(client, settings),
         ),
     )
     worker.install_signal_handlers()
@@ -114,6 +123,10 @@ def run(
         routes = {
             **ChannelRoutes(settings, ChannelStore(client, settings)).table(),
             **WorkerRoutes(worker, pid=os.getpid()).table(),
+            # Seeing and clearing what is on THIS disk. Firestore knows which
+            # clips exist; only the worker knows which files do, and a record
+            # deleted last week leaves a file nothing else can even list.
+            **StorageRoutes(workspace).table(),
         }
         control = LocalControlApi(
             routes,
@@ -142,6 +155,91 @@ def run(
             file_server.stop()
         if control is not None:
             control.stop()
+
+
+@app.command()
+def agent(
+    live: bool = typer.Option(
+        default=False,
+        help="Watch the real Firebase project rather than the local emulators.",
+    ),
+    log_file: str = typer.Option(
+        default="",
+        help="Append this process's log here. Defaults to CLIPFORGE_AGENT_LOG_FILE when "
+        "there is no console to write to.",
+    ),
+) -> None:
+    """Start and stop the worker on this machine on request, from anywhere.
+
+    The half of ClipForge that lets a phone do more than ask. It holds a listener
+    on `agents/{workerId}`, starts a worker when that document says RUNNING,
+    stops it cleanly when it says STOPPED, and restarts one that dies while it is
+    still wanted. Nothing here runs a job — that is still the worker's business.
+
+    Runs until stopped. Install it to start with Windows with:
+
+        powershell -File tools/agent.ps1 -Install -Live
+    """
+    # Before `get_settings()`, which is cached: a real environment variable beats
+    # `.env` in pydantic-settings, and `.env` deliberately pins the emulator so
+    # routine development cannot touch the real project. Going live is therefore
+    # an argument here, exactly as it is in tools/worker.ps1.
+    if live:
+        os.environ["CLIPFORGE_USE_EMULATORS"] = "false"
+
+    from clipforge.agent import (
+        Agent,
+        Supervisor,
+        WorkerProcess,
+        probe_worker,
+        redirect_output,
+    )
+    from clipforge.store.firestore import AgentStore, firestore_client
+
+    settings = get_settings()
+
+    # A console when there is one, a file when there is not. `sys.stdout` is
+    # None under pythonw.exe, which is how Task Scheduler starts this, and
+    # configure_logging would fail on it a line later.
+    if log_file or sys.stdout is None:
+        written_to = redirect_output(Path(log_file) if log_file else settings.agent_log_file)
+    else:
+        written_to = None
+
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
+    # httpx logs one INFO line per request, and the agent asks the worker's
+    # control API how it is doing every ten seconds — a log file that rotates on
+    # nothing but its own chatter is a log file that has lost the failure it was
+    # kept for. Quietened here rather than in configure_logging: the worker's
+    # requests are rare and worth seeing.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    process = WorkerProcess(settings=settings, log_lines=settings.agent_log_lines)
+    supervisor = Supervisor(
+        process=process,
+        probe=lambda: probe_worker(settings),
+        control_port=settings.local_api_port,
+        restart_limit=settings.agent_restart_limit,
+        backoff_seconds=settings.agent_restart_backoff_seconds,
+        shutdown_grace_seconds=settings.agent_shutdown_grace_seconds,
+    )
+    runner = Agent(
+        settings=settings,
+        store=AgentStore(firestore_client(settings), settings),
+        supervisor=supervisor,
+        tick_seconds=settings.agent_tick_seconds,
+        heartbeat_seconds=settings.agent_heartbeat_seconds,
+    )
+    runner.install_signal_handlers()
+
+    if written_to is None:
+        typer.echo(
+            f"agent {settings.worker_id} watching "
+            f"{'the local emulators' if settings.use_emulators else settings.firebase_project_id}"
+            " — Ctrl-C to stop"
+        )
+    runner.run()
 
 
 @app.command()
@@ -228,6 +326,159 @@ def workspace() -> None:
     typer.echo(f"  free   {manager.free_disk_bytes() / gb:.2f} GB on the volume")
     over = manager.over_budget_by()
     typer.echo(f"  over budget by {over / gb:.2f} GB" if over else "  within budget")
+
+
+@app.command()
+def remake(
+    clip_id: str = typer.Argument(..., help="The clip to correct."),
+    notes: str = typer.Option("", help="What is wrong with it, in your own words."),
+    framing: str = typer.Option(
+        "", help="AS_RENDERED, FIT, PAN or TRACK. Empty leaves the framing alone."
+    ),
+    crop: str = typer.Option("", help="left, centre or right. AS_RENDERED only."),
+    language: str = typer.Option("", help="Speak it in this language, e.g. es or fr-fr."),
+    keep_audio: bool = typer.Option(
+        default=False, help="Keep the original audio ducked under the narration."
+    ),
+    script: str = typer.Option("", help="Say this instead of the clip's own words."),
+    hide: bool = typer.Option(
+        default=False,
+        help="Find logos, watermarks and burnt-in text in the footage and cover them.",
+    ),
+    start: float = typer.Option(0.0, help="Move the cut's start, in seconds. Negative is earlier."),
+    end: float = typer.Option(0.0, help="Move the cut's end, in seconds. Positive is later."),
+    uid: str = typer.Option("cli", help="Who is asking. Recorded on the job."),
+) -> None:
+    """Queue a correction to a finished clip.
+
+    The same job the review screen creates, from a terminal. Useful for trying a
+    framing mode against one clip without reaching for a phone — and the only
+    way to drive a remake on a machine where the PWA is not set up.
+
+    Nothing happens until a worker claims it: there is no server-side executor,
+    so a job that stays QUEUED means `clipforge-worker run` is not running.
+    """
+    from clipforge_contracts import (
+        Framing,
+        FramingMode,
+        ObscureOptions,
+        RemakeOptions,
+        SpeechMode,
+        VoiceCaptions,
+        VoiceOptions,
+    )
+
+    from clipforge.media.speech import DEFAULT_VOICES, SpeechError, kokoro_language
+    from clipforge.stages.pipeline import new_remake_job
+    from clipforge.store.firestore import JobStore, firestore_client
+
+    settings = get_settings()
+
+    framing_option = None
+    if framing:
+        try:
+            mode = FramingMode(framing.upper())
+        except ValueError:
+            typer.echo(
+                f"unknown framing {framing!r}; expected one of "
+                f"{', '.join(m.value for m in FramingMode)}",
+                err=True,
+            )
+            raise typer.Exit(code=2) from None
+        if mode is FramingMode.PAN:
+            # PAN needs points, and a terminal is the wrong place to set them
+            # against footage you cannot see.
+            typer.echo(
+                "PAN needs keyframes, which are set while watching the clip. "
+                "Use TRACK here, or set the points in the review screen.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        framing_option = Framing(mode=mode, crop=crop or None)
+
+    voice_option = None
+    if language:
+        try:
+            resolved = kokoro_language(language)
+        except SpeechError as exc:  # a language with no voice is a usage error here
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+        voice_option = VoiceOptions(
+            mode=SpeechMode.BED if keep_audio else SpeechMode.REPLACE,
+            voice=DEFAULT_VOICES.get(resolved, settings.speech_default_voice),
+            language=language,
+            translate=True,
+            script=script or None,
+            captions=VoiceCaptions.REBUILD,
+        )
+
+    options = RemakeOptions(
+        notes=notes or None,
+        framing=framing_option,
+        voice=voice_option,
+        start_delta_sec=start,
+        end_delta_sec=end,
+        # Only ever the search here. A rectangle is a thing you point at, and a
+        # terminal cannot show you the frame to point at — so the flag asks the
+        # worker to look, and what it finds is recorded on the clip where it can
+        # be seen and kept.
+        obscure=ObscureOptions(auto=True) if hide else None,
+    )
+    if (
+        options.notes is None
+        and framing_option is None
+        and voice_option is None
+        and not hide
+        and not start
+        and not end
+    ):
+        typer.echo(
+            "nothing to change: give a note, a framing, a language, --hide or a nudge.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    job = new_remake_job(uid=uid, clip_id=clip_id, options=options)
+    JobStore(firestore_client(settings), settings).create(job)
+    typer.echo(job.id)
+
+
+@app.command(name="fetch-voices")
+def fetch_voices(
+    force: bool = typer.Option(default=False, help="Download again even if the files are present."),
+) -> None:
+    """Download the Kokoro speech model, so a remake can change the voice.
+
+    Kept out of the install because it is ~330 MB that a worker which never
+    re-voices a clip has no use for. The model and its voice pack are Apache 2.0
+    and are fetched from the kokoro-onnx release the `speech` extra pins.
+    """
+    import urllib.request
+
+    release = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+    settings = get_settings()
+    wanted = [
+        (f"{release}/kokoro-v1.0.onnx", settings.speech_model_path.expanduser()),
+        (f"{release}/voices-v1.0.bin", settings.speech_voices_path.expanduser()),
+    ]
+
+    for url, destination in wanted:
+        if destination.is_file() and not force:
+            typer.echo(f"have {destination}")
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_suffix(destination.suffix + ".partial")
+        typer.echo(f"fetching {url}")
+        try:
+            urllib.request.urlretrieve(url, staging)  # noqa: S310 - a fixed https release URL
+        except OSError as exc:
+            staging.unlink(missing_ok=True)
+            typer.echo(f"could not fetch {url}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        staging.replace(destination)
+        typer.echo(f"wrote {destination} ({destination.stat().st_size / 1_048_576:.0f} MB)")
+
+    typer.echo("speech is ready; a remake can now change the voice or the language")
 
 
 @app.command()
@@ -416,9 +667,10 @@ def retention(
     typer.echo(f"on bucket  {json.dumps(current) if current else 'no lifecycle rules'}")
 
     if not apply:
-        agreed = len(current) == 1 and current[0].get("condition", {}).get(
-            "age"
-        ) == settings.clip_retention_days
+        agreed = (
+            len(current) == 1
+            and current[0].get("condition", {}).get("age") == settings.clip_retention_days
+        )
         typer.echo("")
         typer.echo("in step" if agreed else "NOT in step — run with --apply")
         raise typer.Exit(code=0 if agreed else 1)

@@ -161,8 +161,15 @@ class MusicStage:
             source_id=original.source_id,
             job_id=job.id,
             derived_from_clip_id=original.id,
+            # A scored clip is a version of its parent too. It was already
+            # linked by derivedFromClipId; joining the lineage is what stops it
+            # occupying a second slot in the review queue.
+            lineage_id=original.lineage_id or original.id,
+            version=(original.version or 1) + 1,
             location=(
-                ClipLocation.REMOTE if (ref.storage_path or ref.playback_url) else ClipLocation.LOCAL
+                ClipLocation.REMOTE
+                if (ref.storage_path or ref.playback_url)
+                else ClipLocation.LOCAL
             ),
             local_path=str(ref.local_path),
             playback_url=ref.playback_url,

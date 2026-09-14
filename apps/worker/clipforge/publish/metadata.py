@@ -98,7 +98,14 @@ def resolve_metadata(
     # stay distinguishable from "I did not open the tags field". `None` is the
     # latter; `[]` is the former, and it must not fall through to the channel's.
     per_publish_tags = options.tags if options is not None else None
-    tags = per_publish_tags if per_publish_tags is not None else _channel_tags(defaults)
+    # Then the clip's own, which were written with its title and describe THIS
+    # clip; the channel's are the same on a goal and on a press conference and
+    # are the right answer only when nothing more specific exists.
+    tags = (
+        per_publish_tags
+        if per_publish_tags is not None
+        else (list(clip.tags) if clip.tags else _channel_tags(defaults))
+    )
 
     return PublishMetadata(
         # None, not "": the publication record says which channel this went to,
@@ -124,7 +131,12 @@ def resolve_metadata(
             ),
             template=defaults.description_template if defaults is not None else None,
         ),
-        tags=[tag.strip() for tag in tags if tag.strip()][:MAX_TAGS],
+        # `str(getattr(tag, "root", tag))` because a `maxLength` on an array's
+        # items makes the generator emit a RootModel for them, so a clip's own
+        # tags arrive as objects while a channel's arrive as plain strings.
+        tags=[text for text in (str(getattr(tag, "root", tag)).strip() for tag in tags) if text][
+            :MAX_TAGS
+        ],
         privacy=privacy,
         category_id=category,
     )

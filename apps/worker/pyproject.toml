@@ -67,6 +67,22 @@ media = [
     "yt-dlp>=2025.1.15",
 ]
 
+# Speech synthesis, for the REMAKE stage's narration.
+#
+# `kokoro-onnx` rather than `kokoro`: the latter depends on PyTorch, and this
+# project deliberately does not have it (docs/adr/0002-ctranslate2-without-pytorch.md).
+# Adding ~2.5 GB of torch wheels for an 82M-parameter model that runs on the CPU
+# would undo that decision for the smallest model in the system.
+#
+# An extra rather than a core dependency because the weights are a separate
+# ~330 MB download (`clipforge-worker fetch-voices`) that a worker which never
+# re-voices a clip has no use for. The adapter imports lazily, so a worker
+# without this still starts, still runs every other stage, and still reframes —
+# which is the half of REMAKE that needs no model at all.
+speech = [
+    "kokoro-onnx>=0.4",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
@@ -144,8 +160,21 @@ pretty = true
 files = ["clipforge", "tests"]
 
 # Third-party packages without bundled type stubs.
+#
+# `kokoro_onnx` is here for a second reason as well: it lives in the optional
+# `speech` extra, so it is present on a machine that re-voices clips and absent
+# on CI. An inline `type: ignore[import-not-found]` cannot satisfy both — it is
+# required where the package is missing and reported as unused where it is
+# installed, so whichever machine you silence, the other one fails.
 [[tool.mypy.overrides]]
-module = ["faster_whisper.*", "pynvml.*", "yt_dlp.*", "firebase_admin.*", "google.cloud.storage.*"]
+module = [
+    "faster_whisper.*",
+    "pynvml.*",
+    "yt_dlp.*",
+    "firebase_admin.*",
+    "google.cloud.storage.*",
+    "kokoro_onnx.*",
+]
 ignore_missing_imports = true
 
 # ─────────────────────────────────────────────────────────────────────────────

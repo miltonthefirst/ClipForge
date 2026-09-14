@@ -29,13 +29,35 @@ def click_track(path: Path, bpm: float, seconds: float = 20.0) -> Path:
     beat = 60.0 / bpm
     one = path.with_name("one.wav")
     subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-         "sine=frequency=1200:duration=0.03", "-af", f"apad=whole_dur={beat}", str(one)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1200:duration=0.03",
+            "-af",
+            f"apad=whole_dur={beat}",
+            str(one),
+        ],
         check=True,
     )
     subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["ffmpeg", "-v", "error", "-y", "-stream_loop", str(int(seconds / beat) + 4),
-         "-i", str(one), "-t", str(seconds), str(path)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-stream_loop",
+            str(int(seconds / beat) + 4),
+            "-i",
+            str(one),
+            "-t",
+            str(seconds),
+            str(path),
+        ],
         check=True,
     )
     return path
@@ -76,8 +98,19 @@ def test_noise_reports_no_tempo_rather_than_guessing(tmp_path: Path) -> None:
     """The answer that keeps a wrong alignment from happening at all."""
     noise = tmp_path / "noise.wav"
     subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-         "anoisesrc=d=15:c=pink", "-ar", "22050", str(noise)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anoisesrc=d=15:c=pink",
+            "-ar",
+            "22050",
+            str(noise),
+        ],
         check=True,
     )
 
@@ -92,9 +125,21 @@ def test_a_file_with_no_audio_is_an_error_not_an_empty_analysis(tmp_path: Path) 
     """Silence and 'no audio' analyse identically, and only one is a mistake."""
     silent = tmp_path / "silent.mp4"
     subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-         "testsrc2=size=64x64:rate=10:duration=2", "-c:v", "libx264",
-         "-pix_fmt", "yuv420p", str(silent)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=10:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(silent),
+        ],
         check=True,
     )
 
@@ -178,7 +223,9 @@ def test_a_short_track_is_marked_for_looping() -> None:
 def test_replace_never_references_the_clips_own_audio() -> None:
     """The distinction the whole mode rests on. Mixing the original in at zero
     volume would look identical in the UI and sound wrong."""
-    graph = build_audio_filter(plan_music(synthetic(120.0), clip_duration_sec=8.0, mode=MusicMode.REPLACE))
+    graph = build_audio_filter(
+        plan_music(synthetic(120.0), clip_duration_sec=8.0, mode=MusicMode.REPLACE)
+    )
 
     assert "[0:a]" not in graph
     assert "amix" not in graph
@@ -187,7 +234,9 @@ def test_replace_never_references_the_clips_own_audio() -> None:
 
 @pytest.mark.unit
 def test_a_bed_ducks_against_the_speech_rather_than_sitting_at_a_fixed_level() -> None:
-    graph = build_audio_filter(plan_music(synthetic(120.0), clip_duration_sec=8.0, mode=MusicMode.BED))
+    graph = build_audio_filter(
+        plan_music(synthetic(120.0), clip_duration_sec=8.0, mode=MusicMode.BED)
+    )
 
     assert "sidechaincompress" in graph
     assert "[0:a]" in graph

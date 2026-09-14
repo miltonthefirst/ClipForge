@@ -177,11 +177,53 @@ def _encode(path: Path) -> str:
 
 
 def _dimensions(path: Path, ffmpeg_bin: str) -> tuple[int, int]:
-    """Read the poster's real dimensions rather than assuming the scale held."""
-    from clipforge.media.ffprobe import ProbeError, probe
+    """Read the poster's real dimensions rather than assuming the scale held.
 
+    Asks ffprobe for the stream's width and height and nothing else, rather than
+    going through :func:`clipforge.media.ffprobe.probe`. That function is built
+    for *media* and deliberately refuses a file with no duration, because every
+    one of its other callers slices time out of what it describes — and a still
+    image has no duration to report.
+
+    Which sounds academic and is not. ffmpeg chooses a demuxer per file: a
+    detailed JPEG is read by `image2`, which reports a nominal 0.04s, while a
+    simpler one is read by `jpeg_pipe`, which reports `N/A`. So the strict probe
+    succeeded or failed depending on *how busy the poster frame happened to be*,
+    and on failure this returned a height of 0 — which then failed `ClipPreview`
+    validation and took down a render that had already completed. A flat green
+    pitch was enough to trigger it; a test pattern was not, which is why it
+    survived the test suite.
+
+    The dimensions were never in doubt in either case: they are on the stream,
+    and this asks for exactly them.
+    """
+    ffprobe_bin = ffmpeg_bin.replace("ffmpeg", "ffprobe")
     try:
-        info = probe(path, ffprobe_bin=ffmpeg_bin.replace("ffmpeg", "ffprobe"))
-    except ProbeError:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                ffprobe_bin,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
         return POSTER_WIDTH, 0
-    return info.width or POSTER_WIDTH, info.height or 0
+
+    width, _, height = completed.stdout.strip().partition("x")
+    try:
+        return int(width) or POSTER_WIDTH, int(height)
+    except ValueError:
+        # Nothing usable came back. The caller treats a zero height as "no
+        # preview" rather than writing one that cannot be rendered.
+        return POSTER_WIDTH, 0

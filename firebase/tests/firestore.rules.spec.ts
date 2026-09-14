@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ALICE,
   BOB,
+  agentReport,
   candidate,
   createTestEnvironment,
   heartbeat,
@@ -441,6 +442,80 @@ describe('sources', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Agents: the one thing a client may say about what runs on the machine.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('the agent document', () => {
+  const WISH = { desired: 'RUNNING', requestedBy: ALICE, requestedAt: '2026-09-12T09:00:00.000Z' };
+
+  beforeEach(async () => {
+    await seed('agents/tower', agentReport());
+  });
+
+  it('lets any approved member start the worker, from anywhere', async () => {
+    // The entire point of the collection: a phone can do more than queue work.
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), WISH));
+    await assertSucceeds(
+      updateDoc(doc(bobDb(), 'agents/tower'), { ...WISH, desired: 'STOPPED', requestedBy: BOB }),
+    );
+  });
+
+  it('denies anyone who is not approved', async () => {
+    await assertFails(updateDoc(doc(anonDb(), 'agents/tower'), WISH));
+    await assertFails(getDoc(doc(anonDb(), 'agents/tower')));
+  });
+
+  it('denies filing the request under somebody else', async () => {
+    // A shared workspace can afford anyone starting the worker. It cannot
+    // afford not knowing who did.
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, requestedBy: BOB }));
+  });
+
+  it('denies a wish that is not one of the two things it can be', async () => {
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, desired: 'PAUSED' }));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, desired: 7 }));
+  });
+
+  it('requires the request to be dated', async () => {
+    // Pressing Start on a worker that is already wanted is how a person clears
+    // an agent that has given up. Without a fresh timestamp that press is
+    // indistinguishable from the wish simply still being RUNNING.
+    const { requestedAt, ...undated } = WISH;
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), undated));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, requestedAt: 12345 }));
+  });
+
+  it('denies writing what the agent reports about itself', async () => {
+    // `desired` is a wish. Everything describing what is actually happening
+    // belongs to the agent, and a client that could write `state` could claim a
+    // worker was running while the machine was off.
+    for (const forged of [
+      { state: 'RUNNING' },
+      { workerPid: 99 },
+      { lastExitCode: 0 },
+      { log: ['all fine'] },
+      { lastSeenAt: '2026-09-12T09:00:00.000Z' },
+    ]) {
+      await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...WISH, ...forged }));
+    }
+  });
+
+  it('denies conjuring a machine that has never run an agent', async () => {
+    // "No document" means no agent has ever run there, which is a different
+    // problem from "the agent is not reporting right now". A client that could
+    // create one would make a phone offer Start for a machine with nothing
+    // listening.
+    await assertFails(setDoc(doc(aliceDb(), 'agents/laptop'), agentReport({ agentId: 'laptop' })));
+    await assertFails(deleteDoc(doc(aliceDb(), 'agents/tower')));
+  });
+
+  it('lets a member see every machine, so "which PC?" is answerable', async () => {
+    await assertSucceeds(getDoc(doc(bobDb(), 'agents/tower')));
+    await assertSucceeds(getDocs(collection(bobDb(), 'agents')));
+  });
+});
+
 describe('default deny', () => {
   it('refuses a collection the rules never mention', async () => {
     await assertFails(getDoc(doc(aliceDb(), 'secrets/anything')));
@@ -453,5 +528,90 @@ describe('the rules are actually loaded', () => {
   it('rejects an anonymous write to an arbitrary path', async () => {
     await assertFails(setDoc(doc(anonDb(), 'anything/at-all'), { x: 1 }));
     expect(true).toBe(true);
+  });
+});
+
+
+/**
+ * Tidying up.
+ *
+ * Deleting a record and removing a file are separate acts on purpose: whether a
+ * clip belongs in the review queue is decided dozens of times a day and is cheap
+ * to get wrong, and whether the 400 MB behind it is still wanted is decided
+ * rarely and is expensive to get wrong. These rules govern only the first —
+ * nothing in Firestore knows what is on a particular disk, and removing media
+ * lives on the worker's loopback API.
+ */
+describe('deleting records to keep the database tidy', () => {
+  beforeEach(async () => {
+    await seed('sources/src-1', source(ALICE));
+    await seed('clips/clip-del', pendingClip(ALICE, { id: 'clip-del' }));
+    await seed('candidates/cand-del', candidate(ALICE, { id: 'cand-del' }));
+  });
+
+  it('lets an approved member delete a clip', async () => {
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'clips/clip-del')));
+  });
+
+  it('lets another approved member delete it too, because the workspace is shared', async () => {
+    await assertSucceeds(deleteDoc(doc(bobDb(), 'clips/clip-del')));
+  });
+
+  it('lets a candidate be deleted', async () => {
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'candidates/cand-del')));
+  });
+
+  it('still refuses to let a candidate be edited', async () => {
+    /**
+     * Deleting fabricates nothing. Writing does: a user who could edit a score
+     * would corrupt the Phase 9 feedback loop, which is what this collection is
+     * read-only for.
+     */
+    await assertFails(
+      setDoc(doc(aliceDb(), 'candidates/cand-del'), candidate(ALICE, { id: 'cand-del', total: 99 })),
+    );
+  });
+
+  it('lets a source be deleted', async () => {
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'sources/src-1')));
+  });
+
+  it('refuses a signed-out visitor', async () => {
+    await assertFails(deleteDoc(doc(testEnv.unauthenticatedContext().firestore(), 'clips/clip-del')));
+  });
+
+  it('keeps a publication when its clip goes', async () => {
+    /**
+     * The record of what was actually posted, and under what rights. An audit
+     * trail that vanishes when somebody tidies their queue is not an audit
+     * trail — so publications are not deletable at all.
+     */
+    await seed('clips/clip-del/publications/pub-1', {
+      id: 'pub-1',
+      uid: ALICE,
+      clipId: 'clip-del',
+      platform: 'YOUTUBE',
+      state: 'PUBLISHED',
+      createdAt: '2026-09-01T09:00:00.000Z',
+    });
+    await assertFails(deleteDoc(doc(aliceDb(), 'clips/clip-del/publications/pub-1')));
+  });
+
+  it('still refuses to delete a preference', async () => {
+    /**
+     * Unchanged and deliberate: a rejection is itself the thing worth
+     * remembering, and removing the row would let the same suggestion come back
+     * on the next correction.
+     */
+    await seed('preferences/pref-1', {
+      id: 'pref-1',
+      uid: ALICE,
+      scope: 'SOURCE',
+      category: 'FRAMING',
+      lesson: 'follow the ball',
+      status: 'REJECTED',
+      createdAt: '2026-09-01T09:00:00.000Z',
+    });
+    await assertFails(deleteDoc(doc(aliceDb(), 'preferences/pref-1')));
   });
 });

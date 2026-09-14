@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from clipforge.config import Settings
 from clipforge.publish import oauth as oauth_module
 from clipforge.publish.channels import ChannelRoutes
 from clipforge.publish.credentials import OAuthTokens, TokenStore
+
+# Every test in this file is the unit tier. Without this marker CI's
+# `pytest -m unit` silently deselects the whole file — the tests pass locally,
+# run nowhere, and protect nothing.
+pytestmark = pytest.mark.unit
 
 CLIENT_ID = "871720866960-test.apps.googleusercontent.com"
 
@@ -36,7 +42,7 @@ def _with_client(tmp_path: Path) -> ChannelRoutes:
     return routes
 
 
-def _settled(routes: ChannelRoutes, timeout_s: float = 5.0) -> dict:
+def _settled(routes: ChannelRoutes, timeout_s: float = 5.0) -> dict[str, Any]:
     """Wait for the background attempt to finish, then report the status."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -52,12 +58,22 @@ def test_authorising_without_a_client_is_refused(tmp_path: Path) -> None:
         _routes(tmp_path).authorise({})
 
 
-def test_an_existing_token_is_not_replaced_silently(tmp_path: Path, monkeypatch) -> None:
+def test_an_existing_token_is_not_replaced_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     routes = _with_client(tmp_path)
     TokenStore(tmp_path / "youtube-token.enc").save(OAuthTokens(refresh_token="already-here"))
 
     opened: list[str] = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+
+    def _open(url: str) -> bool:
+        # A named function rather than a lambda: `list.append` returns None, so
+        # the usual `lambda url: opened.append(url) or True` is a type error
+        # dressed as a trick.
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr("webbrowser.open", _open)
 
     result = routes.authorise({})
 
@@ -65,7 +81,7 @@ def test_an_existing_token_is_not_replaced_silently(tmp_path: Path, monkeypatch)
     assert opened == [], "a browser opened for an authorisation nobody asked to redo"
 
 
-def test_a_mismatched_state_stores_nothing(tmp_path: Path, monkeypatch) -> None:
+def test_a_mismatched_state_stores_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole reason for sending a state parameter.
 
     A redirect carrying someone else's state did not come from the request this
@@ -93,7 +109,9 @@ def test_a_mismatched_state_stores_nothing(tmp_path: Path, monkeypatch) -> None:
     assert status["connection"] == "NEEDS_AUTH"
 
 
-def test_a_matching_redirect_stores_the_token(tmp_path: Path, monkeypatch) -> None:
+def test_a_matching_redirect_stores_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     routes = _with_client(tmp_path)
     monkeypatch.setattr("webbrowser.open", lambda _url: True)
 
@@ -124,11 +142,21 @@ def test_a_matching_redirect_stores_the_token(tmp_path: Path, monkeypatch) -> No
     assert TokenStore(tmp_path / "youtube-token.enc").load().refresh_token == "fresh"
 
 
-def test_a_second_press_does_not_start_a_second_dance(tmp_path: Path, monkeypatch) -> None:
+def test_a_second_press_does_not_start_a_second_dance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two windows would strand the first state and hold the loopback port."""
     routes = _with_client(tmp_path)
     opened: list[str] = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+
+    def _open(url: str) -> bool:
+        # A named function rather than a lambda: `list.append` returns None, so
+        # the usual `lambda url: opened.append(url) or True` is a type error
+        # dressed as a trick.
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr("webbrowser.open", _open)
 
     release = __import__("threading").Event()
     monkeypatch.setattr(

@@ -28,7 +28,10 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from clipforge_contracts import ObscureOptions
+
 from clipforge.media.ffprobe import MediaInfo
+from clipforge.media.framing import build_video_chain
 from clipforge.media.profiles import OUTPUT_HEIGHT, OUTPUT_WIDTH, RenderProfile
 from clipforge.observability import get_logger
 
@@ -76,6 +79,18 @@ class RenderRequest:
     profile: RenderProfile
     subtitles: Path | None = None
     encoder: str = "h264_nvenc"
+    # A prepared video filtergraph, overriding the one this module would build.
+    # REMAKE resolves framing and captions together — a tracked crop and the
+    # subtitle filter have to compose into one graph — and passes the result
+    # here rather than handing over the pieces and hoping they recombine the
+    # same way. None keeps the ordinary path, which is every CLIP render.
+    video_filter: str | None = None
+    # Regions to hide, in source coordinates. Set by RENDER from the source's
+    # own `obscure` setting — a channel bug is a property of the channel, so a
+    # clip cut from it should arrive with the bug already gone rather than
+    # arrive wrong and cost a correction. Ignored when `video_filter` is set,
+    # because REMAKE has already folded its own regions into that graph.
+    obscure: ObscureOptions | None = None
 
     @property
     def duration_sec(self) -> float:
@@ -91,48 +106,37 @@ class RenderResult:
     height: int = OUTPUT_HEIGHT
 
 
-def _crop_expression(media: MediaInfo, profile: RenderProfile) -> str:
-    """Crop the source to a 9:16 window before scaling.
-
-    Expressed with ffmpeg's own `iw`/`ih` variables rather than the probed
-    numbers, so the filter stays correct if the source turns out to differ from
-    what ffprobe reported — which happens with variable-resolution streams.
-    """
-    target_ratio = OUTPUT_WIDTH / OUTPUT_HEIGHT  # 0.5625
-
-    if media.width and media.height and media.width / media.height <= target_ratio:
-        # Already at least as tall as 9:16 — crop height instead, so a vertical
-        # source is not pillarboxed.
-        return f"crop=iw:iw/{target_ratio:.6f}:0:(ih-iw/{target_ratio:.6f})/2"
-
-    width_expr = f"ih*{target_ratio:.6f}"
-    offsets = {
-        "centre": f"(iw-{width_expr})/2",
-        "left": "0",
-        "right": f"iw-{width_expr}",
-    }
-    return f"crop={width_expr}:ih:{offsets[profile.crop]}:0"
-
-
-def build_filtergraph(media: MediaInfo, profile: RenderProfile, subtitles: Path | None) -> str:
+def build_filtergraph(
+    media: MediaInfo,
+    profile: RenderProfile,
+    subtitles: Path | None,
+    obscure: ObscureOptions | None = None,
+) -> str:
     """The video filter chain, as one string.
 
     Built separately from the ffmpeg invocation so it can be asserted on in a
     unit test without running anything — the ordering of these filters is the
     part most likely to be wrong, and the least obvious from the output.
+
+    The reframing itself lives in `clipforge.media.framing`, which grew out of
+    this function when a fixed crop stopped being the only answer. This is the
+    no-framing-request case of that one: pass `framing=None` and you get the
+    fixed 9:16 window the profile asks for, which is exactly what every clip got
+    before REMAKE existed. Keeping one implementation matters more than the
+    indirection costs — two crop expressions that are supposed to agree are two
+    crop expressions that will eventually not.
     """
-    chain = [
-        _crop_expression(media, profile),
-        f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:flags=lanczos",
-        "setsar=1",
-    ]
-    if profile.fps:
-        chain.append(f"fps={profile.fps}")
-    if subtitles is not None:
-        # Captions are burned after scaling so profile font sizes are in output
-        # pixels and mean the same thing on any source resolution.
-        chain.append(f"subtitles='{_escape_filter_path(subtitles)}'")
-    return ",".join(chain)
+    return build_video_chain(
+        media=media,
+        profile=profile,
+        framing=None,
+        subtitles_expr=(
+            # Captions are burned after scaling so profile font sizes are in
+            # output pixels and mean the same thing on any source resolution.
+            f"subtitles='{_escape_filter_path(subtitles)}'" if subtitles is not None else None
+        ),
+        obscure=obscure,
+    )
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -180,7 +184,8 @@ def render_clip(
         "-i",
         str(request.source),
         "-vf",
-        build_filtergraph(media, request.profile, request.subtitles),
+        request.video_filter
+        or build_filtergraph(media, request.profile, request.subtitles, request.obscure),
         "-af",
         loudnorm,
         "-c:v",

@@ -9,8 +9,9 @@
   @if (modeMismatch(); as mismatch) {
     <p class="mb-3 rounded-lg border border-warn-ink/40 bg-warn-bg px-3 py-2 text-xs text-warn-ink">
       A worker is running on this machine, but against <b>{{ mismatch.worker }}</b> while this app
-      reads <b>{{ mismatch.app }}</b>. Nothing it does will appear here. It was started outside the
-      app — stop it and press Start, which always uses this app's database.
+      reads <b>{{ mismatch.app }}</b
+      >. Nothing it does will appear here. It was started outside the app — stop it and press Start,
+      which always uses this app's database.
     </p>
   }
   <div class="flex flex-wrap items-start gap-3">
@@ -66,30 +67,64 @@
       } @else {
         <p class="mt-1 text-xs text-ink-subtle">No worker has ever reported in.</p>
       }
+
+      <!-- ── The machine ──────────────────────────────────────────────────
+           The agent keeps reporting when no worker is running, which is the
+           one thing a worker heartbeat can never do: a worker that is not
+           running cannot say that it is not running. So this line is what
+           separates "the PC is on and waiting" from "the PC is off". -->
+      @if (machine(); as agent) {
+        <p
+          class="mt-0.5 text-xs"
+          [class.text-ink-subtle]="!machineStale()"
+          [class.text-warn-ink]="machineStale()"
+        >
+          @if (machineStale()) {
+            {{ agent.hostname || agent.agentId }} is not reporting — it is off or asleep (last seen
+            {{ since(agent.lastSeenAt) }} ago).
+          } @else {
+            {{ agent.hostname || agent.agentId }} · {{ agentState(agent) }}
+          }
+        </p>
+
+        @if (agent.detail; as detail) {
+          <!-- Written by the agent for exactly this spot: the reason a start
+               failed, on the phone that asked for it. -->
+          <p class="mt-1 text-xs text-warn-ink">{{ detail }}</p>
+        }
+      } @else if (agents()?.length === 0 && !control.available) {
+        <p class="mt-1 text-xs text-ink-subtle">
+          Nothing on the worker machine is listening for a start request. Install the agent there
+          with <code class="rounded bg-panel-soft px-1">tools/agent.ps1 -Install</code> and this
+          becomes a button.
+        </p>
+      }
     </div>
 
-    <!-- Start and stop exist only in the desktop shell. See worker-control.ts:
-         a browser tab cannot spawn a process, and there is no server-side
-         executor to ask on the free tier. -->
-    @if (control.available) {
+    <!-- Two routes, one pair of buttons. The desktop shell owns the child
+         process and starts it directly; everywhere else — the phone this was
+         built for — the wish goes to the agent on the machine. See
+         worker-panel.ts. With neither available there is nothing to offer, and
+         the line above says what to install. -->
+    @if (canControl()) {
       <div class="flex shrink-0 items-center gap-2">
-        @if (running()) {
+        @if (anyRunning()) {
           <button
             type="button"
             class="rounded-lg border border-line-strong px-3 py-1.5 text-xs font-medium text-ink hover:bg-line disabled:opacity-50"
-            [disabled]="control.busy()"
+            [disabled]="control.busy() || agentBusy()"
             (click)="stop()"
           >
-            {{ control.busy() ? 'Stopping…' : 'Stop' }}
+            {{ actionLabel() }}
           </button>
         } @else {
           <button
             type="button"
             class="rounded-lg bg-forge-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-forge-700 disabled:opacity-50"
-            [disabled]="control.busy() || !control.status()?.canStart"
+            [disabled]="control.busy() || agentBusy() || !canStart()"
             (click)="start()"
           >
-            {{ control.busy() ? 'Starting…' : 'Start worker' }}
+            {{ actionLabel() }}
           </button>
         }
       </div>
@@ -100,12 +135,15 @@
     <p class="mt-3 rounded-lg bg-warn-ink/10 px-3 py-2 text-xs text-warn-ink">
       {{ queued() }} job{{ queued() === 1 ? '' : 's' }} waiting with nothing to run
       {{ queued() === 1 ? 'it' : 'them' }}.
-      @if (control.available) {
+      @if (canControl()) {
         Start the worker to pick {{ queued() === 1 ? 'it' : 'them' }} up.
       } @else {
-        Nothing here can start it — the worker runs on the machine that renders, so open the
-        ClipForge desktop app there, or run
-        <code class="rounded bg-panel-soft px-1">tools/worker.ps1 -Live</code> in a terminal.
+        Nothing here can start it — the worker runs on the machine that renders. Open the ClipForge
+        desktop app there, run
+        <code class="rounded bg-panel-soft px-1">tools/worker.ps1 -Live</code> in a terminal, or
+        install the agent with
+        <code class="rounded bg-panel-soft px-1">tools/agent.ps1 -Install</code> so this page can
+        start it for you.
       }
     </p>
   }
@@ -115,6 +153,14 @@
       class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
     >
       Cannot read worker status: {{ message }}
+    </p>
+  }
+
+  @if (wishError(); as message) {
+    <p
+      class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+    >
+      Could not ask the machine: {{ message }}
     </p>
   }
 

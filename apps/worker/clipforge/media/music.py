@@ -130,10 +130,7 @@ def build_audio_filter(plan: MusicPlan) -> str:
     if plan.mode is MusicMode.REPLACE:
         # No original audio in the graph at all — not mixed silently, absent.
         # loudnorm last, so the target applies to what will actually be heard.
-        return (
-            f"[1:a]{music},"
-            f"loudnorm=I={TARGET_LUFS}:TP={TARGET_TRUE_PEAK}:LRA=11[aout]"
-        )
+        return f"[1:a]{music},loudnorm=I={TARGET_LUFS}:TP={TARGET_TRUE_PEAK}:LRA=11[aout]"
 
     # BED. The speech is used twice: once as an input to the mix, and once as
     # the sidechain key that pushes the music down whenever it is present.

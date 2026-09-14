@@ -1,6 +1,6 @@
 # ADR-0009 — Run on the Spark free tier; rendered clips stay on the worker
 
-- **Status:** Accepted
+- **Status:** Superseded in its central decision by [ADR-0018](0018-blaze-and-a-short-lived-bucket-copy.md) (2026-09-10). The `BlobStore` port, the local master and the bounded-listener discipline all stand; what changed is that clips now get a short-lived bucket copy so they can be watched.
 - **Date:** 2026-09-08
 - **Phase:** 2 (adopted before Phase 3)
 - **Amends:** [ADR-0004](0004-dedicated-firebase-project.md), which assumed Blaze would be available

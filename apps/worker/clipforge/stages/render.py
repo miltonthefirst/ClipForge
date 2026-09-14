@@ -28,17 +28,20 @@ from clipforge_contracts import (
     ClipLocation,
     ClipPreview,
     Lane,
+    ObscureOptions,
     ReviewState,
     StageName,
     Transcript,
 )
 
+from clipforge.analysis.metadata import ClipMetadata, write_metadata
 from clipforge.media.captions import build_ass, group_into_cues
 from clipforge.media.ffprobe import MediaInfo, probe
 from clipforge.media.poster import PosterError, extract_poster
 from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, RenderRequest, render_clip
 from clipforge.media.workspace import Workspace
+from clipforge.models.ollama import OllamaClient
 from clipforge.observability import get_logger
 from clipforge.stages.base import StageContext, StageOutcome
 from clipforge.store.blobs import BlobStore
@@ -46,6 +49,26 @@ from clipforge.store.firestore import CandidateStore, ClipStore, SourceStore
 from clipforge.store.transcripts import TranscriptArchive
 
 log = get_logger(__name__)
+
+
+# The same lease the note reader takes. Naming a clip is a small call to the
+# same model, so it queues behind whatever else wants the GPU rather than
+# racing it — and on a harvest it runs once per clip.
+_METADATA_VRAM_MB = 3600
+
+
+def _excerpt_for(transcript: Transcript | None, start_sec: float, end_sec: float) -> str:
+    """What the clip says, as the recogniser heard it."""
+    if transcript is None:
+        return ""
+    words = [
+        word.text
+        for segment in transcript.segments
+        for word in (segment.words or [])
+        if word.end_sec > start_sec and word.start_sec < end_sec
+    ]
+    return " ".join(word.strip() for word in words if word.strip())[:1200]
+
 
 __all__ = ["NothingToRenderError", "RenderStage"]
 
@@ -115,7 +138,9 @@ class RenderStage:
                 return self._checkpoint(rendered, failures, incomplete=True)
             try:
                 rendered.append(
-                    self._render_one(context, candidate, media_path, media, profile, transcript)
+                    self._render_one(
+                        context, candidate, media_path, media, profile, transcript, source.obscure
+                    )
                 )
             except (RenderError, PosterError) as exc:
                 # One clip that will not encode must not discard the others.
@@ -141,7 +166,18 @@ class RenderStage:
         media: MediaInfo,
         profile: RenderProfile,
         transcript: Transcript | None,
+        obscure: ObscureOptions | None = None,
     ) -> Clip:
+        """One candidate, cut and encoded.
+
+        `obscure` is the source's own standing list of things to hide, and it
+        arrives here rather than being looked up per clip because it is a
+        property of the channel: every clip in this job is cut from the same
+        video and needs the same rectangles gone. Hiding them at this point is
+        the difference between a feature and a chore — a reviewer who has
+        already said "this channel puts its bug in the top right" should never
+        see the bug again, on this clip or any future one.
+        """
         settings = context.settings
         clip_id = uuid.uuid4().hex
         scratch = self._workspace.tmp_dir / clip_id
@@ -159,10 +195,13 @@ class RenderStage:
                     profile=profile,
                     subtitles=subtitles,
                     encoder=settings.video_encoder,
+                    obscure=obscure,
                 ),
                 media,
                 ffmpeg_bin=settings.ffmpeg_bin,
             )
+
+            written = self._name(context, candidate, transcript, result.duration_sec)
 
             images = extract_poster(
                 staged,
@@ -184,6 +223,10 @@ class RenderStage:
                 candidate_id=candidate.id,
                 source_id=candidate.source_id,
                 job_id=context.job.id,
+                # The root of its own lineage. Every correction of this clip
+                # inherits the id, so they stay one row in the review queue.
+                lineage_id=clip_id,
+                version=1,
                 # REMOTE means "reachable from somewhere that is not this
                 # machine" — a bucket object, or a URL from some other store.
                 # The worker's own file server does not count: it answers on
@@ -202,12 +245,32 @@ class RenderStage:
                 height_px=result.height,
                 size_bytes=ref.size_bytes,
                 render_profile=profile.identifier,
-                title=candidate.hook,
-                description=candidate.reason,
+                # `hook` is a line quoted out of the transcript and `reason` is
+                # one sentence on why this window was SELECTED. Neither was ever
+                # written to be read, and both were going out to viewers: a real
+                # clip reached the queue titled "on a franchi un premier rideau
+                # kane peut enroule du plat" and described as "This segment
+                # captures the high-tension moment...". They stay as the
+                # fallback, because a clip with a rough title is worth far more
+                # than a clip that failed over a language model — and they are
+                # still exactly right for the review queue, which is the one
+                # audience they were written for.
+                title=(written.title if written else candidate.hook),
+                description=(written.description if written else candidate.reason),
+                tags=list(written.tags) if written else [],
                 review=ReviewState.PENDING,
                 rights=None,
                 created_at=now,
             )
+            # A preview is worth a thumbnail in the review queue; it is not
+            # worth a clip. `ClipPreview` requires positive dimensions, and a
+            # poster whose size could not be read would fail that validation and
+            # discard a render that had already succeeded — so an unusable one
+            # is dropped here rather than raised. `_dimensions` explains how a
+            # poster ends up unmeasurable.
+            usable = images.width_px > 0 and images.height_px > 0
+            if not usable:
+                log.warning("render.preview_unusable", clip_id=clip_id, detail="no poster saved")
             self._clips.save(
                 clip,
                 preview=ClipPreview(
@@ -218,11 +281,58 @@ class RenderStage:
                     height_px=images.height_px,
                     byte_size=images.byte_size,
                     created_at=now,
-                ),
+                )
+                if usable
+                else None,
             )
             return clip
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+
+    def _name(
+        self,
+        context: StageContext,
+        candidate: Candidate,
+        transcript: Transcript | None,
+        duration_sec: float,
+    ) -> ClipMetadata | None:
+        """A title, a description and tags, written to be read.
+
+        Never looks at the picture, unlike REMAKE. One harvest produces a dozen
+        clips and a vision pass costs about a minute each; the transcript
+        excerpt and the source's own title are enough for a first name, and the
+        reviewer who corrects a clip gets the grounded version then.
+
+        Returns None on any failure, and the caller falls back to what it had.
+        Losing a good title must never lose a finished render.
+        """
+        settings = context.settings
+        client = OllamaClient(
+            host=settings.ollama_host,
+            model=settings.ollama_model,
+            num_ctx=settings.ollama_num_ctx,
+        )
+        if not client.is_available():
+            return None
+
+        source = self._sources.get(candidate.source_id) if candidate.source_id else None
+        spoken = _excerpt_for(transcript, candidate.start_sec, candidate.end_sec)
+        try:
+            with context.broker.acquire(f"ollama:{client.model}", _METADATA_VRAM_MB):
+                return write_metadata(
+                    client,
+                    # The source's own language, because nothing has changed it
+                    # yet. A clip is named in the language it speaks, and REMAKE
+                    # renames it when the reviewer changes that.
+                    language=(transcript.language if transcript else None) or "en",
+                    spoken_text=spoken,
+                    duration_sec=duration_sec,
+                    visual=None,
+                    source_title=source.title if source is not None else None,
+                )
+        except Exception as exc:  # noqa: BLE001 - a title is never worth a clip
+            log.info("render.metadata_skipped", error=str(exc))
+            return None
 
     def _write_subtitles(
         self,

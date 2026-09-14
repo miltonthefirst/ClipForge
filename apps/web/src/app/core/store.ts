@@ -1,5 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import type {
+  AgentDesired,
+  AgentReport,
   Candidate,
   Channel,
   Clip,
@@ -7,8 +9,12 @@ import type {
   Job,
   JobEvent,
   MusicOptions,
+  ObscureOptions,
   Publication,
+  Preference,
+  PreferenceStatus,
   PublishOptions,
+  RemakeOptions,
   ReviewState,
   RightsBasis,
   Source,
@@ -30,7 +36,13 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 
+import { fromDocument } from './documents';
 import { FirebaseService } from './firebase';
+
+// Firestore's own ceiling on a batched write. Paging at this size means one
+// enormous source needs no different code path from a small one — it just takes
+// more trips.
+const BATCH_LIMIT = 500;
 
 /**
  * Firestore reads and writes, as signals.
@@ -65,7 +77,7 @@ export class ClipForgeStore {
   watchJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'jobs'), orderBy('createdAt', 'desc'), limit(25)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Job)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -85,7 +97,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       doc(this.firebase.db, 'jobs', jobId),
-      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Job) : null),
+      (snapshot) => onData(snapshot.exists() ? fromDocument<Job>(snapshot.data()) : null),
       (error) => onError?.(error),
     );
   }
@@ -115,7 +127,7 @@ export class ClipForgeStore {
         orderBy('seq', 'asc'),
         limit(200),
       ),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as JobEvent)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<JobEvent>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -124,7 +136,7 @@ export class ClipForgeStore {
   async loadSource(sourceId: string): Promise<Source | null> {
     const { getDoc } = await import('firebase/firestore');
     const snapshot = await getDoc(doc(this.firebase.db, 'sources', sourceId));
-    return snapshot.exists() ? (snapshot.data() as Source) : null;
+    return snapshot.exists() ? fromDocument<Source>(snapshot.data()) : null;
   }
 
   /**
@@ -158,7 +170,7 @@ export class ClipForgeStore {
 
     return {
       candidates: candidates.data().count,
-      clips: clips.docs.map((d) => d.data() as Clip),
+      clips: clips.docs.map((d) => fromDocument<Clip>(d.data())),
     };
   }
 
@@ -178,9 +190,56 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'workers'), limit(10)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as WorkerHeartbeat)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<WorkerHeartbeat>(d.data()))),
       (error) => onError?.(error),
     );
+  }
+
+  /**
+   * Every machine that has ever run an agent, live.
+   *
+   * The companion to {@link watchWorkers} and not a replacement for it: a
+   * heartbeat says what a worker believes it is doing, and cannot say anything
+   * at all when no worker is running — which is the state somebody looking at a
+   * stalled queue most needs explained. An agent beating with state STOPPED
+   * means the PC is on and waiting; an agent that has gone quiet means the PC
+   * is off, and no amount of worker heartbeat can tell those apart.
+   *
+   * Bounded like every other listener here. Four is generous for a system whose
+   * premise is one machine with a GPU.
+   */
+  watchAgents(
+    onData: (agents: AgentReport[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'agents'), limit(4)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<AgentReport>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Ask a machine to start or stop its worker.
+   *
+   * A wish, not a command: this writes what is wanted and returns. The agent on
+   * that machine is the only thing that can spawn a process, and what it does
+   * about the wish — and how long it takes — is reported back through the same
+   * document.
+   *
+   * `requestedAt` is written on every call, including one that repeats the
+   * current value, and that is load-bearing rather than incidental. Pressing
+   * Start on a machine whose agent has given up is how a person clears it, and
+   * a supervisor comparing only the value could not tell that press from the
+   * wish simply still being RUNNING. The rules require the field for the same
+   * reason.
+   */
+  async wish(agentId: string, uid: string, desired: AgentDesired): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'agents', agentId), {
+      desired,
+      requestedBy: uid,
+      requestedAt: new Date().toISOString(),
+    });
   }
 
   /**
@@ -197,7 +256,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       doc(this.firebase.db, 'clips', clipId),
-      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Clip) : null),
+      (snapshot) => onData(snapshot.exists() ? fromDocument<Clip>(snapshot.data()) : null),
       (error) => onError?.(error),
     );
   }
@@ -229,7 +288,7 @@ export class ClipForgeStore {
         orderBy('createdAt', 'desc'),
         limit(50),
       ),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Clip)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Clip>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -245,7 +304,7 @@ export class ClipForgeStore {
   async loadPreview(clipId: string): Promise<ClipPreview | null> {
     const { getDoc } = await import('firebase/firestore');
     const snapshot = await getDoc(doc(this.firebase.db, 'clips', clipId, 'preview', 'poster'));
-    return snapshot.exists() ? (snapshot.data() as ClipPreview) : null;
+    return snapshot.exists() ? fromDocument<ClipPreview>(snapshot.data()) : null;
   }
 
   /**
@@ -257,7 +316,7 @@ export class ClipForgeStore {
   async loadCandidate(candidateId: string): Promise<Candidate | null> {
     const { getDoc } = await import('firebase/firestore');
     const snapshot = await getDoc(doc(this.firebase.db, 'candidates', candidateId));
-    return snapshot.exists() ? (snapshot.data() as Candidate) : null;
+    return snapshot.exists() ? fromDocument<Candidate>(snapshot.data()) : null;
   }
 
   /**
@@ -346,6 +405,175 @@ export class ClipForgeStore {
     }
 
     await updateDoc(doc(this.firebase.db, 'clips', clipId), changes);
+  }
+
+  /**
+   * Every version of one clip, oldest first.
+   *
+   * The history behind a queue row. A remake produces a new clip rather than
+   * editing the one that was reviewed, which is what makes a correction
+   * reversible — but it also means the reasoning is spread across several
+   * documents, and only together do they answer "what did I ask for, and what
+   * did it do about it?".
+   *
+   * Keyed on `lineageId` rather than by walking `derivedFromClipId`: one
+   * equality filter instead of a chain of round trips, and it still works when
+   * a clip in the middle has been deleted.
+   */
+  async loadLineage(lineageId: string): Promise<Clip[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(
+      query(collection(this.firebase.db, 'clips'), where('lineageId', '==', lineageId), limit(25)),
+    );
+    return snapshot.docs
+      .map((d) => fromDocument<Clip>(d.data()))
+      .sort((a, b) => (a.version ?? 1) - (b.version ?? 1));
+  }
+
+  /**
+   * What the system has worked out about you, and has not yet been told to keep.
+   *
+   * Live rather than fetched once: a remake proposes preferences while the
+   * reviewer is still on the page that queued it, and a list that needed a
+   * reload to show them would be a list nobody ever saw.
+   */
+  watchPreferences(
+    onData: (preferences: Preference[]) => void,
+    status: PreferenceStatus = 'PROPOSED',
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'preferences'), where('status', '==', status), limit(50)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Preference>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Keep a preference, or turn it down for good.
+   *
+   * Rejecting stores the decision rather than deleting the row, and that is the
+   * point: the worker checks every proposal against what it already holds in
+   * ANY status, so a suggestion that has been turned down once cannot come back
+   * on the next correction of the same kind of clip.
+   */
+  async decidePreference(
+    preferenceId: string,
+    uid: string,
+    status: 'ACCEPTED' | 'REJECTED',
+  ): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'preferences', preferenceId), {
+      status,
+      decidedAt: new Date().toISOString(),
+      decidedBy: uid,
+    });
+  }
+
+  /**
+   * Make a set of rectangles a property of the channel rather than of one clip.
+   *
+   * This is the whole difference between a feature and a chore. A broadcaster's
+   * bug is in the same place on every video it will ever publish, so a reviewer
+   * who has to ask for it on each clip is doing the system's bookkeeping. Once
+   * this is set, RENDER applies it as it cuts and the clip arrives clean.
+   *
+   * `null` clears it. The write is a single field — firestore.rules pins it to
+   * exactly that name, because everything else on a source describes a file on
+   * the worker.
+   */
+  async rememberObscure(sourceId: string, obscure: ObscureOptions | null): Promise<void> {
+    await updateDoc(doc(this.firebase.db, 'sources', sourceId), { obscure });
+  }
+
+
+  // ── Tidying up ─────────────────────────────────────────────────────────────
+  //
+  // **Deleting a record never touches a file.** The two are separate acts
+  // because they answer separate questions: whether a clip belongs in the
+  // review queue is decided dozens of times a day and is cheap to get wrong,
+  // and whether the 400 MB behind it is still wanted is decided rarely and is
+  // expensive to get wrong. Removing media lives on the worker's local API,
+  // reachable only from the machine holding it — see `LocalApiService`.
+
+  /**
+   * Forget one clip. Its media stays on whichever machine holds it.
+   *
+   * Publications are left behind on purpose. They are the record of what was
+   * actually posted and under what rights, and an audit trail that vanishes
+   * when somebody tidies their queue is not an audit trail.
+   */
+  async deleteClip(clipId: string): Promise<void> {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'clips', clipId));
+  }
+
+  /** Forget a proposal nobody acted on. */
+  async deleteCandidate(candidateId: string): Promise<void> {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'candidates', candidateId));
+  }
+
+  /** Forget one job and its event log. */
+  async deleteJob(jobId: string): Promise<void> {
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'jobs', jobId));
+  }
+
+  /**
+   * What deleting a source would take with it.
+   *
+   * Asked before the confirmation rather than after, because "delete this
+   * source" and "delete this source, eleven clips and forty candidates" are
+   * different decisions and only one of them was offered.
+   */
+  async sourceFootprint(sourceId: string): Promise<{ clips: number; candidates: number }> {
+    const { getCountFromServer } = await import('firebase/firestore');
+    const ofSource = where('sourceId', '==', sourceId);
+    const [clips, candidates] = await Promise.all([
+      getCountFromServer(query(collection(this.firebase.db, 'clips'), ofSource)),
+      getCountFromServer(query(collection(this.firebase.db, 'candidates'), ofSource)),
+    ]);
+    return {
+      clips: clips.data().count,
+      candidates: candidates.data().count,
+    };
+  }
+
+  /**
+   * Forget a source and everything cut from it.
+   *
+   * The cascade is here rather than in the rules because rules see one document
+   * at a time and cannot express "and its children". Doing it in batches is
+   * what keeps it close to atomic: each batch commits or does not, so a failure
+   * leaves a partly-cleared tree rather than a half-written document, and
+   * running it again finishes the job.
+   *
+   * Returns how much went, so the confirmation can be answered with a fact.
+   */
+  async deleteSource(sourceId: string): Promise<{ clips: number; candidates: number }> {
+    const { getDocs, writeBatch } = await import('firebase/firestore');
+    const ofSource = where('sourceId', '==', sourceId);
+
+    let removed = { clips: 0, candidates: 0 };
+    for (const name of ['clips', 'candidates'] as const) {
+      // Firestore caps a batch at 500 writes. Looping a bounded page at a time
+      // keeps one enormous source from needing a different code path.
+      for (;;) {
+        const page = await getDocs(
+          query(collection(this.firebase.db, name), ofSource, limit(BATCH_LIMIT)),
+        );
+        if (page.empty) break;
+        const batch = writeBatch(this.firebase.db);
+        page.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        removed = { ...removed, [name]: removed[name] + page.size };
+        if (page.size < BATCH_LIMIT) break;
+      }
+    }
+
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(this.firebase.db, 'sources', sourceId));
+    return removed;
   }
 
   /** Approved clips, the publish queue's input. */
@@ -504,6 +732,44 @@ export class ClipForgeStore {
   }
 
   /**
+   * Ask the worker to remake a clip with corrections.
+   *
+   * The same shape as `requestMusic`, and for the same reason: the media lives
+   * on the worker and a correction is decided while watching something that was
+   * finished hours ago. It produces a *new* clip rather than altering this one,
+   * so there is nothing here to undo.
+   *
+   * `maxAttempts` is 1. Every way a remake fails is a property of its inputs —
+   * a source the workspace collector has taken, a language with no voice, nudges
+   * that cross over — and a retry reproduces them exactly while spending the
+   * render time twice.
+   */
+  async requestRemake(uid: string, clipId: string, options: RemakeOptions): Promise<string> {
+    const reference = doc(collection(this.firebase.db, 'jobs'));
+    const now = new Date().toISOString();
+    await setDoc(reference, {
+      id: reference.id,
+      uid,
+      type: 'REMAKE',
+      status: 'QUEUED',
+      submission: null,
+      sourceId: null,
+      clipId,
+      remakeOptions: options,
+      notBefore: null,
+      stages: [{ name: 'REMAKE', lane: 'CPU', status: 'PENDING' }],
+      workerId: null,
+      leaseExpiresAt: null,
+      attempts: 0,
+      maxAttempts: 1,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return reference.id;
+  }
+
+  /**
    * A clip's publish history — the audit trail, read-only.
    *
    * Answers "who authorised this, on what basis, and what went out?" from the
@@ -512,7 +778,7 @@ export class ClipForgeStore {
   async loadPublications(clipId: string): Promise<Publication[]> {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
-    return snapshot.docs.map((d) => d.data() as Publication);
+    return snapshot.docs.map((d) => fromDocument<Publication>(d.data()));
   }
 
   /**
@@ -529,7 +795,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'channels'), limit(50)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as Channel)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Channel>(d.data()))),
       (error) => onError?.(error),
     );
   }
@@ -548,7 +814,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       doc(this.firebase.db, 'channels', channelId),
-      (snapshot) => onData(snapshot.exists() ? (snapshot.data() as Channel) : null),
+      (snapshot) => onData(snapshot.exists() ? fromDocument<Channel>(snapshot.data()) : null),
       (error) => onError?.(error),
     );
   }
@@ -567,7 +833,7 @@ export class ClipForgeStore {
   ): Unsubscribe {
     return onSnapshot(
       query(collection(this.firebase.db, 'users'), orderBy('createdAt', 'desc'), limit(200)),
-      (snapshot) => onData(snapshot.docs.map((d) => d.data() as UserProfile)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<UserProfile>(d.data()))),
       (error) => onError?.(error),
     );
   }

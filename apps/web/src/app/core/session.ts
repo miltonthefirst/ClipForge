@@ -3,6 +3,7 @@ import type { UserProfile } from '@clipforge/contracts';
 import type { User } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, type Unsubscribe } from 'firebase/firestore';
 
+import { fromDocument } from './documents';
 import { FirebaseService } from './firebase';
 
 /**
@@ -75,7 +76,7 @@ export class SessionService {
       reference,
       (snapshot) => {
         if (snapshot.exists()) {
-          this.profile.set(snapshot.data() as UserProfile);
+          this.profile.set(fromDocument<UserProfile>(snapshot.data()));
           return;
         }
         // First sign-in. The client may write this row and only this shape:

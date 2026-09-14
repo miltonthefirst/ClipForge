@@ -46,6 +46,7 @@ from clipforge_contracts import (
     JobEventKind,
     JobStatus,
     StageError,
+    StageName,
     StageStatus,
 )
 
@@ -104,6 +105,7 @@ def _event(
     seq: int = 0,
     detail: str | None = None,
     worker_id: str | None = None,
+    stage: StageName | None = None,
 ) -> JobEvent:
     return JobEvent(
         id=event_id,
@@ -111,7 +113,7 @@ def _event(
         kind=kind,
         at=at,
         seq=seq,
-        stage=None,
+        stage=stage,
         worker_id=worker_id if worker_id is not None else job.worker_id,
         detail=detail,
         attempts=job.attempts,
@@ -160,12 +162,26 @@ def is_claimable(job: Job, now: datetime) -> bool:
     that this also holds for a reclaim: a scheduled job whose worker died stays
     unclaimable until its time, which is correct — the schedule is a property of
     the job, not of the attempt.
+
+    **A reclaim that would exceed `maxAttempts` is refused.** Reclaiming costs
+    an attempt — `claim` says so — and nothing here was checking the budget it
+    was spending. `reap` has always refused to requeue an exhausted job, but a
+    polling worker reaches `is_claimable` first, so whichever ran sooner decided
+    the outcome. A REMAKE is created with `maxAttempts: 1` precisely because
+    every way it can fail is a property of the request rather than of the
+    moment; one of them deadlocked, lost its lease, and was picked straight back
+    up for a second attempt it was never entitled to.
+
+    Refusing here rather than raising in `claim` leaves the job RUNNING with a
+    dead lease until the reaper sees it, which is exactly what the reaper is
+    for: it fails the job with a message naming the exhausted attempts, and a
+    worker that merely declined to take it has nothing useful to say.
     """
     if not is_due(job, now):
         return False
     if job.status is JobStatus.QUEUED:
         return True
-    return is_lease_expired(job, now)
+    return is_lease_expired(job, now) and job.attempts + 1 < job.max_attempts
 
 
 def _is_terminal(job: Job) -> bool:
@@ -365,6 +381,22 @@ def complete(
     )
 
 
+def _running_stage(job: Job) -> StageName | None:
+    """Which stage a failure belongs to.
+
+    The one that is RUNNING, and failing back to the first that is not finished
+    — a stage can be marked failed from a path that has already moved it off
+    RUNNING, and an approximate name beats none.
+    """
+    for stage in job.stages:
+        if stage.status is StageStatus.RUNNING:
+            return stage.name
+    for stage in job.stages:
+        if stage.status not in (StageStatus.DONE, StageStatus.SKIPPED):
+            return stage.name
+    return None
+
+
 def fail_stage(
     job: Job,
     *,
@@ -384,8 +416,17 @@ def fail_stage(
     attempts = job.attempts + 1
     give_up = not error.retryable or attempts >= job.max_attempts
 
+    # Named, unlike every other event here. A job's history is read by whoever
+    # is working out why a clip did not arrive, and an unnamed failure renders
+    # as "null failed" above the only line that says what went wrong.
     stage_failed = _event(
-        job, JobEventKind.STAGE_FAILED, now, event_id=event_id(), seq=0, detail=error.message
+        job,
+        JobEventKind.STAGE_FAILED,
+        now,
+        event_id=event_id(),
+        seq=0,
+        detail=error.message,
+        stage=_running_stage(job),
     )
 
     if give_up:

@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel
 
 
 class JobStatus(StrEnum):
@@ -29,7 +29,7 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     """
-    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else.
+    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does.
     """
 
     ECHO = "ECHO"
@@ -37,6 +37,7 @@ class JobType(StrEnum):
     PUBLISH = "PUBLISH"
     MUSIC = "MUSIC"
     UPLOAD = "UPLOAD"
+    REMAKE = "REMAKE"
 
 
 class StageStatus(StrEnum):
@@ -53,7 +54,7 @@ class StageStatus(StrEnum):
 
 class StageName(StrEnum):
     """
-    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it.
+    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied.
     """
 
     ECHO_ONE = "ECHO_ONE"
@@ -66,6 +67,7 @@ class StageName(StrEnum):
     PUBLISH = "PUBLISH"
     MUSIC = "MUSIC"
     UPLOAD = "UPLOAD"
+    REMAKE = "REMAKE"
 
 
 class Lane(StrEnum):
@@ -145,6 +147,631 @@ class MusicCaptions(StrEnum):
 
     KEEP = "KEEP"
     REMOVE = "REMOVE"
+
+
+class PreferenceScope(StrEnum):
+    """
+    How widely a learned preference applies. SOURCE is this channel or series only — the right default, because most corrections are about the kind of footage rather than about video in general, and a rule learned from football should not reframe a talking head. EVERYTHING is for a preference that genuinely holds across all of them, which is rarer than it feels while writing one.
+    """
+
+    SOURCE = "SOURCE"
+    EVERYTHING = "EVERYTHING"
+
+
+class PreferenceStatus(StrEnum):
+    """
+    PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
+    """
+
+    PROPOSED = "PROPOSED"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
+class UnsupportedAsk(StrEnum):
+    """
+    Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
+
+    REMOVE_WATERMARK and REMOVE_OVERLAY_TEXT are kept as members and are no longer refusals: both are now answered by ObscureOptions, and the note reader routes them to the OBSCURE topic. They stay in the enum because stored readings contain them, and because detection can still come back empty — at which point 'nothing static was found to hide' is the honest refusal and this is what it is recorded as.
+    """
+
+    REMOVE_WATERMARK = "REMOVE_WATERMARK"
+    REMOVE_OVERLAY_TEXT = "REMOVE_OVERLAY_TEXT"
+    CHANGE_MUSIC = "CHANGE_MUSIC"
+    ZOOM_ON_SUBJECT = "ZOOM_ON_SUBJECT"
+    SLOW_MOTION = "SLOW_MOTION"
+    REORDER_OR_CUT_MIDDLE = "REORDER_OR_CUT_MIDDLE"
+    COLOUR_OR_GRADE = "COLOUR_OR_GRADE"
+    SOMETHING_ELSE = "SOMETHING_ELSE"
+
+
+class ObscureMethod(StrEnum):
+    """
+    How a region of the picture is hidden.
+
+    Four, because one is wrong for the two cases that matter. DELOGO reconstructs the area from the pixels around it and is far and away the best answer for a small broadcast bug — at channel-logo size it reads as though the logo was never there. It is also the worst answer for anything large: it has nothing to reconstruct from, so a wide region becomes a smear that draws more attention than the thing it hid. BLUR and PIXELATE stay honest at any size, which is what a burnt-in caption needs. BOX is a flat rectangle, for when honest is the point.
+    """
+
+    BLUR = "BLUR"
+    PIXELATE = "PIXELATE"
+    DELOGO = "DELOGO"
+    BOX = "BOX"
+
+
+class ObscureFound(StrEnum):
+    """
+    Where a region came from. Worth recording because the three fail differently: AUTO can be in the wrong place, MANUAL cannot but costs the reviewer a drag, and REMEMBERED is a decision made once about a channel and applied ever after — which is the one that needs to be visible when it goes wrong, because nobody asked for it on this clip.
+    """
+
+    AUTO = "AUTO"
+    MANUAL = "MANUAL"
+    REMEMBERED = "REMEMBERED"
+
+
+class ObscureRegion(BaseModel):
+    """
+    One rectangle of the SOURCE frame to hide, in percentages of its width and height.
+
+    Percentages rather than pixels, and of the source rather than the output, for one reason each. Percentages survive a source that turns out to be 1280 wide when the box was drawn on a 1920 poster. Source coordinates are the only frame a logo is actually fixed in: the output is cropped, panned and scaled, so a box in output coordinates would have to move with the window, and a tracked window would drag the blur across the picture.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    x_pct: float = Field(..., alias="xPct", ge=0.0, le=100.0)
+    """
+    Left edge, as a percentage of source width.
+    """
+    y_pct: float = Field(..., alias="yPct", ge=0.0, le=100.0)
+    """
+    Top edge, as a percentage of source height.
+    """
+    w_pct: float = Field(..., alias="wPct", ge=0.2, le=100.0)
+    h_pct: float = Field(..., alias="hPct", ge=0.2, le=100.0)
+    method: ObscureMethod | None = None
+    """
+    Null lets the worker choose by size, which is the better default: DELOGO for a region small enough to reconstruct, BLUR for anything bigger.
+    """
+    strength: float | None = Field(None, ge=0.0, le=1.0)
+    """
+    How hard to hide it, 0 to 1. Scales blur radius and pixel size; ignored by DELOGO, which either reconstructs the area or does not. Null means the default, which is strong enough that the shape underneath is not readable.
+    """
+    from_sec: float | None = Field(None, alias="fromSec", ge=0.0)
+    """
+    Seconds from the START OF THE CLIP, not of the source, because that is the timebase the render's filters see. Null means from the beginning. For a bug that only appears during play.
+    """
+    to_sec: float | None = Field(None, alias="toSec", ge=0.0)
+    label: str | None = Field(None, max_length=80)
+    """
+    What this is, in a couple of words — 'channel bug, top left'. Shown next to the box in the history, so a remembered region is identifiable a month later.
+    """
+    found: ObscureFound | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    """
+    For an AUTO region: how static and how distinct it was. Recorded rather than thresholded away, because a low-confidence find that turns out to be right is the evidence for loosening the threshold, and one that is wrong is the evidence for the reviewer to drag the box instead.
+    """
+
+
+class ObscureOptions(BaseModel):
+    """
+    The request to hide things: find them, or hide these, or both.
+
+    `auto` and `regions` compose rather than exclude. A reviewer who has drawn one box and also wants the scoreboard found gets both; detection skips anything that overlaps a box already listed, so asking for both never produces two filters over the same pixels.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    auto: bool | None = False
+    """
+    Look for static logos and burnt-in text in the footage and hide what is found. Costs a short decode pass over the cut and no model.
+    """
+    regions: list[ObscureRegion] | None = Field([], max_length=6, validate_default=True)
+    """
+    Rectangles to hide whatever detection thinks. Always applied.
+
+    Six, and the number is the security rule's rather than this schema's: each region is a filter pass, and a rule that validates them positionally has a thousand-expression budget that eight of them exceeded. Detection returns at most four.
+    """
+    method: ObscureMethod | None = None
+    """
+    Override the method for regions that do not name one, found or listed.
+    """
+    strength: float | None = Field(None, ge=0.0, le=1.0)
+
+
+class NoteObscure(StrEnum):
+    """
+    Whether a note asks for something in the picture to be hidden, and where it says that thing is.
+
+    One enum rather than a boolean plus a location, because the location is only meaningful when the answer is yes and a small model given two fields answers them independently — producing 'no, and it is in the top left'. ANYWHERE is the common answer: reviewers write 'blur the canal+' and expect the system to know where the canal+ is, which is exactly what detection is for. A corner narrows the search and is worth having when they do say.
+    """
+
+    NOT_MENTIONED = "NOT_MENTIONED"
+    ANYWHERE = "ANYWHERE"
+    TOP_LEFT = "TOP_LEFT"
+    TOP_RIGHT = "TOP_RIGHT"
+    BOTTOM_LEFT = "BOTTOM_LEFT"
+    BOTTOM_RIGHT = "BOTTOM_RIGHT"
+    TOP = "TOP"
+    BOTTOM = "BOTTOM"
+
+
+class NoteFraming(StrEnum):
+    """
+    A framing decision read out of a note, plus the value that means the note did not make one. NOT_MENTIONED is a member rather than the field being nullable, for a reason measured rather than assumed — see LlmRemakeNote.
+
+    PAN is deliberately absent, though FramingMode has it. A pan is defined by its keyframes and this schema gives the model no way to supply any, so a model answering PAN could only ever produce a framing with an empty keyframe list — which the render path refuses outright, turning a readable note into a failed job. TRACK is the executable form of the same intent: follow the action, with the points worked out from the footage.
+    """
+
+    NOT_MENTIONED = "NOT_MENTIONED"
+    AS_RENDERED = "AS_RENDERED"
+    FIT = "FIT"
+    TRACK = "TRACK"
+
+
+class NoteCrop(StrEnum):
+    """
+    A side read out of a note, plus the value that means the note did not name one.
+    """
+
+    NOT_MENTIONED = "NOT_MENTIONED"
+    CENTRE = "centre"
+    LEFT = "left"
+    RIGHT = "right"
+
+
+class NoteAudio(StrEnum):
+    """
+    What a note asked for the original audio. REPLACE removes it, KEEP_UNDER keeps it ducked beneath a narration, NOT_MENTIONED means the note said nothing about sound at all — which is most notes.
+    """
+
+    NOT_MENTIONED = "NOT_MENTIONED"
+    REPLACE = "REPLACE"
+    KEEP_UNDER = "KEEP_UNDER"
+
+
+class NoteTopic(StrEnum):
+    """
+    An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.
+    """
+
+    FRAMING = "FRAMING"
+    LANGUAGE = "LANGUAGE"
+    AUDIO = "AUDIO"
+    TIMING = "TIMING"
+    OBSCURE = "OBSCURE"
+
+
+class OnScreenTextItem(RootModel[str]):
+    root: str = Field(..., max_length=80)
+
+
+class LlmVisualContext(BaseModel):
+    """
+    What a vision model sees in a handful of frames from one clip.
+
+    This exists because the pipeline was narrating footage it had never looked at. A speech recogniser handed French football commentary returns "très mal à beaude glim cette frappe pure latérale gauche municois", a translator faithfully renders that as "very bad beauty glim this pure left lateral munitions shot", and a synthesiser reads it aloud over a goal. Every step did its job. Nothing in the chain could tell that the words were nonsense, because nothing in the chain had seen a football.
+
+    It is **description, never inference**. What is in the frame, what the scoreboard says, what colours the teams wear. Not who is about to score.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    subject: str = Field(..., max_length=200)
+    """
+    What kind of footage this is, in a phrase. 'A football match, one side in red, the other in yellow.'
+    """
+    happens: str = Field(..., max_length=700)
+    """
+    What actually occurs across the frames, in order. The part a narration can be built on.
+    """
+    on_screen_text: list[OnScreenTextItem] = Field(
+        ..., alias="onScreenText", max_length=8
+    )
+    """
+    Text readable in the frames — a scoreline, a clock, team abbreviations, hoardings. Worth having separately because it is the one part of a frame that is unambiguous, and because it is often the thing a caption got wrong.
+    """
+
+
+class LlmNarration(BaseModel):
+    """
+    A spoken line for one clip, in the language that was asked for.
+
+    Replaces "translate the transcript", which is correct exactly as often as the transcript is. Handed both the transcript AND what is visible, the model can tell which words survived the recogniser and which did not, and can write around the ones that did not.
+
+    `transcriptUsable` comes first and is the whole point of the shape: a model that has committed to an answer about the transcript's quality writes a different script than one that has not been asked. It is the same device `LlmPreferenceProposal` uses, for the same reason — make the decision before the thing that depends on it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    transcript_usable: bool = Field(..., alias="transcriptUsable")
+    """
+    Does the transcript carry meaning a listener would want, or has the recogniser mangled it past rescue? Answered before the script exists.
+    """
+    reasoning: str = Field(..., max_length=300)
+    """
+    One sentence on that judgement. Not stored — it exists to make the model state a position it then has to write consistently with.
+    """
+    script: str = Field(..., max_length=1200)
+    """
+    The words to speak, in the target language and nothing else. No speaker labels, no stage directions, no quotation marks around the whole thing: a synthesiser reads whatever is here, literally.
+    """
+
+
+class Tag(RootModel[str]):
+    root: str = Field(..., max_length=40)
+
+
+class LlmClipMetadata(BaseModel):
+    """
+    A title, a description and tags for one finished clip.
+
+    The fields they replace were never written to be read. `Clip.title` was `Candidate.hook`, which the analysis prompt defines as "the actual opening line, quoted from the transcript" — so a real clip went out titled `"on a franchi un premier rideau kane peut enroulé du plat"`, lowercase, in French, on a clip that had been re-voiced into English. `Clip.description` was `Candidate.reason`, which is one sentence on *why the clip was selected*: "This segment captures the high-tension moment where Kane breaks through the defense, creating an immediate visual hook for football fans." That is a note from an analyst to a pipeline, and it was being shown to viewers.
+
+    Written for reach rather than for accuracy about the selection: the first few words of a title and the first line of a description are what a feed shows, and they decide whether anything else is read.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    title: str = Field(..., max_length=100)
+    """
+    The hook, front-loaded, in the target language. What happened and who it happened to, in the first few words, because that is all a feed shows before it truncates.
+    """
+    description: str = Field(..., max_length=900)
+    """
+    First line carries the hook again — it is the only line most viewers see. Then a sentence or two of context, then hashtags on their own line.
+    """
+    tags: list[Tag] = Field(..., max_length=15, min_length=5)
+    """
+    Search terms, lowercase, broad ones and specific ones together. `minItems` rather than a request in the prompt, because an empty array satisfies an array schema trivially and a small model takes the cheapest answer that validates — the lesson LlmPreferenceProposal paid for.
+    """
+
+
+class LlmRemakeNote(BaseModel):
+    """
+    The schema-constrained reading of a reviewer's note. Handed to Ollama as a format constraint, like LlmClipResponse, so the model cannot answer with prose.
+
+    Three details of this shape are load-bearing, and all three were measured against qwen3.5:4b rather than reasoned about.
+
+    **`topics` comes first and bounds everything after it.** Fields belonging to a topic the model did not declare are discarded by the caller. This exists because the two obvious shapes both fail: with nullable optional fields a 4B writes a summary saying it chose TRACK and then emits null for the mode, and with every field required it fills all of them, inventing a crop and a language for a note about timing. Neither a prompt asking for restraint nor one asking for completeness fixes the other. Declaring scope first is a question the model answers reliably, and it makes the scope a property of the protocol rather than a hope.
+
+    **Every decision is still required, with 'the note did not say' as a value rather than a null,** so that within a declared topic there is no lazy path that satisfies the schema while deciding nothing.
+
+    **`summary` is last.** Constrained decoding emits properties in declaration order, so a model asked to explain itself first explains a decision it has not made yet and then fails to make it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    topics: list[NoteTopic] = Field(..., max_length=4)
+    """
+    Which aspects of the clip this note actually raises. Usually one. An empty array is the correct answer for a note that is a remark rather than an instruction, and the remake then proceeds on whatever was set explicitly.
+    """
+    framing_mode: NoteFraming = Field(..., alias="framingMode")
+    crop: NoteCrop
+    language: str = Field(..., max_length=16)
+    """
+    A BCP-47 tag when the note asks for another language, and the literal string NONE when it does not. A required string rather than a nullable one, for the reason given above.
+    """
+    audio: NoteAudio
+    start_delta_sec: float = Field(..., alias="startDeltaSec", ge=-30.0, le=30.0)
+    """
+    Seconds to move the cut's start. 0 when the note does not say the clip begins at the wrong moment. Negative starts earlier.
+    """
+    end_delta_sec: float = Field(..., alias="endDeltaSec", ge=-30.0, le=30.0)
+    """
+    Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer.
+    """
+    obscure: NoteObscure
+    unsupported: list[UnsupportedAsk] | None = Field(None, max_length=8)
+    """
+    Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
+    """
+    summary: str = Field(..., max_length=600)
+    """
+    One sentence restating the instruction and naming what was changed. Written last, after the settings it describes.
+
+    It describes this ANSWER, not necessarily the outcome: settings belonging to a topic that was not declared are discarded by the caller afterwards, so a summary can name a change that does not survive. `NoteInterpretation.summary` is rewritten from what was actually applied before it reaches the clip — an early version recorded the model's own wording and told reviewers it had set a crop it had not.
+    """
+
+
+class CropAnchor(StrEnum):
+    """
+    Where a fixed 9:16 window sits in a landscape source. The render profile's own `crop` setting, promoted to the wire so a reviewer can overrule it for one clip without editing a profile that every other clip shares.
+    """
+
+    CENTRE = "centre"
+    LEFT = "left"
+    RIGHT = "right"
+
+
+class FramingMode(StrEnum):
+    """
+    How the 9:16 window is decided. AS_RENDERED keeps the profile's fixed crop, which is what every clip got before this existed. FIT crops nothing at all — the whole landscape frame is scaled into the canvas and the dead space is filled — so a subject that moves can never leave the picture; the cost is a smaller picture. PAN moves a full-height window along the source over time, between points the reviewer set. TRACK does the same thing but works the points out from the footage, by following where the motion is. FIT and TRACK exist because a fixed crop keeps about a third of a broadcast frame's width and holds still, which is the wrong answer for any sport where the thing worth watching moves.
+    """
+
+    AS_RENDERED = "AS_RENDERED"
+    FIT = "FIT"
+    PAN = "PAN"
+    TRACK = "TRACK"
+
+
+class FitFill(StrEnum):
+    """
+    What fills the canvas above and below the picture in FIT mode. BLUR is a scaled, heavily blurred copy of the frame itself, which reads as deliberate and keeps the eye on the centre band. SOLID is a flat colour, which is cheaper to encode and looks better when the footage has a hard horizon the blur would smear.
+    """
+
+    BLUR = "BLUR"
+    SOLID = "SOLID"
+
+
+class PanKeyframe(BaseModel):
+    """
+    Where the window sits at one instant. The crop centre is interpolated between consecutive keyframes and held flat outside the first and last, so two points are enough to describe a pan and one is enough to describe a fixed off-centre crop.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    at_sec: float = Field(..., alias="atSec", ge=0.0)
+    """
+    Seconds from the start of the clip, not of the source. A reviewer sets these while watching the clip, and the clip is the only timeline they can see.
+    """
+    x_pct: float = Field(..., alias="xPct", ge=0.0, le=100.0)
+    """
+    Centre of the window as a percentage of source width. 50 is the middle. Clamped at render time so the window cannot hang off the edge of the frame, which means a keyframe of 0 or 100 is a legal way of saying 'as far left/right as this can go' rather than an error.
+    """
+
+
+class Framing(BaseModel):
+    """
+    The reframe half of a remake. Every mode other than AS_RENDERED re-cuts from the original source, because the rendered clip has already had the discarded pixels thrown away — so these need the source media to still be on the worker, and fail clearly when the workspace collector has taken it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    mode: FramingMode
+    crop: CropAnchor | None = None
+    """
+    AS_RENDERED only: a fixed anchor overriding the profile's. Null keeps the profile's own.
+    """
+    keyframes: list[PanKeyframe] | None = Field([], validate_default=True)
+    """
+    PAN only, and required there: an empty list in PAN mode is a request with no instruction in it. Ignored in every other mode — TRACK computes its own and records them in the same shape, so a tracked clip can be remade as a PAN with the tracker's work as the starting point.
+    """
+    fill: FitFill | None = None
+    """
+    FIT only. Null means BLUR.
+    """
+    zoom: float | None = Field(1, ge=1.0, le=2.0)
+    """
+    How tight the window is. 1 means 'as wide as this mode allows' — the whole frame in FIT, full source height in PAN and TRACK — and larger values close in, trading away the margin that keeps a moving subject in shot. The ceiling of 2 is not arbitrary: past it a 1080-line source no longer has the pixels to fill a 1080-wide canvas, and the clip visibly softens.
+    """
+    offset_y_pct: float | None = Field(0, alias="offsetYPct", ge=-50.0, le=50.0)
+    """
+    FIT only: moves the picture band up or down the canvas, as a percentage of canvas height. Negative is up. Useful when captions want the lower third and the blurred fill above is doing nothing.
+    """
+    smoothing_sec: float | None = Field(2, alias="smoothingSec", ge=0.0, le=10.0)
+    """
+    TRACK only: the window of footage the tracker averages over before it moves. Low values follow the action closely and jitter; high values glide and lag. Two seconds is the compromise that survives a camera cut without lurching, and a camera that is itself already following play needs very little on top.
+    """
+    max_pan_pct_per_sec: float | None = Field(
+        12, alias="maxPanPctPerSec", ge=0.0, le=100.0
+    )
+    """
+    TRACK only: a ceiling on how fast the window may travel, in percent of source width per second. This is what stops the crop snapping across the pitch when the motion centroid jumps to a different part of the frame — the picture lags the ball for a moment, which looks far better than a whip-pan that arrives before anything happens.
+    """
+
+
+class SpeechMode(StrEnum):
+    """
+    What a generated voice does to the clip's own audio. REPLACE removes the original entirely, which is the point when the original is commentary you cannot use. BED keeps the original underneath, ducked, which suits footage whose crowd noise and ball contact are half of why the clip works.
+    """
+
+    REPLACE = "REPLACE"
+    BED = "BED"
+
+
+class VoiceCaptions(StrEnum):
+    """
+    Captions are burned into pixels, so a new voice makes the existing ones wrong — they show words nobody is saying any more. REBUILD transcribes the generated narration and re-cuts captions from what was actually said rather than from the script, which is the only version that stays in sync when the synthesiser stresses a sentence differently from the way it was written. KEEP is for a bed under unchanged speech. REMOVE leaves the picture clean.
+    """
+
+    REBUILD = "REBUILD"
+    KEEP = "KEEP"
+    REMOVE = "REMOVE"
+
+
+class VoiceOptions(BaseModel):
+    """
+    A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make footage safe to publish — that is what the rights attestation is for.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    mode: SpeechMode
+    voice: str = Field(..., min_length=1)
+    """
+    The synthesiser's own name for a voice. Opaque here on purpose: this contract should not have to be reissued every time an engine ships a new one.
+    """
+    language: str = Field(..., max_length=16, min_length=2)
+    """
+    The language to speak in, as a BCP-47 tag. Not necessarily the language the clip is in — that difference is the whole point of `translate`.
+    """
+    translate: bool | None = True
+    """
+    Whether to translate the clip's words before speaking them. Only meaningful when `language` differs from the source's; when it does and this is false, the synthesiser is being asked to read one language with another's phonetics, which produces something no listener wants.
+    """
+    script: str | None = Field(None, max_length=4000)
+    """
+    What to say, written by hand. Null means 'say what the clip says', which is the ordinary case. A script overrides both the transcript and any translation of it — the reviewer has stated the words, so nothing else gets to.
+    """
+    speed: float | None = Field(1, ge=0.5, le=2.0)
+    """
+    Playback rate of the synthesised speech. It moves independently of the picture: narration that runs long is not allowed to stretch the video, so the stage reports an overrun rather than silently retiming footage the reviewer already approved.
+    """
+    gain_db: float | None = Field(None, alias="gainDb", ge=-40.0, le=12.0)
+    """
+    Trim on the narration. Null means the stage's own judgement, which targets the clip's loudness normalisation rather than a fixed level.
+    """
+    duck_db: float | None = Field(None, alias="duckDb", ge=-40.0, le=0.0)
+    """
+    BED only: how far the original audio is pushed down under the narration. Null means -12 dB, which keeps crowd noise present without competing with a voice.
+    """
+    captions: VoiceCaptions | None = None
+    """
+    What happens to the burned-in captions, which the new voice has otherwise made wrong.
+    """
+
+
+class RemakeOptions(BaseModel):
+    """
+    A reviewer's corrections to a finished clip. Every field is optional because a remake is usually one complaint, not a rebuild: 'the framing lost the ball' and 'this needs to be in Spanish' are separate errands and should not have to be sent together.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    notes: str | None = Field(None, max_length=2000)
+    """
+    What is wrong with the clip, in the reviewer's own words. Always recorded on the new clip, whether or not anything is inferred from it — a remake whose result is still wrong is much easier to reason about when what was asked for is written next to what was done.
+    """
+    interpret_notes: bool | None = Field(True, alias="interpretNotes")
+    """
+    Whether to put the notes to the local model and let it fill in the options the reviewer left unset. Bounded deliberately: it may choose a framing mode, a crop anchor, a language and a voice, and it may not touch anything the reviewer stated explicitly. What it decided is recorded on the clip, so a note that was misread is visible as a misreading rather than as an unexplained result.
+    """
+    framing: Framing | None = None
+    """
+    Null means 'leave the framing alone', which is not the same as AS_RENDERED: an explicit AS_RENDERED with a `crop` set is a reframe to a different fixed anchor.
+    """
+    voice: VoiceOptions | None = None
+    """
+    Null keeps the clip's own audio.
+    """
+    start_delta_sec: float | None = Field(0, alias="startDeltaSec", ge=-30.0, le=30.0)
+    """
+    Nudge the cut's start, in seconds, relative to where the candidate put it. Negative starts earlier. Boundary snapping gets the sentence right and still lands a beat late for an action clip, where the interesting thing happens before anyone says anything about it.
+    """
+    end_delta_sec: float | None = Field(0, alias="endDeltaSec", ge=-30.0, le=30.0)
+    """
+    Nudge the cut's end. Positive runs longer.
+    """
+    obscure: ObscureOptions | None = None
+    """
+    Hide a fixed part of the picture — a channel bug, a scoreboard, a burnt-in caption. Null asks for nothing; an object with `auto` false and no regions is also nothing, and is what an untouched control sends.
+    """
+    profile: str | None = None
+    """
+    Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
+    """
+
+
+class NoteInterpretation(BaseModel):
+    """
+    What the local model made of the reviewer's note, recorded whether or not it was any use. A remake that came out wrong is nearly always one of two failures — the note was misread, or it was read correctly and the machinery did the wrong thing — and without this they are indistinguishable.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    understood: bool
+    """
+    False when the model could not turn the note into anything actionable. The remake still runs on whatever the reviewer set explicitly, rather than failing: a note nobody could parse is not a reason to refuse work that was otherwise fully specified.
+    """
+    summary: str = Field(..., max_length=600)
+    """
+    The instruction as the model understood it, in one sentence, and the settings it changed.
+    """
+    model: str | None = None
+
+
+class AppliedVoice(BaseModel):
+    """
+    The narration that was actually produced. Records the spoken text rather than the script, because those differ whenever a translation happened, and the spoken text is the one a caption has to match and a viewer will hear.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    mode: SpeechMode
+    voice: str
+    language: str
+    engine: str
+    """
+    Which synthesiser, and which version of it. Two voices of the same name from different engines do not sound alike.
+    """
+    translated: bool | None = False
+    spoken_text: str | None = Field(None, alias="spokenText", max_length=4000)
+    speech_duration_sec: float | None = Field(None, alias="speechDurationSec", ge=0.0)
+    """
+    How long the narration runs. Compared against the clip's own duration by the UI: narration that overruns the picture is the most common way a translated clip goes wrong, and it is invisible until someone watches the end.
+    """
+
+
+class Refusal(RootModel[str]):
+    root: str = Field(..., max_length=300)
+
+
+class Warning(RootModel[str]):
+    root: str = Field(..., max_length=300)
+
+
+class AppliedRemake(BaseModel):
+    """
+    What was asked for, and what was done. Carried on the clip the remake produced, beside `derivedFromClipId`, so the pair reads as a correction and its result rather than as two unrelated clips.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    notes: str | None = Field(None, max_length=2000)
+    """
+    The reviewer's words, verbatim.
+    """
+    interpretation: NoteInterpretation | None = None
+    framing_mode: FramingMode = Field(..., alias="framingMode")
+    keyframes: list[PanKeyframe] | None = Field([], validate_default=True)
+    """
+    The window's path through the source, as rendered — the reviewer's own points in PAN, and the tracker's findings in TRACK. Kept because it is the only way to see what a tracked remake actually decided to follow, and because a PAN remake can be seeded from it and corrected by hand when it followed the wrong thing.
+    """
+    voice: AppliedVoice | None = None
+    refusals: list[Refusal] | None = Field([], max_length=8, validate_default=True)
+    """
+    Parts of the request that were understood and NOT carried out, each phrased for the person who asked. A remake that silently does four of the five things asked of it is indistinguishable from one that is broken, and the reviewer's next move — ask again, ask differently, give up — depends entirely on which it was.
+    """
+    warnings: list[Warning] | None = Field([], max_length=8, validate_default=True)
+    """
+    Things that were done but are likely to disappoint: a narration built from a transcript the recogniser was unsure of, a translation that barely changed the text, a clip with almost no speech in it. Surfaced next to the result because every one of these has produced a clip that looked finished and was unusable.
+    """
+    obscured: list[ObscureRegion] | None = Field(
+        [], max_length=6, validate_default=True
+    )
+    """
+    The regions actually hidden, with where each came from. This is the record that makes a wrong box fixable: a reviewer who can see that detection put the rectangle two percent too high can drag it and remake, rather than describing the error in prose to a model that will guess again.
+    """
+    start_sec: float = Field(..., alias="startSec", ge=0.0)
+    """
+    The window actually cut from the source, after any nudge. Absolute source seconds, matching Candidate.
+    """
+    end_sec: float = Field(..., alias="endSec", ge=0.0)
 
 
 class JobEventKind(StrEnum):
@@ -240,6 +867,12 @@ class Source(BaseModel):
     Worker-local absolute path. Advisory only for the PWA, which can never read it.
     """
     size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
+    obscure: ObscureOptions | None = None
+    """
+    Hidden on every clip cut from this source, including the first. Set by accepting a learned preference, or from the remake form's 'always do this for this channel'.
+
+    This is the difference between a feature and a chore. A channel bug is a property of the channel: found once on one clip, it is in the same place on every clip that channel will ever produce, and a reviewer who has to ask for it each time is doing the system's bookkeeping. Applied at RENDER, so a clip arrives for review already clean rather than arriving wrong and needing a correction.
+    """
     pinned: bool | None = False
     """
     Exempt from workspace garbage collection. Sources are large and the disk is finite, so GC is not optional — pinning is the escape hatch for one you are still working with.
@@ -631,6 +1264,68 @@ class WorkerHeartbeat(BaseModel):
     started_at: AwareDatetime | None = Field(None, alias="startedAt")
 
 
+class AgentDesired(StrEnum):
+    """
+    What the people want the worker on a machine to be doing. The only thing about an agent the PWA is allowed to say, and it is a wish rather than a fact: the agent decides when it has come true.
+    """
+
+    RUNNING = "RUNNING"
+    STOPPED = "STOPPED"
+
+
+class AgentState(StrEnum):
+    """
+    What the agent has actually managed to do about the wish. FOREIGN means a worker is running on that machine which the agent did not start — from a terminal or the desktop app — which it reports rather than duplicates. FAILED means the worker will not stay up and the agent has stopped retrying; it needs a person, not another restart.
+    """
+
+    STOPPED = "STOPPED"
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    FOREIGN = "FOREIGN"
+    STOPPING = "STOPPING"
+    FAILED = "FAILED"
+
+
+class AgentReport(BaseModel):
+    """
+    One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. Its `lastSeenAt` answers a question no worker heartbeat can, because a worker that is not running cannot say so: an agent beating with state STOPPED means the PC is on and waiting, while an agent that has gone quiet means the PC is off.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    agent_id: str = Field(..., alias="agentId", min_length=1)
+    hostname: str | None = None
+    version: str
+    desired: AgentDesired
+    requested_by: str | None = Field(None, alias="requestedBy")
+    """
+    The uid that last asked for a change, so a worker that started on its own is distinguishable from one somebody started.
+    """
+    requested_at: AwareDatetime | None = Field(None, alias="requestedAt")
+    state: AgentState
+    detail: str | None = None
+    """
+    One sentence a person can act on, written by the agent. A failure that only exists as an exit code is a failure nobody can diagnose from a phone.
+    """
+    worker_pid: int | None = Field(None, alias="workerPid")
+    worker_started_at: AwareDatetime | None = Field(None, alias="workerStartedAt")
+    last_exit_code: int | None = Field(None, alias="lastExitCode")
+    restarts: int | None = Field(0, ge=0)
+    """
+    How many times the agent has restarted a worker that died while it was wanted. Reset when a start is asked for, so it counts one bad run rather than the machine's whole history.
+    """
+    log: list[str] | None = []
+    """
+    The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB and this one is written every heartbeat.
+    """
+    use_emulators: bool | None = Field(False, alias="useEmulators")
+    project_id: str | None = Field(None, alias="projectId")
+    started_at: AwareDatetime | None = Field(None, alias="startedAt")
+    last_seen_at: AwareDatetime = Field(..., alias="lastSeenAt")
+
+
 class LlmClipProposal(BaseModel):
     """
     One window as the model returns it. Deliberately carries no total and no precise boundaries: the model supplies judgement, Python supplies arithmetic (D5) and boundary precision (D4).
@@ -716,6 +1411,102 @@ class MusicOptions(BaseModel):
     """
     Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards.
     """
+
+
+class RemakeDefaults(BaseModel):
+    """
+    The machine-readable half of a preference: settings to pre-fill on a future remake. Every field is optional, and a preference may have none at all — plenty of what a reviewer teaches is a judgement the controls cannot hold ("this channel's wide shots are unusable cropped") and is worth carrying as a sentence into the prompt even when it fills in no box.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    framing_mode: FramingMode | None = Field(None, alias="framingMode")
+    crop: CropAnchor | None = None
+    language: str | None = Field(None, max_length=16)
+    speech_mode: SpeechMode | None = Field(None, alias="speechMode")
+    obscure: ObscureOptions | None = None
+    """
+    Regions to hide on future clips. The one kind of preference whose value is mostly in its coordinates rather than in its sentence: a channel's bug does not move, so the box found once is the box forever, and accepting it is what turns 'blur the canal+' from an instruction into a property of the channel.
+    """
+
+
+class Preference(BaseModel):
+    """
+    Something the system noticed it should remember, at preferences/{preferenceId}.
+
+    The point is to stop asking. A reviewer who writes "follow the ball" on every football clip is teaching the same thing every time, and a system that cannot hold it makes them type it forever. So after a remake that applied feedback, the local model is asked what — if anything — generalises, and the answer is stored here as a proposal.
+
+    **Proposed, never applied.** A preference does nothing until a human accepts it. A wrong one is more expensive than a missed one, because it silently shapes every later clip and the reviewer has no reason to suspect it; a missed one costs one more sentence in a note. The model is also shown what has already been accepted AND what has been rejected, so it neither repeats itself nor re-proposes something that was already turned down.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    scope: PreferenceScope
+    source_id: str | None = Field(None, alias="sourceId")
+    """
+    Which source this applies to when the scope is SOURCE. Null for an EVERYTHING preference, which is stored unattached so it is retrieved for every clip.
+    """
+    category: NoteTopic
+    lesson: str = Field(..., max_length=400, min_length=1)
+    """
+    The standing instruction, written for a remake of a clip nobody has seen yet. It must make sense without the clip that prompted it: "this channel's wide shots lose the ball unless the window follows it", not "the framing was wrong on that one".
+    """
+    defaults: RemakeDefaults | None = None
+    status: PreferenceStatus
+    from_clip_id: str | None = Field(None, alias="fromClipId")
+    from_note: str | None = Field(None, alias="fromNote", max_length=2000)
+    """
+    The feedback that taught it, verbatim. Kept so a preference can be judged against what was actually said rather than against the model's paraphrase of it.
+    """
+    times_applied: int | None = Field(0, alias="timesApplied", ge=0)
+    """
+    How many remakes this preference has shaped since it was accepted. The number that says whether it is earning its place: one that never fires is noise, and one that fires constantly is a default the pipeline should probably adopt outright.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
+    decided_by: str | None = Field(None, alias="decidedBy")
+
+
+class Preference1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    lesson: str = Field(..., max_length=400)
+    category: NoteTopic
+    scope: PreferenceScope
+    framing_mode: NoteFraming | None = Field(None, alias="framingMode")
+    language: str | None = Field(None, max_length=16)
+
+
+class LlmPreferenceProposal(BaseModel):
+    """
+    The schema-constrained answer to "what, if anything, should be remembered from this correction?". Handed to Ollama as a format constraint like the other LLM shapes here.
+
+    `recurring` and `reasoning` come first, and that ordering is the whole design. Constrained decoding emits properties in declaration order, and an empty array satisfies an array schema trivially — so a model asked only for a list returns `[]` every single time, which it did on all four measured cases including the one that plainly taught two things. Being made to answer a yes/no question and justify it *before* the list is reached turns the same model into one that answers. It is the same lesson `LlmRemakeNote` records: where a schema offers a lazy path, a small model takes it.
+
+    An empty list is still a correct and common answer — most corrections are about one clip's own moment — and a wrong standing rule costs far more than a missed one.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    recurring: bool
+    """
+    Would a DIFFERENT clip from this same source be made better if the system already knew something from this correction? Answered first, before any list exists to be left empty.
+    """
+    reasoning: str = Field(..., max_length=300)
+    """
+    One sentence on why. Not stored — it exists to make the model state a position it then has to be consistent with, which is worth more than the tokens it costs.
+    """
+    preferences: list[Preference1] = Field(..., max_length=3)
 
 
 class PublishDefaults(BaseModel):
@@ -845,10 +1636,30 @@ class Clip(BaseModel):
     height_px: int | None = Field(None, alias="heightPx", ge=1)
     size_bytes: int | None = Field(None, alias="sizeBytes", ge=0)
     render_profile: str | None = Field(None, alias="renderProfile")
-    title: str | None = None
-    description: str | None = None
+    title: str | None = Field(None, max_length=200)
+    """
+    What this clip is called, written to be read. Until LlmClipMetadata existed this was `Candidate.hook` — a line quoted out of the transcript — so clips went out titled with lowercase French ASR fragments.
+    """
+    description: str | None = Field(None, max_length=2000)
+    """
+    The text that goes out with the clip. Previously `Candidate.reason`, which is one sentence on why the window was SELECTED — an analyst's note to a pipeline, shown to viewers.
+    """
+    tags: list[Tag] | None = Field([], max_length=15, validate_default=True)
+    """
+    Search terms for this clip, written with its title and description. Carried here rather than only on the channel because they are about THIS clip — a channel-wide list is the same on a goal and on a press conference.
+    """
     review: ReviewState
     reviewed_at: AwareDatetime | None = Field(None, alias="reviewedAt")
+    lineage_id: str | None = Field(None, alias="lineageId", min_length=1)
+    """
+    The id of the clip this one descends from, at the root of the chain — the clip RENDER originally made. Every version shares it, so a clip and every correction of it are one row in the review queue instead of five.
+
+    That mattered immediately. The queue lists what is PENDING, a remake is always PENDING, and its parent usually still is too, so a single football clip corrected three times filled four slots and the reviewer had to work out which was newest. Null on a clip written before this field existed; readers treat that as the clip being its own root.
+    """
+    version: int | None = Field(1, ge=1)
+    """
+    Which attempt this is within its lineage. 1 is the clip RENDER made; a remake is its parent's version plus one. Ordering by this rather than by `createdAt` is deliberate: two remakes of the same parent are siblings, not a sequence, and the number says so.
+    """
     derived_from_clip_id: str | None = Field(None, alias="derivedFromClipId")
     """
     The clip this one was made from, when it is a scored version of another. The original is never altered — a MUSIC job produces a new clip — so this is what relates the two, and what lets the review queue say 'music version of' rather than showing two unexplained near-duplicates.
@@ -856,6 +1667,10 @@ class Clip(BaseModel):
     music: AppliedMusic | None = None
     """
     What was added to this clip, when something was. Null on an ordinary render.
+    """
+    remake: AppliedRemake | None = None
+    """
+    The correction that produced this clip, when it is one. Null on an ordinary render.
     """
     review_note: str | None = Field(None, alias="reviewNote", max_length=2000)
     """
@@ -896,6 +1711,10 @@ class Job(BaseModel):
     music_options: MusicOptions | None = Field(None, alias="musicOptions")
     """
     What a MUSIC job should add, and how. Null for every other job type.
+    """
+    remake_options: RemakeOptions | None = Field(None, alias="remakeOptions")
+    """
+    What a REMAKE job should correct. Null for every other job type.
     """
     publish_options: PublishOptions | None = Field(None, alias="publishOptions")
     """
@@ -949,4 +1768,12 @@ class ClipForgeContracts(BaseModel):
     channel: Channel | None = None
     user_profile: UserProfile | None = Field(None, alias="userProfile")
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")
+    agent_report: AgentReport | None = Field(None, alias="agentReport")
+    preference: Preference | None = None
+    llm_preference_proposal: LlmPreferenceProposal | None = Field(
+        None, alias="llmPreferenceProposal"
+    )
+    remake_options: RemakeOptions | None = Field(None, alias="remakeOptions")
+    applied_remake: AppliedRemake | None = Field(None, alias="appliedRemake")
+    llm_remake_note: LlmRemakeNote | None = Field(None, alias="llmRemakeNote")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")

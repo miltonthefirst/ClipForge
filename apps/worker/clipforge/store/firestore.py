@@ -22,17 +22,21 @@ has its own Firebase project — see docs/adr/0004-dedicated-firebase-project.md
 from __future__ import annotations
 
 import os
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 from clipforge_contracts import (
+    AgentReport,
     Candidate,
     Clip,
     ClipPreview,
     Job,
     JobStatus,
+    Preference,
+    PreferenceScope,
+    PreferenceStatus,
     Publication,
     PublicationState,
     Source,
@@ -43,16 +47,22 @@ from clipforge_contracts import (
 from google.api_core import exceptions as gcloud_exceptions
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import firestore
+from pydantic import BaseModel, ValidationError
 
 from clipforge.config import Settings
+from clipforge.observability import get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.lease import Transition
 
+log = get_logger(__name__)
+
 JOBS = "jobs"
 WORKERS = "workers"
+AGENTS = "agents"
 SOURCES = "sources"
 CANDIDATES = "candidates"
 CLIPS = "clips"
+PREFERENCES = "preferences"
 PREVIEW = "preview"
 PUBLICATIONS = "publications"
 EVENTS = "events"
@@ -79,11 +89,13 @@ def firestore_client(settings: Settings) -> firestore.Client:
 def _to_document(
     model: Job
     | WorkerHeartbeat
+    | AgentReport
     | Source
     | TranscriptRef
     | Candidate
     | Clip
     | ClipPreview
+    | Preference
     | Publication,
 ) -> dict[str, Any]:
     """Model to Firestore document.
@@ -129,7 +141,56 @@ def _is_contention(exc: BaseException) -> bool:
 
 
 def _to_job(data: dict[str, Any]) -> Job:
-    return Job.model_validate(data)
+    return _read(Job, data)
+
+
+def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
+    """One Firestore document, as a model, tolerating fields we do not know.
+
+    The contracts set ``extra="forbid"`` and that is right for *writing*: it
+    turns a mistyped field name into an error rather than a value that silently
+    goes nowhere. On *reading* it is the wrong rule, and the difference cost a
+    live failure.
+
+    A worker holds the models it imported at start-up. Add a field to the
+    schema, let a newer process write documents carrying it, and every
+    already-running reader begins failing on documents that are perfectly
+    valid — with a pydantic error naming the new field, which reads like
+    corruption rather than like a version skew. That is exactly what happened
+    when ``lineageId`` and ``version`` were added to ``Clip`` and backfilled
+    onto every existing document: a worker six hours older than the schema
+    rejected all seventeen of them.
+
+    So the compatibility rule is **tolerate additions, refuse changes**. An
+    unknown field is dropped and logged once; anything else — a missing
+    required field, a value of the wrong type — still raises, because those
+    are the failures that mean something is genuinely wrong rather than merely
+    newer.
+
+    The log line is the part that matters operationally. It names the fields,
+    which is enough to tell an operator their worker is behind the schema and
+    wants restarting.
+    """
+    try:
+        return model.model_validate(data)
+    except ValidationError as first:
+        unknown = {
+            str(error["loc"][0])
+            for error in first.errors()
+            if error["type"] == "extra_forbidden" and error["loc"]
+        }
+        if not unknown or len(unknown) != len(first.errors()):
+            # Something other than an unrecognised field is wrong. Raise the
+            # original error rather than a second one from a stripped retry,
+            # which would describe the symptom and not the cause.
+            raise
+        log.warning(
+            "store.unknown_fields",
+            model=model.__name__,
+            fields=sorted(unknown),
+            detail="written by a newer version of the contracts; restart the worker to use them",
+        )
+        return model.model_validate({k: v for k, v in data.items() if k not in unknown})
 
 
 class JobStore:
@@ -337,9 +398,7 @@ class JobStore:
                 raise
             return None
 
-    def reap(
-        self, *, now: datetime | None = None, skip: Collection[str] = ()
-    ) -> list[Job]:
+    def reap(self, *, now: datetime | None = None, skip: Collection[str] = ()) -> list[Job]:
         """Reclaim every job whose worker stopped heartbeating.
 
         This is the reaper. It is bound to a periodic worker task rather than a
@@ -406,11 +465,9 @@ class SourceStore:
         snapshot = self._db.collection(SOURCES).document(source_id).get()
         if not snapshot.exists:
             return None
-        return Source.model_validate(snapshot.to_dict() or {})
+        return _read(Source, snapshot.to_dict() or {})
 
-    def find_by_external_id(
-        self, *, provider: SourceProvider, external_id: str
-    ) -> Source | None:
+    def find_by_external_id(self, *, provider: SourceProvider, external_id: str) -> Source | None:
         """Dedupe *before* downloading.
 
         Re-submitting a known video must not re-fetch two gigabytes, so this is
@@ -432,7 +489,7 @@ class SourceStore:
             .limit(1)
         )
         for doc in query.stream():
-            return Source.model_validate(doc.to_dict() or {})
+            return _read(Source, doc.to_dict() or {})
         return None
 
     def find_by_content_hash(self, *, content_hash: str) -> Source | None:
@@ -443,7 +500,7 @@ class SourceStore:
             .limit(1)
         )
         for doc in query.stream():
-            return Source.model_validate(doc.to_dict() or {})
+            return _read(Source, doc.to_dict() or {})
         return None
 
     def save(self, source: Source) -> None:
@@ -472,7 +529,7 @@ class SourceStore:
             if uid is not None
             else collection
         )
-        return [Source.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+        return [_read(Source, doc.to_dict() or {}) for doc in query.stream()]
 
 
 class CandidateStore:
@@ -492,13 +549,13 @@ class CandidateStore:
         snapshot = self._db.collection(CANDIDATES).document(candidate_id).get()
         if not snapshot.exists:
             return None
-        return Candidate.model_validate(snapshot.to_dict() or {})
+        return _read(Candidate, snapshot.to_dict() or {})
 
     def for_job(self, job_id: str) -> list[Candidate]:
         query = self._db.collection(CANDIDATES).where(
             filter=firestore.FieldFilter("jobId", "==", job_id)
         )
-        return [Candidate.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+        return [_read(Candidate, doc.to_dict() or {}) for doc in query.stream()]
 
     def replace_for_job(self, job_id: str, candidates: list[Candidate]) -> None:
         """Write this job's candidates, removing any from a previous attempt.
@@ -529,13 +586,13 @@ class ClipStore:
         snapshot = self._db.collection(CLIPS).document(clip_id).get()
         if not snapshot.exists:
             return None
-        return Clip.model_validate(snapshot.to_dict() or {})
+        return _read(Clip, snapshot.to_dict() or {})
 
     def for_job(self, job_id: str) -> list[Clip]:
         query = self._db.collection(CLIPS).where(
             filter=firestore.FieldFilter("jobId", "==", job_id)
         )
-        return [Clip.model_validate(doc.to_dict() or {}) for doc in query.stream()]
+        return [_read(Clip, doc.to_dict() or {}) for doc in query.stream()]
 
     def preview(self, clip_id: str) -> ClipPreview | None:
         snapshot = (
@@ -547,7 +604,7 @@ class ClipStore:
         )
         if not snapshot.exists:
             return None
-        return ClipPreview.model_validate(snapshot.to_dict() or {})
+        return _read(ClipPreview, snapshot.to_dict() or {})
 
     def save(self, clip: Clip, *, preview: ClipPreview | None = None) -> None:
         """Write a clip and its poster together.
@@ -561,6 +618,72 @@ class ClipStore:
         batch.set(clip_ref, _to_document(clip))
         if preview is not None:
             batch.set(clip_ref.collection(PREVIEW).document("poster"), _to_document(preview))
+        batch.commit()
+
+
+class PreferenceStore:
+    """What the system has learned about a reviewer, at ``preferences/{id}``.
+
+    Reads are filtered in Python rather than by a composite query. The
+    collection is small by construction — a preference is proposed only after a
+    remake that applied feedback, capped at three per remake, and deduped
+    against everything already held — so one bounded read beats maintaining an
+    index for a handful of rows.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def for_source(self, source_id: str | None, *, limit: int = 200) -> list[Preference]:
+        """Everything that could apply to a clip from this source.
+
+        Its own preferences plus every EVERYTHING-scoped one, in whatever status
+        — the caller filters to ACCEPTED when applying, and the learner needs
+        the rejected ones too so it does not propose them a second time.
+        """
+        rows = [
+            _read(Preference, doc.to_dict() or {})
+            for doc in self._db.collection(PREFERENCES).limit(limit).stream()
+        ]
+        return [
+            row
+            for row in rows
+            if row.scope is PreferenceScope.EVERYTHING
+            or (source_id is not None and row.source_id == source_id)
+        ]
+
+    def accepted_for_source(self, source_id: str | None) -> list[Preference]:
+        return [
+            row for row in self.for_source(source_id) if row.status is PreferenceStatus.ACCEPTED
+        ]
+
+    def save_all(self, preferences: list[Preference]) -> None:
+        if not preferences:
+            return
+        batch = self._db.batch()
+        for preference in preferences:
+            batch.set(
+                self._db.collection(PREFERENCES).document(preference.id),
+                _to_document(preference),
+            )
+        batch.commit()
+
+    def mark_applied(self, preferences: list[Preference]) -> None:
+        """Count a preference that actually shaped a remake.
+
+        The number that says whether it is earning its place: one that never
+        fires is noise, and one that fires on everything is a default the
+        pipeline should adopt outright rather than keep asking about.
+        """
+        if not preferences:
+            return
+        batch = self._db.batch()
+        for preference in preferences:
+            batch.update(
+                self._db.collection(PREFERENCES).document(preference.id),
+                {"timesApplied": (preference.times_applied or 0) + 1},
+            )
         batch.commit()
 
 
@@ -587,12 +710,11 @@ class PublicationStore:
         snapshot = self._collection(clip_id).document(publication_id).get()
         if not snapshot.exists:
             return None
-        return Publication.model_validate(snapshot.to_dict() or {})
+        return _read(Publication, snapshot.to_dict() or {})
 
     def for_clip(self, clip_id: str) -> list[Publication]:
         return [
-            Publication.model_validate(doc.to_dict() or {})
-            for doc in self._collection(clip_id).stream()
+            _read(Publication, doc.to_dict() or {}) for doc in self._collection(clip_id).stream()
         ]
 
     def save(self, publication: Publication) -> None:
@@ -636,13 +758,92 @@ class WorkerStore:
         snapshot = self._db.collection(WORKERS).document(worker_id).get()
         if not snapshot.exists:
             return None
-        return WorkerHeartbeat.model_validate(snapshot.to_dict() or {})
+        return _read(WorkerHeartbeat, snapshot.to_dict() or {})
 
     def all(self) -> Sequence[WorkerHeartbeat]:
         return [
-            WorkerHeartbeat.model_validate(doc.to_dict() or {})
+            _read(WorkerHeartbeat, doc.to_dict() or {})
             for doc in self._db.collection(WORKERS).stream()
         ]
+
+
+class AgentStore:
+    """The wish and the report at ``agents/{agentId}``.
+
+    One document, two writers, and a line between them that is the whole reason
+    this collection exists. The PWA — a phone, usually — writes ``desired`` and
+    nothing else. The agent writes everything else and never writes ``desired``,
+    so a Start pressed while the agent was mid-heartbeat is not quietly undone by
+    a report that was assembled before the press. That is what ``merge=True``
+    with the wish removed buys, and it is cheaper and easier to reason about than
+    a transaction around a document written every minute.
+
+    The one exception is creation. The rules forbid the client from creating this
+    document, precisely so that "no agent has ever run here" stays distinguishable
+    from "the agent is not reporting right now" — so the agent creates it, and
+    that first write is the only one that may say what is wanted (``STOPPED``: a
+    freshly installed agent must not start a worker nobody asked for).
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    @property
+    def agent_id(self) -> str:
+        """One agent per machine, named like the worker it supervises.
+
+        Sharing `worker_id` is deliberate: an operator reading `agents/tower`
+        beside `workers/tower` should not have to be told they are the same
+        machine.
+        """
+        return self._settings.worker_id
+
+    def _ref(self) -> Any:
+        return self._db.collection(AGENTS).document(self.agent_id)
+
+    def read(self) -> dict[str, Any] | None:
+        """The raw document, or ``None`` if this machine has never reported.
+
+        Deliberately *not* parsed into :class:`AgentReport`. The caller wants
+        three fields out of it, and validating the whole model here would mean a
+        document written by a newer agent — one field this build has never heard
+        of — could stop an older one from reading the wish. A supervisor that
+        refuses to notice "stop" because it failed to parse a field it does not
+        use is the worst possible failure mode for this class.
+        """
+        snapshot = self._ref().get()
+        if not snapshot.exists:
+            return None
+        return snapshot.to_dict() or {}
+
+    def publish(self, report: AgentReport, *, claim: bool = False) -> None:
+        """Write what the agent knows, leaving what the client owns alone."""
+        document = _to_document(report)
+        if not claim:
+            for owned_by_the_client in ("desired", "requestedBy", "requestedAt"):
+                document.pop(owned_by_the_client, None)
+        self._ref().set(document, merge=True)
+
+    def watch(self, on_change: Callable[[dict[str, Any] | None], None]) -> Callable[[], None]:
+        """Call ``on_change`` whenever the document changes, until unsubscribed.
+
+        A listener rather than a poll, for responsiveness and for cost in that
+        order: tapping Start on a phone should not wait out a poll interval, and
+        Firestore bills a read per *delivered* document — an idle listener
+        delivers nothing, while a poll pays whether or not anything happened.
+
+        The callback arrives on a background thread owned by the client library.
+        It must not block, which is why the agent uses it only to record the
+        latest wish and wake its own loop.
+        """
+
+        def _callback(snapshots: Any, _changes: Any, _read_time: Any) -> None:
+            for snapshot in snapshots:
+                on_change(snapshot.to_dict() if snapshot.exists else None)
+
+        watch = self._ref().on_snapshot(_callback)
+        return watch.unsubscribe  # type: ignore[no-any-return]
 
 
 def iter_all_jobs(client: firestore.Client) -> Iterator[Job]:

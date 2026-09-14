@@ -136,6 +136,36 @@ export function userProfile(uid: string, overrides: Record<string, unknown> = {}
   };
 }
 
+/**
+ * An agent document as the agent itself would have created it.
+ *
+ * Always seeded rather than written by a test client, because the client is not
+ * allowed to create one — which is itself the thing several of these tests are
+ * checking.
+ */
+export function agentReport(overrides: Record<string, unknown> = {}) {
+  return {
+    agentId: 'tower',
+    hostname: 'tower',
+    version: '0.0.1',
+    desired: 'STOPPED',
+    requestedBy: null,
+    requestedAt: null,
+    state: 'STOPPED',
+    detail: null,
+    workerPid: null,
+    workerStartedAt: null,
+    lastExitCode: null,
+    restarts: 0,
+    log: [],
+    useEmulators: false,
+    projectId: 'demo-clipforge',
+    startedAt: TIMESTAMP,
+    lastSeenAt: TIMESTAMP,
+    ...overrides,
+  };
+}
+
 export function heartbeat(uid: string, overrides: Record<string, unknown> = {}) {
   return {
     workerId: 'worker-1',

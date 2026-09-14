@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     ollama_host: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3.5:4b"
     ollama_num_ctx: int = 16384
+    # A multimodal model, for the one call per clip that looks at the picture.
+    # Separate from `ollama_model` because looking and reading are not the same
+    # weights: this one is several times the size, does not fit in 6 GB, and is
+    # worth its minute exactly once. Set it to "" to turn looking off entirely —
+    # every caller has a path that works without it.
+    vision_model: str = "mistral-small3.2:latest"
+    vision_frames: int = 3
     vram_reserve_mb: int = Field(default=700, ge=0)
 
     # ── Media ────────────────────────────────────────────────────────────────
@@ -110,6 +117,30 @@ class Settings(BaseSettings):
     render_profile: str = "default"
     video_encoder: str = "h264_nvenc"
     loudness_target_lufs: float = -14.0
+
+    # ── Speech ───────────────────────────────────────────────────────────────
+    # Kokoro-82M on onnxruntime, for the REMAKE stage's narration. Deliberately
+    # not part of the default install: it is ~330 MB of weights that a worker
+    # which never re-voices a clip has no use for, and the adapter imports
+    # lazily so its absence costs nothing until someone asks for a voice.
+    # Fetch both with `clipforge-worker fetch-voices`.
+    #
+    # Under `~` rather than `./`, like the local-API token and the agent log,
+    # and unlike the YouTube credentials beside them. The difference is who
+    # chooses the path: those are files an operator places deliberately, these
+    # are weights a command downloads. A CWD-relative default breaks the moment
+    # the writer and the reader disagree about the working directory — and they
+    # do: `fetch-voices` is documented as `uv run --project apps/worker`, which
+    # leaves the CWD at the repo root, while the worker is launched with
+    # `uv run --directory apps/worker` by both tools/worker.ps1 and the agent.
+    # The download would land two directories away from where the worker looks
+    # and report success.
+    speech_model_path: Path = Path("~/.clipforge/kokoro-v1.0.onnx")
+    speech_voices_path: Path = Path("~/.clipforge/voices-v1.0.bin")
+    # The voice used when a remake asks for a language but names no voice.
+    # Per-language defaults live in clipforge.media.speech; this is the last
+    # resort for a language that has none.
+    speech_default_voice: str = "af_heart"
 
     # ── Publishing ───────────────────────────────────────────────────────────
     # Off by default, and that default is the point rather than caution. Nothing
@@ -148,6 +179,36 @@ class Settings(BaseSettings):
     # would resolve to two different files and the pairing would silently never
     # match. `~` is expanded at use.
     local_api_token_file: Path = Path("~/.clipforge/local-api-token")
+
+    # ── The agent ────────────────────────────────────────────────────────────
+    # A supervisor that starts with Windows and does what `agents/{workerId}`
+    # says, so the worker can be started from a phone rather than only from this
+    # machine. See docs/adr/0012-machine-agent.md.
+    #
+    # The two intervals are separate because they cost different things. The tick
+    # is local — it notices the child process dying, and nothing external will
+    # tell it — so it is cheap and frequent. The heartbeat is a Firestore write
+    # and a read, so it is neither.
+    agent_tick_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
+    agent_heartbeat_seconds: int = Field(default=60, ge=10)
+    # How many lines of the worker's output travel with the report. Bounded
+    # because this document is written every heartbeat and Firestore caps a
+    # document at 1 MiB — and because the useful part of a failed start is its
+    # last few lines, not its first thousand.
+    agent_log_lines: int = Field(default=20, ge=0, le=200)
+    # How many times a worker that will not stay up is restarted before the
+    # agent stops trying. Retrying forever turns one broken install into an
+    # unbounded log of identical failures; stopping leaves the reason on screen.
+    agent_restart_limit: int = Field(default=5, ge=0)
+    agent_restart_backoff_seconds: int = Field(default=15, ge=1)
+    # How long a clean stop is waited for before the agent terminates a worker it
+    # started. Matches the desktop shell's grace period, and both exist because
+    # the worker's own shutdown asks stages to check-point first.
+    agent_shutdown_grace_seconds: int = Field(default=15, ge=1)
+    # Where the agent writes its own log. Started by Task Scheduler it has no
+    # console, so without a file a failure to start is invisible — which is the
+    # one failure it most needs to be able to explain.
+    agent_log_file: Path = Path("~/.clipforge/agent.log")
 
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"
