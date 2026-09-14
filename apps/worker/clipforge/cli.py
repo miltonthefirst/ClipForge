@@ -709,6 +709,231 @@ def quota() -> None:
     typer.echo(f"  about {ledger.uploads_remaining} uploads remaining today")
 
 
+@app.command(name="poll-metrics")
+def poll_metrics(
+    days: int = typer.Option(14, help="How many days back to fetch."),
+    dry_run: bool = typer.Option(default=False, help="Fetch and report, write nothing."),
+) -> None:
+    """Fetch daily metrics for every published clip, and store them.
+
+    Safe to run twice. Snapshot ids carry the day, so a second run of the same
+    day overwrites rather than doubling a clip's views — and a day old enough
+    that YouTube has stopped restating it is never rewritten at all.
+    """
+    from clipforge.analytics.poller import poll_publication
+    from clipforge.analytics.youtube import AnalyticsClient
+    from clipforge.publish.credentials import TokenStore
+    from clipforge.publish.youtube import QuotaLedger, YouTubeClient, load_client_secrets
+    from clipforge.store.firestore import MetricStore, PublicationStore, firestore_client
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
+    tokens = TokenStore(settings.youtube_token_store)
+    if not tokens.exists():
+        typer.echo("no YouTube credentials. Run: clipforge-worker youtube-auth", err=True)
+        raise typer.Exit(code=1)
+
+    client_id, client_secret = load_client_secrets(Path(settings.youtube_client_secrets))
+    ledger = QuotaLedger.today()
+    uploader = YouTubeClient(
+        tokens=tokens, client_id=client_id, client_secret=client_secret, ledger=ledger
+    )
+    analytics = AnalyticsClient(
+        access_token=uploader.access_token,
+        scopes=tokens.load().scopes,
+        ledger=ledger,
+    )
+
+    db = firestore_client(settings)
+    publications = PublicationStore(db, settings)
+    metrics = MetricStore(db, settings)
+
+    published = publications.all_published()
+    if not published:
+        typer.echo("nothing published yet, so there is nothing to measure.")
+        return
+
+    typer.echo(f"polling {len(published)} publication(s), {days} day window")
+    total_written = 0
+    for publication in published:
+        snapshots, outcome = poll_publication(analytics, publication, window_days=days)
+        if outcome.error:
+            typer.echo(f"  {outcome.publication_id}: {outcome.error}", err=True)
+            continue
+        written = 0 if dry_run else metrics.save_all(snapshots)
+        total_written += written
+        typer.echo(
+            f"  {outcome.external_id}: {outcome.fetched_days} day(s) reported, "
+            f"{outcome.retention_points} retention point(s), {written} written"
+        )
+
+    typer.echo(f"{total_written} snapshot(s) written" + (" (dry run)" if dry_run else ""))
+    typer.echo(f"quota: {ledger.used_units} units used today")
+
+
+@app.command()
+def calibrate(
+    uid: str = typer.Option(..., help="Who is recording this report. Does NOT filter it."),
+    window: int = typer.Option(28, help="Days of history to include."),
+    out: str = typer.Option(
+        "docs/calibration-report.md", help="Where to write the Markdown report."
+    ),
+) -> None:
+    """Ask whether the predicted scores predicted anything, and write it down.
+
+    Reports the answer whatever it is. A correlation near zero is the result
+    this phase was built to be able to state, and it is stated — with its
+    confidence interval and its sample size — rather than quietly omitted in
+    favour of whichever cohort happened to look interesting.
+
+    Changes nothing. Fitted weights, when the sample is large enough to produce
+    any, are a proposal for a human to put into configuration.
+    """
+    from datetime import UTC, datetime
+
+    from clipforge_contracts import ScoreWeights
+
+    from clipforge.analysis.ranking import DEFAULT_WEIGHTS
+    from clipforge.analytics.poller import build_facts
+    from clipforge.analytics.report import build_report, render_markdown
+    from clipforge.store.firestore import (
+        CalibrationStore,
+        CandidateStore,
+        ClipStore,
+        MetricStore,
+        PublicationStore,
+        firestore_client,
+    )
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
+    db = firestore_client(settings)
+    publications = PublicationStore(db, settings)
+    clips = ClipStore(db, settings)
+    candidates = CandidateStore(db, settings)
+    metrics = MetricStore(db, settings)
+    reports = CalibrationStore(db, settings)
+
+    facts = []
+    # Workspace-wide. `uid` above stamps who ran this, not whose clips count.
+    for publication in publications.all_published():
+        snapshots = metrics.for_publication(publication.id)
+        if not snapshots:
+            # No metrics means no evidence. Including it as a row of zeroes
+            # would report "we published it and nobody watched" for a clip that
+            # has simply never been polled.
+            continue
+        clip = clips.get(publication.clip_id)
+        candidate = candidates.get(clip.candidate_id) if clip else None
+        facts.append(
+            build_facts(
+                publication=publication,
+                clip=clip,
+                candidate=candidate,
+                snapshots=snapshots,
+            )
+        )
+
+    baseline = ScoreWeights(
+        hook=DEFAULT_WEIGHTS.hook,
+        curiosity=DEFAULT_WEIGHTS.curiosity,
+        standalone=DEFAULT_WEIGHTS.standalone,
+        emotion=DEFAULT_WEIGHTS.emotion,
+        pacing=DEFAULT_WEIGHTS.pacing,
+        shareability=DEFAULT_WEIGHTS.shareability,
+    )
+    generated = datetime.now(UTC)
+    report = build_report(
+        facts,
+        uid=uid,
+        report_id=generated.strftime("%Y%m%dT%H%M%SZ"),
+        baseline=baseline,
+        window_days=window,
+        now=generated,
+    )
+    reports.save(report)
+
+    destination = Path(out)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(render_markdown(report), encoding="utf-8")
+
+    typer.echo(f"n = {report.n}")
+    for correlation in report.correlations:
+        typer.echo(f"  {correlation.outcome}: {correlation.coefficient:+.3f} (n={correlation.n})")
+    if report.underpowered:
+        typer.echo("  UNDERPOWERED — no conclusion is drawn from this sample.")
+    typer.echo(f"written to {destination}")
+    typer.echo(f"stored as calibrations/{report.id}")
+
+
+@app.command()
+def rescore(
+    hook: float = typer.Option(0.25, help="Weight for the hook dimension."),
+    curiosity: float = typer.Option(0.20, help="Weight for curiosity."),
+    standalone: float = typer.Option(0.20, help="Weight for standalone comprehensibility."),
+    emotion: float = typer.Option(0.15, help="Weight for emotion."),
+    pacing: float = typer.Option(0.10, help="Weight for pacing."),
+    shareability: float = typer.Option(0.10, help="Weight for shareability."),
+    apply: bool = typer.Option(default=False, help="Write the new totals back."),
+) -> None:
+    """Re-rank every historical candidate under different weights, with no inference.
+
+    This is decision D5 collecting on its promise: the model supplied judgement
+    and Python supplied arithmetic, so a changed weighting re-ranks work already
+    done without asking a model anything at all.
+
+    Reports the movement before changing anything. Without ``--apply`` it is a
+    read-only comparison, which is the form worth running first — a reweighting
+    that reorders the top of the list is a different proposition from one that
+    shuffles positions forty through sixty.
+    """
+    from clipforge.analysis.ranking import ScoreWeights as Weights
+    from clipforge.analysis.ranking import total_score
+    from clipforge.store.firestore import CandidateStore, firestore_client
+
+    settings = get_settings()
+    configure_logging(level=settings.log_level, fmt=settings.log_format)
+
+    weights = Weights(
+        hook=hook,
+        curiosity=curiosity,
+        standalone=standalone,
+        emotion=emotion,
+        pacing=pacing,
+        shareability=shareability,
+    )
+    db = firestore_client(settings)
+    candidates = CandidateStore(db, settings)
+
+    everything = candidates.all()
+    if not everything:
+        typer.echo("no candidates to rescore.")
+        return
+
+    before = sorted(everything, key=lambda c: c.total or 0, reverse=True)
+    rescored = [(c, total_score(c.sub_scores, weights)) for c in everything]
+    after = sorted(rescored, key=lambda pair: pair[1], reverse=True)
+
+    old_order = [c.id for c in before]
+    new_order = [c.id for c, _ in after]
+    moved = sum(1 for index, cid in enumerate(new_order) if old_order[index] != cid)
+
+    typer.echo(f"{len(everything)} candidate(s); {moved} change position")
+    for candidate, new_total in after[:10]:
+        previous = candidate.total or 0
+        arrow = "=" if new_total == previous else ("+" if new_total > previous else "-")
+        typer.echo(f"  {arrow} {candidate.id}  {previous} -> {new_total}")
+
+    if not apply:
+        typer.echo("read-only. Pass --apply to write the new totals.")
+        return
+
+    candidates.rescore([(candidate.id, new_total) for candidate, new_total in rescored])
+    typer.echo(f"{len(rescored)} candidate total(s) updated. No model was called.")
+
+
 user_app = typer.Typer(help="Accounts: who may use this ClipForge, and at what level.")
 app.add_typer(user_app, name="user")
 

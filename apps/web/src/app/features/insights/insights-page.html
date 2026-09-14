@@ -1,0 +1,260 @@
+<h1 class="text-xl font-semibold">Did any of it work?</h1>
+<p class="mt-2 text-sm text-ink-muted">
+  What happened to the clips that went out, and whether the scores that chose them predicted any of
+  it. This is the only screen here that can say the scoring was wrong.
+</p>
+
+@if (error(); as message) {
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    {{ message }}
+  </p>
+}
+
+@if (loaded() && publishedCount() === 0) {
+  <!-- Not an error, and worth saying so plainly. Nothing published means
+       nothing measured, which is the state this project is in until a real
+       upload reaches a real channel. -->
+  <section class="mt-6 rounded-xl border border-line bg-panel p-5">
+    <p class="text-sm text-ink">Nothing has been measured yet.</p>
+    <p class="mt-2 text-sm text-ink-muted">
+      Metrics arrive once a clip has been published and the worker has polled for them. Run
+      <code class="rounded bg-line px-1 py-0.5 text-xs">clipforge-worker poll-metrics</code> on the
+      machine holding the credentials.
+    </p>
+    <p class="mt-3 text-xs text-ink-subtle">
+      <a routerLink="/publish" class="text-accent-ink hover:underline">Publish a clip →</a>
+    </p>
+  </section>
+} @else if (publishedCount() > 0) {
+  <!-- ── The totals ────────────────────────────────────────────────────────── -->
+  <section class="mt-6 grid gap-3 sm:grid-cols-3">
+    <div class="rounded-xl border border-line bg-panel p-4">
+      <p class="text-xs text-ink-subtle">Published clips measured</p>
+      <p class="mt-1 text-lg font-semibold text-ink">{{ publishedCount() }}</p>
+    </div>
+    <div class="rounded-xl border border-line bg-panel p-4">
+      <p class="text-xs text-ink-subtle">Views, all time</p>
+      <p class="mt-1 text-lg font-semibold text-ink">{{ totalViews() | number }}</p>
+    </div>
+    <div class="rounded-xl border border-line bg-panel p-4">
+      <p class="text-xs text-ink-subtle">Daily snapshots held</p>
+      <p class="mt-1 text-lg font-semibold text-ink">{{ snapshots().length | number }}</p>
+    </div>
+  </section>
+
+  <!-- ── What the calibration concluded ────────────────────────────────────── -->
+  @if (report(); as r) {
+    <section class="mt-8">
+      <h2 class="text-lg font-semibold">Did the score predict anything?</h2>
+
+      @if (r.underpowered) {
+        <!-- The designed case, not the empty one. At these volumes this banner
+             is what the screen mostly says, and it should read as an honest
+             answer rather than as a missing feature. -->
+        <p
+          class="mt-3 rounded-lg border border-warn-line bg-warn-bg px-4 py-3 text-sm text-warn-ink"
+        >
+          <strong>Not enough clips to tell.</strong> n={{ r.n }} is below the threshold this report
+          will draw a conclusion from. The numbers below are shown for completeness and should not
+          be acted on — that is the honest state, not a fault.
+        </p>
+      }
+
+      <div class="mt-4 overflow-x-auto rounded-xl border border-line bg-panel">
+        <table class="w-full text-sm">
+          <thead class="text-left text-xs text-ink-subtle">
+            <tr class="border-b border-line">
+              <th class="px-4 py-2 font-medium">Outcome</th>
+              <th class="px-4 py-2 text-right font-medium">n</th>
+              <th class="px-4 py-2 text-right font-medium">ρ</th>
+              <th class="px-4 py-2 font-medium">95% interval</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of correlationRows(); track c.outcome) {
+              <tr class="border-b border-line last:border-0">
+                <td class="px-4 py-2 text-ink">{{ c.outcome }}</td>
+                <td class="px-4 py-2 text-right text-ink-muted">{{ c.n }}</td>
+                <td class="px-4 py-2 text-right font-medium text-ink">
+                  {{ c.coefficient | number: '1.2-2' }}
+                </td>
+                <td class="px-4 py-2 text-ink-muted">
+                  @if (c.ciLow !== null && c.ciHigh !== null) {
+                    [{{ c.ciLow | number: '1.2-2' }}, {{ c.ciHigh | number: '1.2-2' }}]
+                  } @else {
+                    —
+                  }
+                </td>
+              </tr>
+              @if (c.interpretation) {
+                <tr class="border-b border-line last:border-0">
+                  <td colspan="4" class="px-4 pb-3 text-xs text-ink-subtle">
+                    {{ c.interpretation }}
+                  </td>
+                </tr>
+              }
+            }
+          </tbody>
+        </table>
+      </div>
+
+      @if (r.fittedWeights) {
+        <p class="mt-3 text-xs text-ink-subtle">
+          A weight fit was produced. It is a <strong>proposal</strong> — nothing has been re-ranked
+          and no configuration has changed. Adopting it is a deliberate edit.
+        </p>
+      }
+    </section>
+  } @else {
+    <section class="mt-8 rounded-xl border border-line bg-panel p-5">
+      <p class="text-sm text-ink">No calibration has been run yet.</p>
+      <p class="mt-2 text-sm text-ink-muted">
+        There are metrics, but nothing has asked what they mean. Run
+        <code class="rounded bg-line px-1 py-0.5 text-xs">clipforge-worker calibrate</code>.
+      </p>
+    </section>
+  }
+
+  <!-- ── Retention ─────────────────────────────────────────────────────────── -->
+  <section class="mt-8">
+    <h2 class="text-lg font-semibold">Retention</h2>
+    @if (!hasCurves()) {
+      <p class="mt-2 text-sm text-ink-muted">
+        No curves yet. YouTube withholds audience retention until a video passes its privacy
+        threshold of a few hundred views, so an absent curve here means a small clip rather than a
+        broken poll.
+      </p>
+    } @else {
+      <p class="mt-2 text-sm text-ink-muted">
+        Every curve on one scale, so two can be compared. The dashed line is the midpoint.
+      </p>
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+        @for (curve of curves(); track curve.publicationId) {
+          <figure class="rounded-xl border border-line bg-panel p-4">
+            <svg
+              [attr.viewBox]="'0 0 ' + chartWidth + ' ' + chartHeight"
+              class="h-auto w-full"
+              role="img"
+              [attr.aria-label]="
+                'Audience retention curve. ' +
+                (curve.midpoint !== null
+                  ? (curve.midpoint * 100).toFixed(0) + ' percent still watching at the midpoint.'
+                  : '')
+              "
+            >
+              <line
+                [attr.x1]="chartWidth / 2"
+                y1="0"
+                [attr.x2]="chartWidth / 2"
+                [attr.y2]="chartHeight"
+                stroke="currentColor"
+                stroke-dasharray="3 3"
+                class="text-line-strong"
+              />
+              <polyline
+                [attr.points]="curve.points"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linejoin="round"
+                class="text-accent-ink"
+              />
+            </svg>
+            <figcaption class="mt-2 text-xs text-ink-subtle">
+              @if (curve.midpoint !== null) {
+                {{ curve.midpoint * 100 | number: '1.0-0' }}% still watching at the midpoint
+              } @else {
+                midpoint unknown
+              }
+            </figcaption>
+          </figure>
+        }
+      </div>
+    }
+  </section>
+
+  <!-- ── Per clip ──────────────────────────────────────────────────────────── -->
+  <section class="mt-8">
+    <h2 class="text-lg font-semibold">Every published clip</h2>
+    <div class="mt-4 overflow-x-auto rounded-xl border border-line bg-panel">
+      <table class="w-full text-sm">
+        <thead class="text-left text-xs text-ink-subtle">
+          <tr class="border-b border-line">
+            <th class="px-4 py-2 font-medium">Clip</th>
+            <th class="px-4 py-2 text-right font-medium">Views</th>
+            <th class="px-4 py-2 text-right font-medium">Likes</th>
+            <th class="px-4 py-2 text-right font-medium">% viewed</th>
+            <th class="px-4 py-2 text-right font-medium">Days held</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of rollups(); track row.publicationId) {
+            <tr class="border-b border-line last:border-0">
+              <td class="px-4 py-2">
+                <a [routerLink]="['/review', row.clipId]" class="text-accent-ink hover:underline">
+                  {{ row.clipId }}
+                </a>
+              </td>
+              <td class="px-4 py-2 text-right text-ink">{{ row.views | number }}</td>
+              <td class="px-4 py-2 text-right text-ink-muted">{{ row.likes | number }}</td>
+              <td class="px-4 py-2 text-right text-ink-muted">
+                @if (row.viewPercentage !== null) {
+                  {{ row.viewPercentage | number: '1.0-1' }}%
+                } @else {
+                  —
+                }
+              </td>
+              <td class="px-4 py-2 text-right text-ink-subtle">{{ row.days }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Breakdowns ────────────────────────────────────────────────────────── -->
+  @if (cohortGroups().length > 0) {
+    <section class="mt-8">
+      <h2 class="text-lg font-semibold">Breakdowns</h2>
+      <p class="mt-2 text-sm text-ink-muted">
+        Read <em>n</em> first. A mean over two clips is a number, not a finding, and is withheld
+        below three — the bucket still shows its count.
+      </p>
+      <div class="mt-4 space-y-5">
+        @for (group of cohortGroups(); track group.kind) {
+          <div class="overflow-x-auto rounded-xl border border-line bg-panel">
+            <p class="border-b border-line px-4 py-2 text-xs font-medium text-ink-subtle">
+              {{ group.kind }}
+            </p>
+            <table class="w-full text-sm">
+              <tbody>
+                @for (stat of group.rows; track stat.bucket) {
+                  <tr class="border-b border-line last:border-0">
+                    <td class="px-4 py-2 text-ink">{{ stat.bucket }}</td>
+                    <td class="px-4 py-2 text-right text-ink-subtle">n={{ stat.n }}</td>
+                    <td class="px-4 py-2 text-right text-ink-muted">
+                      @if (stat.meanViews !== null) {
+                        {{ stat.meanViews | number: '1.0-0' }} views
+                      } @else {
+                        —
+                      }
+                    </td>
+                    <td class="px-4 py-2 text-right text-ink-muted">
+                      @if (stat.meanRetentionAtHalf !== null) {
+                        {{ stat.meanRetentionAtHalf * 100 | number: '1.0-0' }}% at midpoint
+                      } @else {
+                        —
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </div>
+    </section>
+  }
+}

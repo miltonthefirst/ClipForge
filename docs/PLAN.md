@@ -4,8 +4,9 @@
 > hardware, cut high-potential vertical clips, review them from your phone, publish, and learn from
 > what actually performed.
 
-**Status** (2026-09-11): M0, M1 and M2 complete · M3 half complete — Phase 8 shipped, Phase 9 next
-**Target of record:** v0.2.0, with v0.1.0 built but not yet tagged · **Owner:** @miltonthefirst
+**Status** (2026-09-14): M0, M1 and M2 complete · M3 — Phases 8, 8b–8f and 9 built; `v0.2.0`
+waits on one real upload
+**Target of record:** v0.2.0, with **v0.1.0 tagged 2026-09-14** · **Owner:** @miltonthefirst
 **Supersedes:** [`initial-plan.md`](../initial-plan.md) (kept for provenance)
 
 ---
@@ -56,15 +57,21 @@ Every architectural decision below is downstream of that sentence.
 > Paste a YouTube URL on your phone → walk away → get a push notification → review 3 AI-selected
 > vertical clips → approve one.
 
-**What "review" means on the free tier.** ClipForge runs with no Blaze plan, and since February 2026
-Cloud Storage for Firebase requires Blaze outright — on Spark there is no bucket at all
-([ADR-0009](adr/0009-spark-tier-local-artefacts.md)). Rendered clips therefore stay on the worker.
+**What "review" means.** *Rewritten 2026-09-14.* This section used to describe the Spark posture:
+no bucket, so rendered clips stayed on the worker and a phone got stills. The project moved to Blaze
+on 2026-09-10 and clips now get a short-lived bucket copy, so **video plays on the phone**
+([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md), superseding
+[ADR-0009](adr/0009-spark-tier-local-artefacts.md) in its central decision).
 
-From the phone you get the poster frame, a four-frame filmstrip, the hook, the score breakdown and the
-transcript excerpt — and approve or reject from anywhere, because that decision travels through
-Firestore. The clip itself plays when the PWA is opened **on the machine**, where the worker serves its
-workspace on `127.0.0.1:8765`. The day Blaze is enabled, a `playbackUrl` starts being populated and
-video plays everywhere, with no other change.
+From the phone you get the clip itself, plus the poster frame, a four-frame filmstrip, the hook, the
+score breakdown and the transcript excerpt — and approve or reject from anywhere, because that
+decision travels through Firestore. The bucket copy expires after five days; the worker keeps the
+master, and playback falls back to the local file server on `127.0.0.1:8765` when the copy is gone.
+
+What made the change necessary is worth keeping: reviewing football is not like reviewing a talking
+head. A poster frame cannot tell you whether the crop kept the ball, whether the narration lines up,
+or whether a logo is still in the corner — which are precisely the questions Phases 8b and 8d exist
+to answer.
 
 Nothing else ships in v0.1.
 
@@ -134,9 +141,9 @@ git 2.54. (Billing tier on `bytepic-clipforge` is still unverified — see
                 ▼
 ┌───────────────────────────────┐
 │  FIREBASE — control plane     │   Auth · Firestore (jobs, state, metadata,
-│  Spark (free tier)            │   poster frames) · FCM · Hosting
-│  No Functions, no Storage     │   Rules gate on approval, not ownership
-│  (see ADR-0009)               │   Reaper runs on the worker, not as a Function
+│  Blaze, since Sept 2026       │   poster frames) · FCM · Hosting
+│  Storage: 5-day clip copies   │   Rules gate on approval, not ownership
+│  No Functions (see ADR-0018)  │   Reaper runs on the worker, not as a Function
 └───────────────┬───────────────┘
                 │ Admin SDK (service account) — onSnapshot, not polling
                 ▼
@@ -222,7 +229,7 @@ clips/{clipId}                    # a rendered artefact — the FILE stays on th
   candidateId, durationSec, renderProfile
   location: LOCAL|REMOTE           # which of the two below is authoritative
   localPath                        # always set
-  playbackUrl                      # null on Spark; set by Blaze Storage, or a tunnel
+  playbackUrl                      # the bucket copy, for 5 days after the render
   review: PENDING|APPROVED|REJECTED
   rights: { basis, attestedBy, attestedAt, note }
   preview/poster                   # base64 poster + filmstrip, ~40-60 KB.
@@ -257,7 +264,7 @@ minutes it took to download and transcribe.
 | **M0 — Foundations** | 0, 1, 2 | A control plane and a worker that can run a no-op job reliably |
 | **M1 — Pipeline** | 3, 4, 5, 6 | URL in, rendered vertical clip on disk. No UI |
 | **M2 — Product** | 7 | **v0.1.0** — the phone review loop |
-| **M3 — Feedback loop** | 8, 8b, 9 | **v0.2.0** — publish, correct and measure |
+| **M3 — Feedback loop** | 8, 8b, 8c, 8d, 8e, 8f, 9 | **v0.2.0** — publish, correct and measure |
 | **M4 — Autonomy** | 10, 12 | **v0.3.0** — trend-driven sourcing, then **v0.4.0** — several channels |
 | **M5 — Release** | 11 | Public open-source launch |
 | **M6 — Synthesis** | 13, 14 | **v0.6.0** — an idea becomes a finished video |
@@ -361,7 +368,12 @@ stays coherent and one that drifts.
 > top-level collection names are safe in a project we own outright. And no uid allowlist is needed,
 > because a separate project means a separate Auth user pool.
 >
-> **Still unverified:** whether `bytepic-clipforge` is on Blaze. This blocks nothing in Phase 1 or
+> **Settled since.** `bytepic-clipforge` ran on Spark from Phase 2 and moved to **Blaze on
+> 2026-09-10** ([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md)). The paragraph below is
+> the question as it stood when Phase 1 was written, kept because the shape of the answer — a port,
+> not a branch — is why the move cost one adapter and one environment variable.
+>
+> **Unverified at the time:** whether `bytepic-clipforge` is on Blaze. This blocks nothing in Phase 1 or
 > Phase 2 — every exit criterion in both is emulator-backed — but it decides whether the reaper's
 > Cloud Function binding is deployable and whether clips land in Firebase Storage or behind the
 > `BlobStore` port's alternative. The Firestore location must also be chosen deliberately when the
@@ -674,11 +686,16 @@ beds, background removal, multi-speaker cuts.
 `local` adapter; poster-frame and filmstrip extraction written to `clips/{clipId}/preview/poster`; an
 ADR on burned-in captions versus sidecar subtitles.
 
-> **Free tier.** There is no Storage bucket ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)), so
-> renders are written to the workspace and `Clip.localPath` — never uploaded. Every write goes through
-> the `BlobStore` port, whose `firebase` adapter is the one thing that needs writing the day Blaze is
-> enabled. The poster frame and filmstrip *do* go to Firestore, base64-encoded at ~40-60 KB, which is
-> what makes a phone review show the clip rather than a placeholder.
+> **Free tier, as Phase 6 shipped.** There was no Storage bucket
+> ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)), so renders were written to the workspace and
+> `Clip.localPath` — never uploaded. Every write goes through the `BlobStore` port, whose `firebase`
+> adapter is the one thing that needed writing the day Blaze was enabled. The poster frame and
+> filmstrip *do* go to Firestore, base64-encoded at ~40-60 KB, which is what makes a phone review
+> show the clip rather than a placeholder.
+>
+> *Since 2026-09-10* that adapter exists and the workspace copy is the master rather than the only
+> copy ([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md)). The port is why this paragraph
+> needed amending rather than the render stage.
 
 **Exit criteria** — ✅ **all met, 2026-09-08**
 
@@ -734,7 +751,8 @@ benchmark both and record the outcome. The i9-14900K makes an x264 fallback perf
 - **Playback, resolved through one documented precedence** ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)):
   `playbackUrl` if set → the worker's local file server if reachable → poster frame and filmstrip
   otherwise. One component, three sources; enabling Blaze later lights up the first branch and changes
-  nothing else in the product.
+  nothing else in the product. *It did, on 2026-09-10, and it changed nothing else in the product —
+  which is the clearest evidence the precedence was worth writing down before it was needed.*
 - **The worker's local file server**: read-only, bound to `127.0.0.1:8765`, every path confined to the
   workspace root. It is what makes full video review work when the PWA is opened on the machine —
   browsers exempt `localhost` from mixed-content blocking, so it works even over HTTPS. It is a
@@ -834,15 +852,33 @@ harder approval paths, and are scoped separately).
 **Deliverables.** The publish stage; the OAuth setup flow and its documentation; the rights gate in
 rules, worker and UI; an ADR on worker-held credentials.
 
-**Exit criteria** — met, 2026-09-09; one item is honestly outstanding
+**Exit criteria** — met, 2026-09-09; criterion 1 verified on a real channel 2026-09-12
 
-1. ⏸ **A real upload to a real channel is unverified.** It needs the operator's Google account and
-   an OAuth client, which cannot be automated or faked into meaning anything. Everything up to the
-   HTTP call is tested against a mock transport that asserts the *request* — resumable session,
-   `part=snippet,status`, `privacyStatus: unlisted`, the 100-character title truncation — so what is
-   untested is precisely the network hop and nothing else. Recorded as unverified rather than
-   claimed, in the same spirit as Phase 7's physical-phone demo, and consolidated with it into
-   [Phase 11](#phase-11--open-source-hardening).
+1. ✅ **A real upload reached a real channel**, twice — `PDvHibmo34k` on 2026-09-11 and
+   `e16x3LA05W8` on 2026-09-12, both through ClipForge's own publish path, both carrying a
+   `PERMISSION_GRANTED` attestation and both still on the channel as unlisted.
+
+   *Corrected 2026-09-14.* This criterion read "unverified" for three days after it had been met.
+   The record was in Firestore the whole time and nobody looked — which is worth more than the
+   correction itself, because the same habit is what let a service worker be signed off without
+   existing in Phase 7. **A criterion that can be checked by reading the database should be
+   checked by reading the database, not by remembering.**
+
+   What those two uploads then taught, which no test could have:
+
+   - **One was claimed by Content ID.** The rights basis recorded was `PERMISSION_GRANTED`, and
+     the claim landed anyway. That is not a contradiction and not a bug: an attestation is the
+     operator's assertion of why they believe they may publish, and Phase 8 built it as an audit
+     trail rather than a shield. Content ID matches the *picture*, and no attestation changes what
+     the picture is. [Phase 8b](#phase-8b--the-correction-channel) says exactly this about
+     re-voicing — "it does not make footage safe to publish" — and this is the first evidence from
+     a real channel that it was right to say so.
+   - **The other went out with its title in French**, quoting the transcript:
+     *"On voit la passe de Michael Olysee, magnifique"*. That is precisely the defect
+     [Phase 8e](#phase-8e--looking-at-the-clip-before-speaking-about-it) was built to fix, and it
+     shipped on 2026-09-13 — **one day after** this clip was published. The operator withdrew the
+     clip from consideration over it. The fix exists and is tested; what has *not* happened is a
+     publication made after it, so Phase 8e's value is still unproven where it counts.
 2. ✅ Enforced twice, tested independently: 17 pure-function tests in
    `apps/worker/tests/unit/test_rights.py`, and 15 emulator tests in
    `firebase/tests/publishing.rules.spec.ts`. Neither copy is redundant — the worker uses the Admin
@@ -1218,18 +1254,96 @@ With tens of clips, any model would overfit, and the honest thing is to say so.
 **Deliverables.** The analytics poller; the metrics schema; the dashboard; a written calibration report
 in `docs/`.
 
-**Exit criteria**
+**Exit criteria** — built 2026-09-14; four of five met, and the fifth needs one re-authorisation
 
-1. A published clip accrues daily metric snapshots without gaps.
-2. The dashboard renders retention curves and the cohort breakdowns above.
-3. The calibration report states the observed correlation between predicted score and retention —
-   **including if it is near zero.** A negative result reported honestly is a stronger portfolio signal
-   than a fabricated positive one.
-4. Adjusted weights re-rank historical candidates with no LLM calls.
-5. **Tag `v0.2.0`.**
+1. ⏸ **A published clip accrues daily metric snapshots without gaps.** Not yet met, and no longer
+   blocked on publishing: two clips are on the channel, `PDvHibmo34k` and `e16x3LA05W8`. What
+   stands between here and this criterion is one consent screen — the stored token holds
+   `youtube.upload` and `youtube.readonly` and not `yt-analytics.readonly`, confirmed against the
+   live token store, so `poll-metrics` refuses by name until somebody re-runs `youtube-auth`.
 
-**Risks.** *Sample size.* Ten clips support no conclusions. The report must state confidence intervals
-and refuse to over-claim.
+   Everything on this side of that is built and tested: the poller zero-fills every day the API did
+   not mention, so a quiet Tuesday is a Tuesday of zeroes rather than a missing one, and
+   `MetricStore.missing_days` names the gaps rather than counting the snapshots — a publication
+   with 20 of 25 days looks healthy until somebody asks *which five*.
+
+   **Expect very little to measure.** Both clips are unlisted, which is the correct default and
+   also means near-zero organic traffic, and YouTube withholds the retention curve entirely below a
+   privacy threshold of a few hundred views. So the first real poll will almost certainly produce
+   rows of small numbers and no curves at all. That is the system working: `n` will report what
+   survived rather than inventing measurements, and the report will say it cannot conclude anything.
+   The criterion this closes is *"snapshots arrive daily and without gaps"*, which is answerable on
+   two unlisted videos. Whether the scoring predicted anything is not, and will not be for a while.
+2. ✅ The dashboard renders retention curves and every cohort breakdown, at `/insights`. Curves are
+   inline SVG on **one shared scale**, so two clips can be compared — per-curve normalisation would
+   draw every clip as identically well retained, which is the opposite of the point, and it is one of
+   the two mistakes `rollup.spec.ts` exists to catch.
+3. ✅ The calibration report states the correlation whatever it is, with its 95% interval and its
+   sample size, and says in words when the interval contains zero. Proven by planting noise and
+   checking it is reported as noise, and by planting a perfect relationship *below* the threshold and
+   checking no conclusion is drawn anyway.
+4. ✅ `clipforge-worker rescore` re-ranks every historical candidate under new weights with no model
+   call at all — decision D5 collecting on the promise it made in Phase 5. It prints the movement
+   first and needs `--apply` to write, and it writes `total` and nothing else.
+5. ⏸ **`v0.2.0` not tagged.** Gated on criterion 1: the version that closes the feedback loop should
+   not be cut before the loop has closed once. It is now one consent screen and one poll away.
+
+**Delivered.** `clipforge.analytics` — `youtube` (Analytics API v2, its own scope, sharing the
+publishing quota ledger), `cohorts`, `calibration`, `report` and `poller`, of which three are pure and
+need no account · `MetricSnapshot`, `RetentionPoint`, `ScoreWeights`, `CohortStat`,
+`CalibrationCorrelation` and `CalibrationReport` in the contracts · `MetricStore` and
+`CalibrationStore` · `poll-metrics`, `calibrate` and `rescore` · the **Insights** page ·
+read-only rules over `metrics` and `calibrations` with 16 emulator specs ·
+[ADR-0019](adr/0019-reporting-a-result-we-do-not-have-yet.md).
+
+**The scope is new, and somebody has to re-authorise.** `yt-analytics.readonly` is not implied by
+either scope publishing already holds, so a token minted before this phase is refused — by name,
+against the recorded scopes, with the command to run, rather than as a 403 from a poll three days
+later. A token with *no* recorded scopes is let through: tokens predate the scope list, and refusing
+those would break a working setup to guard against a hypothetical one.
+
+**Quota is shared with publishing on purpose.** A report query costs about one unit against an
+upload's 1,600, so the poller will not exhaust an allowance — but it could still take the last units
+on the day a clip needed publishing, and publishing is the side that cannot simply run again in an
+hour. Google meters the two APIs separately in the console; sharing one ledger is conservatism, not a
+claim about their billing, and if they are wholly independent the only cost is polling slightly less
+aggressively than necessary.
+
+**Three bugs, and a different thing found each one.**
+
+`The analytics queries were scoped by uid.` Every one of them — publications, snapshots, reports,
+candidates — filtered on the reader's own account. This repository had already made and corrected
+exactly that mistake in the review queue, where the note reads *"filtering here was what made one
+system look like two"*, and it was made again anyway three screens later. Reading the live database
+is what caught it: **the two clips this project has published went out under two different
+accounts**, so `poll-metrics` would have measured one video, skipped the other, and reported a
+complete-looking dashboard of half a channel. No test would have found it, because every fixture in
+the suite used one uid — the bug was invisible to a test suite that shared the assumption. All four
+queries are workspace-wide now, matching the rest of the app, and the integration test seeds two
+accounts on purpose.
+
+**Two more, and only one kind of test could find each.**
+
+`Firestore has no date type.` `MetricSnapshot.date` is a calendar day and the client raises
+`TypeError` on `datetime.date`. Every unit test passed throughout — they compare documents as plain
+JSON, which is exactly what makes them fast and exactly what makes them blind to this. The emulator
+found it on the first run. Dates now convert to their ISO string at the store boundary, with the
+`datetime` check first, because `datetime` *is* a `date` and without that ordering every timestamp in
+the system would flatten to a day.
+
+`"first" and "last" are not superlatives.` The hook classifier filed *"Pavlovitch breaks the first
+line"* as SUPERLATIVE. In football commentary "first half", "last man" and "the first line" are
+positional language, and a plain description of a pass was being counted as a hyped one. Found by
+writing the test case from a real clip rather than from the word list. The classifier stays
+English-only, which is a genuine limitation now that Phase 8b produces Spanish and French narration —
+so the report prints that caveat above the breakdown rather than letting it read as a finding about
+hooks.
+
+**Risks.** *Sample size.* Ten clips support no conclusions. Handled by making the sample gate the
+*claim* rather than the computation: coefficients are always shown, and below n=20 every
+interpretation says the sample cannot support a conclusion — including when the coefficient is 1.0,
+which the suite asserts. No weights are fitted below n=40. Both are module constants, not parameters,
+because moving a threshold after seeing a result is not the same act as choosing one before.
 
 ---
 
@@ -1329,17 +1443,21 @@ hardware in someone's hand, or a served build, and none of them can be satisfied
 
 | Item | From | Status, 2026-09-10 |
 | --- | --- | --- |
-| The physical-phone review demo | 7 | **Unblocked.** The project is deployed at `bytepic-clipforge.web.app` with Auth enabled. Needs doing, not building |
+| The physical-phone review demo | 7 | **Unblocked, and now worth more.** Deployed at `bytepic-clipforge.web.app` with Auth enabled, and since Blaze the phone plays the clip rather than showing a still ([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md)). Needs doing, not building |
 | A Lighthouse PWA audit | 7 | **Unblocked.** There is a served build with a real service worker |
-| `v0.1.0` not yet tagged | 7 | **Unblocked** by the two above |
-| A real upload appearing on a real channel | 8 | Still blocked: needs an OAuth client and the operator's Google account. `docs/youtube-setup.md` is the walkthrough |
+| `v0.1.0` not yet tagged | 7 | ✅ **Tagged 2026-09-14**, on the deployed build. Cut without waiting on the two above: both test the *review experience* on real hardware, and neither can change what the tag points at |
+| A real upload appearing on a real channel | 8 | ✅ **Closed.** Two clips published 2026-09-11 and 2026-09-12 through the app's own path. One was claimed by Content ID and one went out titled in French; both are recorded at [Phase 8](#phase-8--publishing-with-a-rights-gate) because both are findings, not mishaps |
 | FCM push on job completion | 7 | Still absent. Never built; needs a VAPID key from the console once it is |
 
-The first four do not gate the code: everything each one exercises is built and tested up to the
-point where the real account or the real device begins, and what is unverified is precisely that last
-hop and nothing before it. FCM is different and is marked differently — it is not unverified, it is
-absent, and the honest reason it survived a phase sign-off is that nothing in Phase 7's exit criteria
-tested it.
+Three remain, and none gates the code: everything each one exercises is built and tested up to the
+point where the real device begins. FCM is different and is marked differently — it is not
+unverified, it is absent, and the honest reason it survived a phase sign-off is that nothing in Phase
+7's exit criteria tested it.
+
+The upload row is worth a second look now that it is closed. It sat in this table as "still blocked"
+for three days *after* two clips had gone out, because the table was written from memory and the
+evidence was two documents in Firestore. The lesson is [Phase 8's](#phase-8--publishing-with-a-rights-gate)
+and it generalises: **a status that can be read from the system should be read from the system.**
 
 **Exit criteria.** A clean machine reaches a rendered clip by following the docs alone; the README
 states limitations plainly; every item in the table above is either closed or restated in the README
@@ -1685,7 +1803,8 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 | Rights exposure on third-party source material | Medium | High | ✅ **Addressed in Phase 8** — attestation gate in rules *and* worker (the Admin SDK bypasses rules, so both are load-bearing), publishing off by default, every upload audit-logged with the attestation copied at publish time | 8 |
 | A refresh token leaks through Firestore, a backup or a log | Low | **Critical** | Worker-held and encrypted at rest, never written to Firestore, never logged unredacted ([ADR-0010](adr/0010-worker-held-publishing-credentials.md)); asserted by a test that sweeps every emulator document | 8 |
 | Firestore cost from chatty progress updates | Low | Medium | Throttle progress writes to ≥2s; batch event-log entries | 2, 7 |
-| **No Cloud Storage on Spark**, so no remote clip playback | **Certain** | Medium | Clips stay local behind a `BlobStore` port; poster frame in Firestore; playback precedence resolves `playbackUrl` → local server → poster. Enabling Blaze is one adapter ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)) | 6, 7 |
+| ~~**No Cloud Storage on Spark**, so no remote clip playback~~ — **closed 2026-09-10** | was Certain | Medium | Retired by moving to Blaze. The mitigation is what made it cheap: clips sat behind a `BlobStore` port and playback already resolved `playbackUrl` → local server → poster, so the fix was one adapter and one environment variable ([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md)) | 6, 7 |
+| The 5-day bucket copy expires while a clip still matters | Medium | Low | The worker's copy is the master and does not expire; playback falls back to the local file server, and delivery re-uploads on demand ([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md)) | 7, 15 |
 | A large transcript exceeds Firestore's 1 MiB document limit | Medium | Medium | Transcripts live on the worker; Firestore holds a `TranscriptRef` only | 4 |
 | The local file server becomes an unauthenticated file-read surface | Low | High | Bind `127.0.0.1` only, read-only, every path confined to the workspace root; never bind `0.0.0.0` without adding auth first | 7 |
 | Synthesised content demonetised as "inauthentic" | Medium | **High** | The human approval gate stays mandatory (D15); disclosure is derived from a provenance record rather than a checkbox; rotation across a series is a build requirement, not polish | 15, 16 |
@@ -1699,11 +1818,18 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 
 ## 8. Immediate next actions
 
-**Milestones M0, M1 and M2 are complete, and M3 is half complete** (2026-09-10). Phases 0 through 8
-have met their exit criteria, with five items consolidated into Phase 11 — three of which the
-deployment work has since unblocked (see the table there). The pipeline runs end to end on the free
-tier: a YouTube URL becomes a transcript, a ranked set of candidates, a rendered vertical clip with
-captions, a phone review, a recorded rights basis, and an unlisted upload.
+**Milestones M0, M1 and M2 are complete; M3 is built and waiting on evidence** (2026-09-14). Phases 0 through 8f
+have met their exit criteria and Phase 9 has met four of its five, with five items consolidated into Phase 11 — three of which the
+deployment work has since unblocked (see the table there). The pipeline runs end to end: a YouTube
+URL becomes a transcript, a ranked set of candidates, a rendered vertical clip with captions and a
+written title, a phone review with **video that plays on the phone**, a recorded rights basis, and
+an unlisted upload — and a clip the reviewer disagrees with can be re-cut, re-voiced, re-framed and
+have a broadcaster's logo covered, with the corrections learned rather than re-typed.
+
+**Five phases arrived from use rather than from this plan** — 8b through 8f, all in three days, each
+answering a complaint that reviewing real football surfaced and no existing screen could. They are
+written up in full above; the short version is that the gap between "the pipeline works" and "the
+clips are publishable" was five phases wide, and none of them were visible from here beforehand.
 
 **It is also deployed and in use**, which the phases never covered because none of them asked for it.
 Recorded here rather than retrofitted into a phase it did not belong to:
@@ -1721,52 +1847,82 @@ Recorded here rather than retrofitted into a phase it did not belong to:
 Two of those were corrections rather than additions, and both are worth keeping visible: the service
 worker had been signed off without existing, and FCM still has not been built.
 
-Current test coverage, all runnable from a clean clone with no GPU and no network except where noted:
+Current test coverage (2026-09-14), all runnable from a clean clone with no GPU and no network except
+where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 427 | nothing |
-| Worker integration | 74 | Firestore emulator |
-| Security rules | 93 | Auth + Firestore + Storage emulators |
-| Web unit | 32 | nothing |
+| Worker unit | 840 | nothing |
+| Worker integration | 112 | Firestore emulator |
+| Security rules | 203 | Auth + Firestore + Storage emulators |
+| Web unit | 59 | nothing |
 | Playwright E2E | 47 | Auth + Firestore emulators, stubbed worker |
-| Worker GPU (opt-in) | 12 | RTX 3050, Ollama, ffmpeg |
+| Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 
-### The free-tier posture, and the Blaze on-ramp
+**Twelve of those unit tests were not running until 2026-09-14, and the count is why this table now
+says where it came from.** The tier was a `@pytest.mark.unit` decorator on each test, so it had to be
+remembered, and twelve times it was not — including every regression for the broker's nested-lease
+deadlock, for the attempt-budget reclaim, and for hiding a broadcaster's mark on the RENDER path. All
+twelve passed when run by hand. None were selected by `-m unit`, so CI ran neither the bugs' fixes
+nor their proofs, and the total in the log went on looking healthy because a deselected test is
+subtracted from the denominator too.
 
-ClipForge targets the **Spark free tier** and must not be blocked on Blaze
-([ADR-0009](adr/0009-spark-tier-local-artefacts.md)). Verified 2026-09-08: since 3 February 2026 Cloud
-Storage for Firebase requires Blaze outright — on Spark there is no bucket at all, and bucket API calls
-return 402/403. Firestore, Auth, FCM and Hosting are all free and unaffected, and Cloud Functions were
-already designed around in [ADR-0006](adr/0006-lease-based-job-claiming.md).
+`tests/conftest.py` now derives the tier from the directory the test lives in and fails collection
+outright for anything it cannot place; an explicit marker still overrides it, which is how two GPU
+tests go on living in `tests/integration/`. This is the second time this repository has shipped a
+test suite that was not running what it reported — the first is recorded at Phase 8, where
+`RenderStage` was implemented, unit-tested and never registered. Both had the same shape: **a thing
+that must be remembered, in a place where forgetting is silent.** The fix, both times, was to derive
+it instead.
 
-What that costs, and what it does not — now settled rather than predicted, with Phase 8 shipped:
+### The billing posture: Spark until 2026-09-10, Blaze since
 
-| | Status |
-| --- | --- |
-| Submit a job from the phone | ✅ unaffected |
-| Live per-stage progress | ✅ unaffected |
-| Push notification on completion | ✅ unaffected |
-| Approve / reject from the phone | ✅ unaffected — the decision travels through Firestore |
-| Record a rights basis and publish from the phone | ✅ unaffected — the phone sends an intent, not a file |
-| **Watch the clip on the phone** | ❌ poster frame + filmstrip + metadata instead |
-| Watch the clip on the machine | ✅ through the worker's local file server |
-| **Publish to YouTube** | ✅ **unaffected** — the worker holds both the file and the token (D7, [ADR-0010](adr/0010-worker-held-publishing-credentials.md)) |
-| Analytics (v0.2) | ✅ expected unaffected — the Analytics API is not a Firebase product |
+**This section described a free-tier project until 2026-09-14, four days after that stopped being
+true.** It is rewritten rather than deleted, because the on-ramp it predicted is the part worth
+keeping: the migration cost one adapter and one environment variable, exactly as forecast, and that
+is the only evidence that designing behind a port paid for itself.
 
-**The Blaze on-ramp**, so the upgrade stays configuration rather than a project:
+ClipForge ran on **Spark** from Phase 2 to 2026-09-10 ([ADR-0009](adr/0009-spark-tier-local-artefacts.md)).
+Since 3 February 2026 Cloud Storage for Firebase requires Blaze outright — on Spark there is no
+bucket at all and bucket API calls return 402/403 — so rendered clips stayed on the worker and a
+phone review got stills. It now runs on **Blaze**, and each clip gets a bucket copy that expires
+after five days while the worker keeps the master
+([ADR-0018](adr/0018-blaze-and-a-short-lived-bucket-copy.md)). Cloud Functions are still designed
+around, by choice rather than by billing ([ADR-0006](adr/0006-lease-based-job-claiming.md)).
 
-1. `Clip` already carries `localPath`, `playbackUrl` and a `location` discriminator. Both states are
-   first-class in the schema, so switching populates a field rather than migrating a model.
-2. All artefact writes go through the `BlobStore` port. The `firebase` adapter is the only code the
-   upgrade needs, selected by `CLIPFORGE_BLOB_STORE`.
-3. Playback resolves through one documented precedence, so enabling Blaze lights up a branch the UI
-   already has.
-4. `storage.rules` stays in the repository and stays tested against the emulator, which does not care
-   about billing. It deploys as-is.
-5. A `backfill-storage` command uploads existing clips and fills `playbackUrl` — written on the day,
-   against a contract that already supports its result.
+What the tier did and did not cost, now that both sides of it have been lived in:
+
+| | On Spark | On Blaze |
+| --- | --- | --- |
+| Submit a job from the phone | ✅ | ✅ |
+| Live per-stage progress | ✅ | ✅ |
+| Push notification on completion | ✅ | ✅ (still unbuilt — see Phase 11) |
+| Approve / reject from the phone | ✅ the decision travels through Firestore | ✅ |
+| Record a rights basis and publish from the phone | ✅ the phone sends an intent, not a file | ✅ |
+| **Watch the clip on the phone** | ❌ poster frame + filmstrip + metadata | ✅ **for five days**, then the poster again |
+| Watch the clip on the machine | ✅ through the worker's local file server | ✅ unchanged, and still the fallback |
+| **Publish to YouTube** | ✅ the worker holds both the file and the token (D7, [ADR-0010](adr/0010-worker-held-publishing-credentials.md)) | ✅ unchanged |
+| Analytics (v0.2) | ✅ the Analytics API is not a Firebase product | ✅ unchanged |
+
+**What the on-ramp got right**, recorded because a prediction that held is worth as much as one that
+did not:
+
+1. `Clip` already carried `localPath`, `playbackUrl` and a `location` discriminator, so switching
+   populated a field rather than migrating a model. ✅ held.
+2. All artefact writes went through the `BlobStore` port, and the `firebase` adapter selected by
+   `CLIPFORGE_BLOB_STORE` was the only code the upgrade needed. ✅ held.
+3. Playback resolved through one documented precedence, so enabling Blaze lit a branch the UI already
+   had and changed nothing else. ✅ held.
+4. `storage.rules` stayed in the repository and stayed tested against the emulator, which does not
+   care about billing, and deployed as-is. ✅ held.
+5. A `backfill-storage` command uploads existing clips and fills `playbackUrl`. ✅ written on the day,
+   against a contract that already supported its result.
+
+The one thing the on-ramp did not anticipate is the expiry. Five days is a cost decision, not a
+capability one, and it puts a clock on remote playback that the Spark posture did not have — a clip
+older than five days is back to the poster frame unless the local file server is reachable. That is
+now a risk row of its own above.
 
 Publishing is deliberately *not* on that list. It never depended on Blaze, and it should not acquire a
 dependency on it: the credentials belong on the worker whichever tier the project is on.

@@ -131,6 +131,21 @@ export type PublishPlatform = 'YOUTUBE';
  */
 export type PublicationState = 'PENDING' | 'UPLOADING' | 'PUBLISHED' | 'FAILED' | 'CANCELLED';
 /**
+ * Spearman is the default: it is rank-based, so it survives the outlier that one clip going mildly viral produces in a sample of tens, where Pearson would report that outlier as the whole finding.
+ */
+export type CalibrationMethod = 'SPEARMAN' | 'PEARSON';
+/**
+ * The dimensions performance is broken down by. Each is knowable from documents ClipForge already writes — nothing here needs a new field on a clip.
+ */
+export type CohortKind =
+  | 'HOOK_TYPE'
+  | 'DURATION_BUCKET'
+  | 'SCORE_BAND'
+  | 'TOPIC'
+  | 'POSTING_HOUR'
+  | 'CAPTION_STYLE'
+  | 'RENDER_PROFILE';
+/**
  * Whether the worker can currently publish to this channel. NOT_CONFIGURED means no OAuth client has been supplied; NEEDS_AUTH means one has but nobody has authorised it, or the refresh token expired — which it does every 7 days while the consent screen is in Testing mode.
  */
 export type ChannelConnection = 'NOT_CONFIGURED' | 'NEEDS_AUTH' | 'CONNECTED' | 'ERROR';
@@ -221,6 +236,8 @@ export interface ClipForgeContracts {
   clip?: Clip;
   clipPreview?: ClipPreview;
   publication?: Publication;
+  metricSnapshot?: MetricSnapshot;
+  calibrationReport?: CalibrationReport;
   channel?: Channel;
   userProfile?: UserProfile;
   workerHeartbeat?: WorkerHeartbeat;
@@ -1058,6 +1075,125 @@ export interface Publication {
   publishAt?: string | null;
   createdAt: string;
   publishedAt?: string | null;
+}
+/**
+ * One day of realised performance for one publication, at metrics/{publicationId}_{date}.
+ *
+ * A top-level collection rather than a subcollection of the publication, because every question Phase 9 asks is asked ACROSS clips — the correlation between predicted score and retention is not a per-clip query — and a collection group index to answer them would buy nothing that the denormalised clipId and publicationId here do not.
+ *
+ * The join key is `externalId`, and deliberately nothing more. A publication the operator created by hand carries one just as an API upload does, so Phase 15's manual deliveries join here without a second path (see the synthesis-track notes in docs/PLAN.md).
+ */
+export interface MetricSnapshot {
+  id: string;
+  uid: string;
+  clipId: string;
+  publicationId: string;
+  platform: PublishPlatform;
+  /**
+   * The platform's video id. How the publication got it is not recorded here and must not become load-bearing.
+   */
+  externalId: string;
+  channelId?: string | null;
+  /**
+   * The metrics day in the channel's reporting timezone, YYYY-MM-DD. Not the fetch day: a poller that ran twice or missed a day must produce the same document either way, which is what makes the gap check in exit criterion 1 meaningful.
+   */
+  date: string;
+  daysSincePublish?: number;
+  views?: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+  subscribersGained?: number;
+  estimatedMinutesWatched?: number;
+  averageViewDurationSec?: number | null;
+  /**
+   * Percentage of the video watched on average, 0-100. Null when the platform withheld it, which it does below its privacy threshold.
+   */
+  averageViewPercentage?: number | null;
+  /**
+   * Empty is a normal state, not a failure: YouTube withholds the curve until a video clears a privacy threshold of a few hundred views. A clip with no curve is excluded from curve-based aggregation rather than counted as a flat zero.
+   */
+  retention?: RetentionPoint[];
+  /**
+   * True when this day is inside the platform's revision window — YouTube restates the last two to three days. A partial snapshot is overwritten on the next poll; a settled one is never rewritten, so the calibration reads a stable history.
+   */
+  partial?: boolean;
+  fetchedAt: string;
+}
+/**
+ * One point on the audience-retention curve. `elapsedRatio` is the position through the video, 0 to 1. `audienceWatchRatio` is the fraction of viewers still watching there, and is NOT capped at 1: a segment people scrub back to reports above 1, which is a real signal and must not be clamped away.
+ */
+export interface RetentionPoint {
+  elapsedRatio: number;
+  audienceWatchRatio: number;
+}
+/**
+ * What the scores turned out to predict, at calibrations/{reportId}.
+ *
+ * Written, never applied. `fittedWeights` is a proposal the operator adopts by putting it in configuration, in the same spirit as a Preference: a report that silently re-weighted the rubric would destroy the attribution that `modelVersion` and `promptVersion` exist to preserve.
+ */
+export interface CalibrationReport {
+  id: string;
+  uid: string;
+  generatedAt: string;
+  /**
+   * Publications with enough settled metrics to be included. The denominator for every claim in the report.
+   */
+  n: number;
+  windowDays?: number;
+  correlations: CalibrationCorrelation[];
+  cohorts: CohortStat[];
+  baselineWeights: ScoreWeights;
+  /**
+   * Null when the sample is too small to fit responsibly, which at the volumes this project produces is the expected answer for a long time.
+   */
+  fittedWeights?: ScoreWeights | null;
+  /**
+   * True when n is below the threshold for any conclusion. Defaults to true so a report that fails to set it errs towards claiming nothing.
+   */
+  underpowered?: boolean;
+  notes?: string[];
+}
+/**
+ * The correlation between the predicted score and one realised outcome. A coefficient near zero is a result, and reporting it as one is the point of the phase.
+ */
+export interface CalibrationCorrelation {
+  outcome: string;
+  method: CalibrationMethod;
+  n: number;
+  coefficient: number;
+  ciLow?: number | null;
+  ciHigh?: number | null;
+  /**
+   * Plain words, generated from n and the interval — not from the coefficient alone. At n below the threshold this says the sample cannot support a conclusion, whatever the coefficient happens to be.
+   */
+  interpretation?: string | null;
+}
+/**
+ * One bucket of one breakdown. `n` is first and is the field to read first: with tens of clips most buckets are too small to mean anything, and a mean over two videos is a number, not a finding.
+ */
+export interface CohortStat {
+  kind: CohortKind;
+  bucket: string;
+  n: number;
+  meanPredictedScore?: number | null;
+  meanViews?: number | null;
+  meanViewPercentage?: number | null;
+  /**
+   * Audience still watching at the midpoint. Chosen as the headline retention number because it is comparable across clips of different lengths, which raw seconds-watched is not.
+   */
+  meanRetentionAtHalf?: number | null;
+}
+/**
+ * How much each rubric dimension contributes to the total. Decision D5 keeps the total in Python precisely so this can change and every historical candidate be re-ranked with no inference. The defaults reproduce the plain rubric sum exactly.
+ */
+export interface ScoreWeights {
+  hook: number;
+  curiosity: number;
+  standalone: number;
+  emotion: number;
+  pacing: number;
+  shareability: number;
 }
 /**
  * A publishing destination, at channels/{channelId}. Modelled as a collection from the outset even though the UI manages one: adding a second channel is then a document and a second `youtube-auth`, not a schema migration and a rewrite of every publication record. Deliberately holds NO credentials — the client secret and refresh token live on the worker (docs/adr/0010-worker-held-publishing-credentials.md).

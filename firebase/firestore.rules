@@ -631,6 +631,30 @@ service cloud.firestore {
       allow create, delete: if false;
     }
 
+    // ── Phase 9: measured performance, and what was concluded from it ────────
+    // Both are read-only to every client, and that is the whole rule. The
+    // worker writes them through the Admin SDK, which bypasses rules entirely,
+    // so there is no write surface to design here — only one to refuse.
+    //
+    // Refusing it matters more than usual. These two collections are the
+    // *evidence*: `metrics` is what actually happened to a published clip, and
+    // `calibrations` is what was concluded from it on a given date. A client
+    // that could edit either could make the scoring look better than it was,
+    // which would make the one falsifiable thing in this project unfalsifiable.
+    match /metrics/{snapshotId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
+    // Append-only by intent, and by the same rule as above: a report is a
+    // record of what was believed on a date. Overwriting one would erase the
+    // fact that the conclusion changed, which is the single most interesting
+    // thing a sequence of these can show.
+    match /calibrations/{reportId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
     match /clips/{clipId} {
       allow read: if isApproved();
       allow create: if false;
@@ -687,10 +711,11 @@ service cloud.firestore {
         allow write: if false;
       }
 
-      match /metrics/{day} {
-        allow read: if isApproved();
-        allow write: if false;
-      }
+      // Metrics are NOT here. They were anticipated as a subcollection and
+      // never written as one: every question Phase 9 asks spans clips, so they
+      // live in the top-level `metrics` collection above. This comment stands
+      // in for the rule that used to be here, so nobody re-derives the
+      // subcollection from its absence.
     }
 
     // ── Everything else ──────────────────────────────────────────────────────

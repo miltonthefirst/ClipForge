@@ -65,6 +65,7 @@ export class App {
     const items: Omit<NavItem, 'exact'>[] = [
       { path: '/review', label: 'Review' },
       { path: '/publish', label: 'Publish' },
+      { path: '/insights', label: 'Insights' },
       { path: '/jobs', label: 'Jobs' },
       { path: '/settings', label: 'Settings' },
       { path: '/settings/storage', label: 'Storage' },

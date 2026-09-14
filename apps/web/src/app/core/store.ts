@@ -2,12 +2,14 @@ import { Injectable, inject } from '@angular/core';
 import type {
   AgentDesired,
   AgentReport,
+  CalibrationReport,
   Candidate,
   Channel,
   Clip,
   ClipPreview,
   Job,
   JobEvent,
+  MetricSnapshot,
   MusicOptions,
   ObscureOptions,
   Publication,
@@ -868,5 +870,50 @@ export class ClipForgeStore {
       status: 'CANCELLED',
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Every metric snapshot in the workspace, oldest day first.
+   *
+   * **Not scoped by uid**, like every other listener here. The first two clips
+   * this project published went out under two different accounts, and a
+   * uid-filtered version of this would have drawn half the channel while
+   * looking complete — the same failure the review queue already fixed.
+   */
+  watchMetrics(
+    onData: (snapshots: MetricSnapshot[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'metrics'), orderBy('date', 'asc'), limit(2000)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<MetricSnapshot>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * The most recent calibration report, whoever ran it.
+   *
+   * One, not all of them. The history matters — a conclusion that changed is
+   * the interesting case — but it belongs on a screen somebody asks for, not on
+   * the one that answers "how are we doing". `uid` on a report records who
+   * generated it, not whose data it covers, so it is not filtered on.
+   */
+  watchLatestCalibration(
+    onData: (report: CalibrationReport | null) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(
+        collection(this.firebase.db, 'calibrations'),
+        orderBy('generatedAt', 'desc'),
+        limit(1),
+      ),
+      (snapshot) =>
+        onData(
+          snapshot.empty ? null : fromDocument<CalibrationReport>(snapshot.docs[0]!.data()),
+        ),
+      (error) => onError?.(error),
+    );
   }
 }
