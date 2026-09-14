@@ -189,11 +189,6 @@ class MusicStage:
             # music; this is a different edit and deserves to be watched before
             # it goes anywhere.
             review=ReviewState.PENDING,
-            # The video's rights carry over — it is the same footage. The
-            # music's own attestation is recorded beside it, not merged into it:
-            # they are two claims about two things, and a Content ID match will
-            # be against one or the other.
-            rights=original.rights,
             music=AppliedMusic(
                 mode=options.mode,
                 captions=options.captions,
@@ -201,7 +196,6 @@ class MusicStage:
                 track_title=track.title,
                 tempo_bpm=plan.tempo_bpm,
                 music_start_sec=plan.music_start_sec,
-                rights=options.rights,
             ),
             created_at=now,
         )

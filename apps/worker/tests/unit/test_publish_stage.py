@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from clipforge.config import Settings
 from clipforge.models.broker import ModelBroker
-from clipforge.publish.rights import RightsViolationError
+from clipforge.publish.gate import PublishRefusedError
 from clipforge.publish.youtube import UPLOAD_QUOTA_UNITS, QuotaLedger, UploadResult, YouTubeError
 from clipforge.stages.base import StageContext
 from clipforge.stages.publish import PublishStage, PublishStageError
@@ -41,8 +41,6 @@ from clipforge_contracts import (
     PublishPlatform,
     PublishPrivacy,
     ReviewState,
-    RightsAttestation,
-    RightsBasis,
     Stage,
     StageName,
     StageStatus,
@@ -157,9 +155,7 @@ class FakeYouTube:
 # ── Builders ─────────────────────────────────────────────────────────────────
 
 
-def make_clip(
-    tmp_path: Path, *, attested: bool = True, review: ReviewState = ReviewState.APPROVED
-) -> Clip:
+def make_clip(tmp_path: Path, *, review: ReviewState = ReviewState.APPROVED) -> Clip:
     rendered = tmp_path / "clip.mp4"
     rendered.write_bytes(b"\x00" * 4096)
     return Clip(
@@ -180,13 +176,6 @@ def make_clip(
         title="A hook worth watching",
         description="why it matters",
         review=review,
-        rights=(
-            RightsAttestation(
-                basis=RightsBasis.OWN_CONTENT, attested_by="user-1", attested_at=NOW, note=None
-            )
-            if attested
-            else None
-        ),
         created_at=NOW,
     )
 
@@ -274,21 +263,21 @@ def test_the_gate_is_checked_before_a_credential_is_ever_read(tmp_path: Path) ->
 
     This is not merely tidy: on a machine with no token file, constructing the
     client raises, and the operator would see a credentials error where the real
-    answer is "this clip has no attestation".
+    answer is "nobody has approved this clip".
     """
 
     def explode() -> FakeYouTube:
         raise AssertionError("no credential should be read for an unpublishable clip")
 
     stage = PublishStage(
-        clips=FakeClipStore(make_clip(tmp_path, attested=False)),  # type: ignore[arg-type]
+        clips=FakeClipStore(make_clip(tmp_path, review=ReviewState.PENDING)),  # type: ignore[arg-type]
         publications=FakePublicationStore(),  # type: ignore[arg-type]
         client_factory=explode,
     )
 
-    with pytest.raises(RightsViolationError) as caught:
+    with pytest.raises(PublishRefusedError) as caught:
         stage.run(make_context(make_job()))
-    assert caught.value.code == "NO_ATTESTATION"
+    assert caught.value.code == "NOT_APPROVED"
 
 
 def test_publishing_disabled_refuses_at_the_worker_not_only_in_the_rules(
@@ -302,7 +291,7 @@ def test_publishing_disabled_refuses_at_the_worker_not_only_in_the_rules(
     publications = FakePublicationStore()
     stage = build(make_clip(tmp_path), FakeYouTube(), publications)
 
-    with pytest.raises(RightsViolationError) as caught:
+    with pytest.raises(PublishRefusedError) as caught:
         stage.run(make_context(make_job(), publishing_enabled=False))
 
     assert caught.value.code == "PUBLISHING_DISABLED"
@@ -314,7 +303,7 @@ def test_an_unapproved_clip_is_refused_at_the_worker(tmp_path: Path) -> None:
     stage = build(
         make_clip(tmp_path, review=ReviewState.PENDING), FakeYouTube(), FakePublicationStore()
     )
-    with pytest.raises(RightsViolationError) as caught:
+    with pytest.raises(PublishRefusedError) as caught:
         stage.run(make_context(make_job()))
     assert caught.value.code == "NOT_APPROVED"
 
@@ -334,22 +323,19 @@ def test_a_successful_publish_records_pending_before_it_uploads(tmp_path: Path) 
     assert len(platform.videos) == 1
 
 
-def test_the_publication_carries_the_attestation_that_justified_this_upload(
-    tmp_path: Path,
-) -> None:
-    """Exit criterion 5: the audit log reconstructs who authorised it and why.
+def test_the_publication_records_what_actually_went_out(tmp_path: Path) -> None:
+    """Exit criterion 5: the audit log reconstructs what was posted, and when.
 
     Copied onto the record rather than referenced, so a later edit to the clip
-    cannot rewrite the reason a past upload happened.
+    cannot rewrite what a past upload said.
     """
     publications = FakePublicationStore()
     build(make_clip(tmp_path), FakeYouTube(), publications).run(make_context(make_job()))
 
     published = next(iter(publications.docs.values()))
-    assert published.rights is not None
-    assert published.rights.basis is RightsBasis.OWN_CONTENT
-    assert published.rights.attested_by == "user-1"
-    assert published.rights.attested_at == NOW
+    assert published.clip_id == "clip-1"
+    assert published.uid == "user-1"
+    assert published.title == "A hook worth watching"
     assert published.external_id == "vid-1"
     assert published.published_at is not None
     assert published.quota_units == UPLOAD_QUOTA_UNITS

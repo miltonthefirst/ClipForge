@@ -32,8 +32,6 @@ from clipforge_contracts import (
     PublishPlatform,
     PublishPrivacy,
     ReviewState,
-    RightsAttestation,
-    RightsBasis,
     StageName,
 )
 from google.cloud import firestore
@@ -56,7 +54,7 @@ def publications(client: firestore.Client, settings: Settings) -> PublicationSto
     return PublicationStore(client, settings)
 
 
-def make_clip(tmp_path: Path, *, attested: bool = True) -> Clip:
+def make_clip(tmp_path: Path) -> Clip:
     rendered = tmp_path / "clip.mp4"
     rendered.write_bytes(b"\x00" * 2048)
     return Clip(
@@ -77,16 +75,6 @@ def make_clip(tmp_path: Path, *, attested: bool = True) -> Clip:
         title="A hook",
         description="why",
         review=ReviewState.APPROVED,
-        rights=(
-            RightsAttestation(
-                basis=RightsBasis.LICENSED,
-                attested_by="user-1",
-                attested_at=NOW,
-                note="CC-BY 4.0, credited in the description",
-            )
-            if attested
-            else None
-        ),
         created_at=NOW,
     )
 
@@ -117,7 +105,7 @@ def make_context(job: Any, settings: Settings) -> StageContext:
 def test_a_publication_survives_a_firestore_round_trip(
     publications: PublicationStore,
 ) -> None:
-    """Including the attestation, which is the part the audit log depends on."""
+    """Including the resolved metadata, which is what the audit log is for."""
     record = Publication(
         id="pub-1",
         clip_id="clip-1",
@@ -130,12 +118,6 @@ def test_a_publication_survives_a_firestore_round_trip(
         title="A hook",
         description="why",
         tags=["clip"],
-        rights=RightsAttestation(
-            basis=RightsBasis.FAIR_USE_ASSERTED,
-            attested_by="user-1",
-            attested_at=NOW,
-            note="30 seconds of a 90 minute lecture, with commentary",
-        ),
         attempts=1,
         quota_units=1600,
         error=None,
@@ -148,8 +130,8 @@ def test_a_publication_survives_a_firestore_round_trip(
     loaded = publications.get("clip-1", "pub-1")
     assert loaded == record
     assert loaded is not None
-    assert loaded.rights is not None
-    assert loaded.rights.basis is RightsBasis.FAIR_USE_ASSERTED
+    assert loaded.privacy is PublishPrivacy.UNLISTED
+    assert loaded.external_url == "https://www.youtube.com/watch?v=vid-1"
 
 
 def test_live_for_clip_ignores_a_failed_attempt(publications: PublicationStore) -> None:
@@ -195,10 +177,8 @@ def test_publishing_writes_an_audit_trail_the_owner_can_reconstruct(
     record = trail[0]
     assert record.state is PublicationState.PUBLISHED
     assert record.external_url == "https://www.youtube.com/watch?v=vid-1"
-    assert record.rights is not None
-    assert record.rights.attested_by == "user-1"
-    assert record.rights.basis is RightsBasis.LICENSED
-    assert record.rights.note is not None and "CC-BY" in record.rights.note
+    assert record.uid == "user-1"
+    assert record.title == "A hook"
 
 
 def test_two_runs_of_the_same_publish_job_produce_one_video(

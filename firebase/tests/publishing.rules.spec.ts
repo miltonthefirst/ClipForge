@@ -16,9 +16,10 @@ import {
 } from './helpers.js';
 
 /**
- * Phase 8, exit criterion 2 — the rules half of the rights gate.
+ * Phase 8, exit criterion 2 — the rules half of the publish gate.
  *
- * The worker half is in apps/worker/tests/unit/test_rights.py. Both are required
+ * The worker half is in apps/worker/tests/unit/test_publish_stage.py. Both are
+ * required
  * and neither is redundant: the worker authenticates with the Admin SDK and
  * bypasses these rules entirely, so rules alone would protect nothing on the
  * path that actually performs the upload — and conversely a rule is the only
@@ -53,19 +54,24 @@ async function seed(path: string, data: Record<string, unknown>): Promise<void> 
   });
 }
 
-const ATTESTED_AT = '2026-09-01T09:00:00.000Z';
+const PUBLISHED_AT = '2026-09-01T09:00:00.000Z';
 
-function attestation(overrides: Record<string, unknown> = {}) {
+/**
+ * A rights attestation, as clips written before its removal still carry.
+ *
+ * Kept here only to assert the field is now inert — never to satisfy a rule.
+ */
+function legacyAttestation(overrides: Record<string, unknown> = {}) {
   return {
     basis: 'OWN_CONTENT',
     attestedBy: ALICE,
-    attestedAt: ATTESTED_AT,
+    attestedAt: PUBLISHED_AT,
     note: null,
     ...overrides,
   };
 }
 
-/** A publish job as the PWA would create it for an approved, attested clip. */
+/** A publish job as the PWA would create it for an approved clip. */
 function publishJob(uid: string, overrides: Record<string, unknown> = {}) {
   return queuedJob(uid, {
     id: 'job-pub-1',
@@ -89,7 +95,6 @@ function musicJob(uid: string, overrides: Record<string, unknown> = {}) {
       source: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
       mode: 'BED',
       captions: 'KEEP',
-      rights: attestation(),
     },
     ...overrides,
   });
@@ -107,64 +112,45 @@ function uploadJob(uid: string, overrides: Record<string, unknown> = {}) {
   });
 }
 
-describe('the rights gate on publish jobs', () => {
-  it('accepts a publish job for an approved, attested clip', async () => {
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+describe('the publish gate on publish jobs', () => {
+  it('accepts a publish job for an approved clip', async () => {
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
-    await assertSucceeds(
-      setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)),
-    );
-  });
-
-  it('refuses a publish job for a clip with no attestation at all', async () => {
-    // The case the gate exists for: rendered, approved, and nobody has said why
-    // publishing it would be legitimate.
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: null }));
-
-    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
   it('refuses a publish job for a clip that was never approved', async () => {
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'PENDING', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'PENDING' }));
 
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
   it('refuses a publish job for a clip that was rejected', async () => {
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'REJECTED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'REJECTED' }));
 
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
-  it('refuses an attestation with an invented basis', async () => {
-    // The enum is enforced here as well as in the schema, because the schema is
-    // a generator input and the client is what actually writes this field.
-    await seed(
-      'clips/clip-1',
-      pendingClip(ALICE, { review: 'APPROVED', rights: attestation({ basis: 'PROBABLY_FINE' }) }),
-    );
+  it('asks nothing about rights, which is no longer a field', async () => {
+    // The removal, asserted rather than assumed: approval alone gets through.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: null }));
 
-    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
-  it('refuses an attestation with nobody’s name against it', async () => {
-    // An unsigned attestation cannot answer the one question the audit log
-    // exists to answer.
+  it('accepts a clip written before the removal that still carries one', async () => {
+    // Live documents were not migrated. A field the rules no longer read has to
+    // be inert, not a reason to refuse — including one that would have failed
+    // the old gate, since nothing evaluates it any more.
     await seed(
       'clips/clip-1',
-      pendingClip(ALICE, { review: 'APPROVED', rights: attestation({ attestedBy: '' }) }),
+      pendingClip(ALICE, {
+        review: 'APPROVED',
+        rights: legacyAttestation({ basis: 'PROBABLY_FINE', attestedBy: '' }),
+      }),
     );
 
-    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
-  });
-
-  it('refuses an undated attestation', async () => {
-    await seed(
-      'clips/clip-1',
-      pendingClip(ALICE, { review: 'APPROVED', rights: attestation({ attestedAt: null }) }),
-    );
-
-    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
   it('refuses a publish job that names no clip', async () => {
@@ -175,16 +161,16 @@ describe('the rights gate on publish jobs', () => {
 
   it('accepts a publish job for a clip somebody else submitted', async () => {
     // One workspace, one library. What gates publishing is the state of the
-    // clip — approved, and attested by a named person — not which account
-    // happened to submit the job that produced it.
-    await seed('clips/clip-1', pendingClip(BOB, { review: 'APPROVED', rights: attestation({ attestedBy: BOB }) }));
+    // clip — approved — not which account happened to submit the job that
+    // produced it.
+    await seed('clips/clip-1', pendingClip(BOB, { review: 'APPROVED' }));
 
     await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
-  it("still refuses somebody else's clip that nobody has attested", async () => {
-    // Sharing widens who may publish. It does not remove the rights gate.
-    await seed('clips/clip-1', pendingClip(BOB, { review: 'APPROVED' }));
+  it("still refuses somebody else's clip that nobody has approved", async () => {
+    // Sharing widens who may publish. It does not remove the gate.
+    await seed('clips/clip-1', pendingClip(BOB, { review: 'PENDING' }));
 
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
@@ -196,7 +182,7 @@ describe('the rights gate on publish jobs', () => {
   it('accepts a publish job carrying per-upload overrides', async () => {
     // The whole point of the options block: title, description, privacy,
     // category, tags and destination, chosen for this one upload.
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
     await assertSucceeds(
       setDoc(
@@ -219,7 +205,7 @@ describe('the rights gate on publish jobs', () => {
     // The shape the UI writes when the operator never opens the panel. All-null
     // must be as acceptable as absent, or the common case would be the refused
     // one.
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
     await assertSucceeds(
       setDoc(
@@ -241,7 +227,7 @@ describe('the rights gate on publish jobs', () => {
   it('refuses a privacy setting that is not one of the three', async () => {
     // 'public' is not recoverable, so the set of things that field may say is
     // worth pinning down in the one place the client cannot edit.
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
     await assertFails(
       setDoc(
@@ -252,7 +238,7 @@ describe('the rights gate on publish jobs', () => {
   });
 
   it('refuses a title longer than YouTube would accept', async () => {
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
     await assertFails(
       setDoc(
@@ -264,7 +250,7 @@ describe('the rights gate on publish jobs', () => {
 
   it('refuses an unrecognised field in the options block', async () => {
     // A field nobody validates is a field the worker's resolver has never seen.
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
     await assertFails(
       setDoc(
@@ -277,7 +263,7 @@ describe('the rights gate on publish jobs', () => {
   it('refuses a tag list long enough to be document bloat', async () => {
     // Only the first twenty are ever sent, so a longer list is storage that
     // will never be read.
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
 
     await assertFails(
       setDoc(
@@ -305,9 +291,9 @@ describe('the rights gate on publish jobs', () => {
     );
   });
 
-  it('still lets an ordinary CLIP job through without any clip or attestation', async () => {
-    // The gate must apply to PUBLISH jobs only. Ingestion is private use and
-    // needs no rights basis — that distinction is the whole design.
+  it('still lets an ordinary CLIP job through without naming a clip at all', async () => {
+    // The gate must apply to PUBLISH jobs only. Ingesting a video is not
+    // publishing one, and nothing about it needs approving first.
     await assertSucceeds(
       setDoc(
         doc(aliceDb(), 'jobs/job-1'),
@@ -319,7 +305,7 @@ describe('the rights gate on publish jobs', () => {
 
 describe('publications are the worker’s to write', () => {
   beforeEach(async () => {
-    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED', rights: attestation() }));
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'APPROVED' }));
     await seed('clips/clip-1/publications/pub-1', {
       id: 'pub-1',
       clipId: 'clip-1',
@@ -328,27 +314,25 @@ describe('publications are the worker’s to write', () => {
       state: 'PUBLISHED',
       externalId: 'vid-1',
       externalUrl: 'https://www.youtube.com/watch?v=vid-1',
-      rights: attestation(),
-      createdAt: ATTESTED_AT,
+      createdAt: PUBLISHED_AT,
     });
   });
 
   it('lets the owner read their own audit trail', async () => {
-    // Exit criterion 5 depends on this being readable: "who authorised this and
-    // on what basis" has to be answerable from the phone, not from worker logs.
+    // Exit criterion 5 depends on this being readable: "what went out, and
+    // where" has to be answerable from the phone, not from worker logs.
     await assertSucceeds(getDoc(doc(aliceDb(), 'clips/clip-1/publications/pub-1')));
   });
 
   it('shows the publication history to any approved member', async () => {
-    // The audit trail answers "who authorised this, and on what basis" — a
-    // question the whole team has, and one the record itself still answers
-    // because `attestedBy` names a person.
+    // The audit trail answers "what did we post, and where" — a question the
+    // whole team has, not only whoever pressed the button.
     await assertSucceeds(getDoc(doc(bobDb(), 'clips/clip-1/publications/pub-1')));
   });
 
   it('refuses a client that tries to forge a publication record', async () => {
-    // A client that could write here could claim a clip was published on a
-    // basis nobody attested — which would make the audit log worse than none.
+    // A client that could write here could claim a clip was published that
+    // never was — which would make the audit log worse than none.
     await assertFails(
       setDoc(doc(aliceDb(), 'clips/clip-1/publications/pub-2'), {
         id: 'pub-2',
@@ -356,7 +340,7 @@ describe('publications are the worker’s to write', () => {
         uid: ALICE,
         platform: 'YOUTUBE',
         state: 'PUBLISHED',
-        createdAt: ATTESTED_AT,
+        createdAt: PUBLISHED_AT,
       }),
     );
   });
@@ -387,12 +371,12 @@ describe('music jobs', () => {
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-music-1'), musicJob(ALICE)));
   });
 
-  it('refuses one whose music has no rights recorded', async () => {
-    // The whole point of gating the music separately: a Content ID match does
-    // not care which half of the file it came from.
+  it('asks for nothing but a source, a mode and a caption choice', async () => {
+    // A track used to need its own attestation before this rule would pass.
+    // It does not any more, and the minimal request is the ordinary one.
     await seed('clips/clip-1', pendingClip(ALICE));
 
-    await assertFails(
+    await assertSucceeds(
       setDoc(
         doc(aliceDb(), 'jobs/job-music-1'),
         musicJob(ALICE, {
@@ -402,7 +386,10 @@ describe('music jobs', () => {
     );
   });
 
-  it("refuses one attesting the music in somebody else's name", async () => {
+  it('refuses one carrying a field the options no longer have', async () => {
+    // `hasOnly` is doing this, and it matters more after a removal than before:
+    // a client still sending `rights` is a client running old code, and a
+    // silently-accepted unknown field is how a schema and its writers drift.
     await seed('clips/clip-1', pendingClip(ALICE));
 
     await assertFails(
@@ -413,7 +400,7 @@ describe('music jobs', () => {
             source: 'https://youtu.be/x',
             mode: 'BED',
             captions: 'KEEP',
-            rights: attestation({ attestedBy: BOB }),
+            rights: legacyAttestation(),
           },
         }),
       ),
@@ -432,7 +419,6 @@ describe('music jobs', () => {
               source: 'https://youtu.be/x',
               mode: 'BED',
               captions: 'KEEP',
-              rights: attestation(),
               ...bad,
             },
           }),
@@ -447,38 +433,23 @@ describe('publishing a clip that has music', () => {
     mode: 'BED',
     captions: 'KEEP',
     source: 'https://youtu.be/x',
-    rights: attestation(),
     ...overrides,
   });
 
-  it('accepts one where both the footage and the track are attested', async () => {
+  it('accepts one, because music changes nothing about the gate', async () => {
+    // A scored clip used to have to answer for the track as well as the
+    // footage. Both halves of that were attestations, and both are gone.
     await seed(
       'clips/clip-1',
-      pendingClip(ALICE, { review: 'APPROVED', rights: attestation(), music: withMusic() }),
+      pendingClip(ALICE, { review: 'APPROVED', music: withMusic() }),
     );
 
     await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
 
-  it('refuses one whose track nobody vouched for', async () => {
-    // The footage is fine. The music is not, and that is enough.
-    await seed(
-      'clips/clip-1',
-      pendingClip(ALICE, {
-        review: 'APPROVED',
-        rights: attestation(),
-        music: withMusic({ rights: null }),
-      }),
-    );
-
-    await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
-  });
-
-  it('still refuses one whose footage nobody vouched for, music or not', async () => {
-    await seed(
-      'clips/clip-1',
-      pendingClip(ALICE, { review: 'APPROVED', rights: null, music: withMusic() }),
-    );
+  it('still refuses one nobody has approved', async () => {
+    // What music does not do is bypass the condition that remains.
+    await seed('clips/clip-1', pendingClip(ALICE, { review: 'PENDING', music: withMusic() }));
 
     await assertFails(setDoc(doc(aliceDb(), 'jobs/job-pub-1'), publishJob(ALICE)));
   });
@@ -490,7 +461,7 @@ describe('upload jobs', () => {
     // only, and the reviewer is nowhere near that machine. No approval is
     // required — being unable to watch it is precisely why it has not been
     // reviewed yet.
-    await seed('clips/clip-1', pendingClip(ALICE, { rights: null }));
+    await seed('clips/clip-1', pendingClip(ALICE));
 
     await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/job-upload-1'), uploadJob(ALICE)));
   });

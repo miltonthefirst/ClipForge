@@ -1,4 +1,4 @@
-"""The PUBLISH stage: an approved, attested clip reaches YouTube.
+"""The PUBLISH stage: an approved clip reaches YouTube.
 
 This is a one-stage job type of its own rather than a fifth stage of CLIP,
 because publishing happens on the far side of a human decision. A CLIP job that
@@ -9,7 +9,7 @@ approval starts something new.
 
 ## The ordering that makes a retry safe
 
-    1. check the rights gate
+    1. check the publish gate
     2. write a PENDING publication document
     3. reserve a resumable upload session, checkpoint its URL
     4. send the bytes
@@ -50,13 +50,13 @@ from clipforge_contracts import (
 )
 
 from clipforge.observability import get_logger
+from clipforge.publish.gate import require_publishable
 from clipforge.publish.metadata import (
     FALLBACK_CATEGORY,
     FALLBACK_TITLE,
     PublishMetadata,
     resolve_metadata,
 )
-from clipforge.publish.rights import require_publishable
 from clipforge.publish.youtube import YouTubeClient, YouTubeError
 from clipforge.stages.base import StageContext, StageOutcome
 from clipforge.store.channels import ChannelStore
@@ -68,7 +68,7 @@ __all__ = ["PublishStage", "PublishStageError"]
 
 
 class PublishStageError(RuntimeError):
-    """The clip could not be published for a reason that is not a rights refusal.
+    """The clip could not be published for a reason the gate does not cover.
 
     ``retryable`` and ``code`` are read by :class:`~clipforge.scheduler.runner.
     StageRunner`, which is what decides whether the job burns another attempt.
@@ -118,10 +118,10 @@ class PublishStage:
         # The gate first, before a token is read or a byte moves. It raises
         # rather than returns here: by the time a job exists, "may not publish"
         # is a failure, not a filter.
-        attestation = require_publishable(clip, publishing_enabled=settings.publishing_enabled)
+        require_publishable(clip, publishing_enabled=settings.publishing_enabled)
 
         checkpoint = dict(context.checkpoint or {})
-        publication = self._publication_for(clip, attestation, checkpoint, context)
+        publication = self._publication_for(clip, checkpoint, context)
 
         if publication.state is PublicationState.PUBLISHED:
             # Someone — most likely a previous attempt of this job — already did
@@ -230,7 +230,6 @@ class PublishStage:
     def _publication_for(
         self,
         clip: Clip,
-        attestation: Any,
         checkpoint: dict[str, Any],
         context: StageContext,
     ) -> Publication:
@@ -264,10 +263,6 @@ class PublishStage:
             description=metadata.description,
             tags=metadata.tags,
             category_id=metadata.category_id,
-            # Copied, not referenced. If the operator later edits the clip's
-            # attestation, this record must still say what justified *this*
-            # upload — that is the difference between an audit log and a pointer.
-            rights=attestation,
             attempts=0,
             quota_units=None,
             error=None,

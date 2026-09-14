@@ -145,8 +145,8 @@ class Settings(BaseSettings):
     # ── Publishing ───────────────────────────────────────────────────────────
     # Off by default, and that default is the point rather than caution. Nothing
     # should reach a public platform because a config file was left at its
-    # factory setting; turning this on is meant to be a decision someone made
-    # after reading the rights guidance. See docs/PLAN.md Phase 8.
+    # factory setting; turning this on is meant to be a deliberate act. See
+    # docs/PLAN.md Phase 8.
     publishing_enabled: bool = False
 
     # The OAuth client downloaded from the Google Cloud console, and where the

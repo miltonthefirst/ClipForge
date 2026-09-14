@@ -497,14 +497,26 @@ def test_a_tracked_remake_records_the_path_it_followed(tmp_path: Path) -> None:
     assert all(0 <= k.x_pct <= 100 for k in remake.keyframes)
 
 
-def test_rights_carry_over_because_it_is_the_same_footage(tmp_path: Path) -> None:
+def test_provenance_carries_over_because_it_is_the_same_footage(tmp_path: Path) -> None:
+    """A correction is a new cut of the same material, not a new piece of it.
+
+    Everything that describes where the footage came from has to survive, or
+    the corrected clip looks like an orphan: the source it was cut from, the
+    candidate that selected it, and the soundtrack already applied to it.
+    """
     media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
     original = clip(tmp_path)
     stage, clips, _ = build(
         tmp_path, the_clip=original, the_source=source(media), the_candidate=candidate()
     )
+
     stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
-    assert clips.saved[0].rights == original.rights
+
+    remade = clips.saved[0]
+    assert remade.source_id == original.source_id
+    assert remade.candidate_id == original.candidate_id
+    assert remade.music == original.music
+    assert remade.derived_from_clip_id == original.id
 
 
 # ── The voice path ───────────────────────────────────────────────────────────

@@ -195,16 +195,24 @@ def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
     The log line is the part that matters operationally. It names the fields,
     which is enough to tell an operator their worker is behind the schema and
     wants restarting.
+
+    **Unknown fields are stripped at the depth they occur.** An earlier version
+    read only the first path segment, so an unrecognised field *inside* a nested
+    object — ``musicOptions.rights``, say — stripped the whole of
+    ``musicOptions``. The document then failed for a different reason, or worse
+    validated with a required block silently missing, which is the one outcome
+    tolerance must never produce. Removing a nested field from the schema is
+    exactly the case that hits this, and it is not rare.
     """
     try:
         return model.model_validate(data)
     except ValidationError as first:
-        unknown = {
-            str(error["loc"][0])
+        paths = [
+            tuple(str(part) for part in error["loc"])
             for error in first.errors()
             if error["type"] == "extra_forbidden" and error["loc"]
-        }
-        if not unknown or len(unknown) != len(first.errors()):
+        ]
+        if not paths or len(paths) != len(first.errors()):
             # Something other than an unrecognised field is wrong. Raise the
             # original error rather than a second one from a stripped retry,
             # which would describe the symptom and not the cause.
@@ -212,10 +220,34 @@ def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
         log.warning(
             "store.unknown_fields",
             model=model.__name__,
-            fields=sorted(unknown),
+            fields=sorted(".".join(path) for path in paths),
             detail="written by a newer version of the contracts; restart the worker to use them",
         )
-        return model.model_validate({k: v for k, v in data.items() if k not in unknown})
+        return model.model_validate(_without(data, paths))
+
+
+def _without(data: dict[str, Any], paths: list[tuple[str, ...]]) -> dict[str, Any]:
+    """A copy of ``data`` with each dotted path removed, and nothing else changed.
+
+    Copy-on-descend rather than ``deepcopy``: a document holds a poster as
+    base64 and a transcript as a list of segments, and duplicating megabytes to
+    delete one key is a cost paid on every read of every skewed document.
+    A path through anything that is not a dict is left alone — an index into a
+    list means the shape changed, not that a field was added, and that is a
+    genuine error the retry should still raise.
+    """
+    pruned = dict(data)
+    for path in paths:
+        cursor: dict[str, Any] = pruned
+        for segment in path[:-1]:
+            branch = cursor.get(segment)
+            if not isinstance(branch, dict):
+                cursor = {}
+                break
+            cursor[segment] = branch = dict(branch)
+            cursor = branch
+        cursor.pop(path[-1], None)
+    return pruned
 
 
 class JobStore:
@@ -777,8 +809,8 @@ class PublicationStore:
     question it exists to answer, and a query is not needed to answer it.
 
     Nothing here ever holds a credential. The document records *what was
-    published, by whose attestation, and when* — the token that performed the
-    upload stays in a file on the worker (D7, and Phase 8 exit criterion 4).
+    published, where, and when* — the token that performed the upload stays in
+    a file on the worker (D7, and Phase 8 exit criterion 4).
     """
 
     def __init__(self, client: firestore.Client, settings: Settings) -> None:

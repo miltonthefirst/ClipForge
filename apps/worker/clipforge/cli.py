@@ -579,9 +579,9 @@ def publish(
     ),
     at: str = typer.Option("", help="ISO-8601 time to publish at; immediate when omitted."),
 ) -> None:
-    """Queue an approved, attested clip for publishing.
+    """Queue an approved clip for publishing.
 
-    This only enqueues. The rights gate is checked by the worker when the job
+    This only enqueues. The publish gate is checked by the worker when the job
     runs, not here — a check in the CLI would be advisory, since the worker is
     what actually holds the credentials and performs the upload.
     """
@@ -601,7 +601,7 @@ def publish(
 
     # Reported early as a courtesy, so a refusal is visible now rather than in a
     # failed job later. The worker checks again regardless.
-    from clipforge.publish.rights import check_publishable
+    from clipforge.publish.gate import check_publishable
 
     refusal = check_publishable(clip, publishing_enabled=settings.publishing_enabled)
     if refusal is not None:

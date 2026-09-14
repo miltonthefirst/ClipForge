@@ -259,7 +259,6 @@ class RenderStage:
                 description=(written.description if written else candidate.reason),
                 tags=list(written.tags) if written else [],
                 review=ReviewState.PENDING,
-                rights=None,
                 created_at=now,
             )
             # A preview is worth a thumbnail in the review queue; it is not

@@ -315,8 +315,8 @@ uv run --project apps/worker clipforge-worker quota    # what today's allowance 
 uv run --project apps/worker python -m clipforge.diagnostics --skip-gpu
 ```
 
-Then, in the PWA: approve a clip on **Review**, record its rights basis on **Publish**, and press
-publish. The worker uploads it as **unlisted**.
+Then, in the PWA: approve a clip on **Review**, open **Publish** and press publish. The worker
+uploads it as **unlisted**.
 
 #### Two things that will bite you
 
@@ -694,22 +694,22 @@ jurisdiction, by the source's licence, and by how transformative the clip is.
 
 ClipForge does not decide that for you, and it does not pretend the question does not exist:
 
-- Publishing is **disabled by default** (`CLIPFORGE_PUBLISHING_ENABLED=false`).
-- No clip can be published without a recorded **rights basis** — one of `OWN_CONTENT`,
-  `LICENSED`, `PERMISSION_GRANTED`, `FAIR_USE_ASSERTED` or `PUBLIC_DOMAIN` — attributed to a user
-  and timestamped.
-- That attestation is enforced in **three** places, and the redundancy is deliberate:
-  `firebase/firestore.rules` (which is the only thing that can stop a client enqueueing publish
-  work), `apps/worker/clipforge/publish/rights.py` (the only thing that constrains the component
-  actually holding the credentials, since the Admin SDK bypasses rules), and
-  `apps/web/src/app/core/rights.ts`, which is advisory and exists only to explain a refusal in
-  the interface rather than fail opaquely after the button is pressed.
-- A fair-use assertion additionally requires written reasoning. It is a judgement, not a status,
-  and an empty note would make the audit log say "because I said so".
-- Every publish writes a `Publication` record carrying the attestation **as it stood at upload
-  time**, copied rather than referenced — so a later edit to the clip cannot rewrite the reason a
-  past upload happened. "Who authorised this, on what basis, and what went out?" is answerable
-  from the phone.
+- Publishing is **disabled by default** (`CLIPFORGE_PUBLISHING_ENABLED=false`). Nothing reaches a
+  public platform because a config file was left at its factory setting.
+- Nothing is published that a person has not watched and **approved**. That is enforced in two
+  independent places, and the redundancy is deliberate: `firebase/firestore.rules` is the only
+  thing that can stop a client enqueueing publish work, and
+  `apps/worker/clipforge/publish/gate.py` is the only thing that constrains the component actually
+  holding the credentials, since the Admin SDK bypasses rules. `apps/web/src/app/core/publishable.ts`
+  is a third, advisory copy that exists only to explain a refusal in the interface rather than fail
+  opaquely after the button is pressed.
+- Every publish writes a `Publication` record — what went out, to which channel, when, at what
+  privacy, and the resulting video id. "What did we post, and where?" is answerable from the phone
+  without reading worker logs.
+- Earlier versions required a recorded rights basis per clip before publishing. That was removed
+  in [ADR-0020](docs/adr/0020-removing-the-rights-attestation.md): it recorded a judgement rather
+  than checking one, and the judgement is still yours either way. **Re-voicing, reframing and
+  scoring a clip change the soundtrack and the crop. They do not change whose footage it is.**
 
 ## Contributing
 

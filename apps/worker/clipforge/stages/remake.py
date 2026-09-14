@@ -153,7 +153,7 @@ _UNSUPPORTED_WORDING: dict[UnsupportedAsk, str] = {
     ),
     UnsupportedAsk.CHANGE_MUSIC: (
         "changing the music is a separate job \u2014 use Add music on the clip page, "
-        "which replaces or beds a track and records its rights"
+        "which replaces the soundtrack or beds a track under it"
     ),
     UnsupportedAsk.ZOOM_ON_SUBJECT: (
         "zooming onto a particular subject is not supported; the closest is "
@@ -1393,10 +1393,6 @@ class RemakeStage:
             # made from; a correction is a different edit and deserves to be
             # watched before it goes anywhere.
             review=ReviewState.PENDING,
-            # The footage is the same footage, so its rights carry over. The
-            # voice does not change that and must not be allowed to look as
-            # though it did.
-            rights=original.rights,
             music=original.music,
             remake=AppliedRemake(
                 notes=options.notes,

@@ -75,7 +75,13 @@ test('a failed job shows the worker’s reason, not a stack trace', async ({ pag
   await expect(page.getByText('age-restricted')).toBeVisible();
 });
 
-test('reviewing a clip shows poster, hook, score breakdown and excerpt', async ({ page }) => {
+test('the queue shows the poster, the hook and the score — and no more', async ({ page }) => {
+  // Fifty of these is something to move through, so a card carries only what a
+  // decision needs. Everything else is one click away, which the next test
+  // asserts from the other side.
+  //
+  // These three used to assert the clip page's content without ever opening it,
+  // and had been failing since the queue became one row per clip.
   const uid = await signIn(page);
   await write('candidates/cand-1', candidate(uid));
   await write('clips/clip-1', clip(uid));
@@ -83,6 +89,22 @@ test('reviewing a clip shows poster, hook, score breakdown and excerpt', async (
 
   await expect(page.getByText('Most developers never realise this')).toBeVisible();
   await expect(page.getByText('87')).toBeVisible();
+  await expect(page.locator('img[alt*="Poster frame"]')).toBeVisible();
+
+  // The detail that used to be here, and is not any more.
+  await expect(page.getByText('running your own hardware')).toHaveCount(0);
+  await expect(page.locator('video')).toHaveCount(0);
+});
+
+test('opening a clip shows the hook, the score breakdown and the excerpt', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('candidates/cand-1', candidate(uid));
+  await write('clips/clip-1', clip(uid));
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/review/clip-1');
+
+  await expect(page.getByText('Most developers never realise this')).toBeVisible();
   await expect(page.getByText('Hook', { exact: true })).toBeVisible();
   await expect(page.getByText('running your own hardware')).toBeVisible();
   await expect(page.locator('img[alt*="Poster frame"]')).toBeVisible();
@@ -98,9 +120,12 @@ test('a clip with no playable URL says so instead of showing a broken player', a
   await write('clips/clip-1', clip(uid));
   await write('clips/clip-1/preview/poster', preview());
 
-  await expect(page.getByText('playable on the worker machine')).toBeVisible();
+  await page.goto('/review/clip-1');
+
   await expect(page.locator('video')).toHaveCount(0);
-  await expect(page.getByText('stay on the machine that rendered them')).toBeVisible();
+  await expect(page.locator('img[alt*="Poster frame"]')).toBeVisible();
+  await expect(page.getByText('No cloud copy of this one')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ask the worker to upload it' })).toBeVisible();
 });
 
 test('a clip with a playbackUrl gets a real player — the Blaze upgrade path', async ({
@@ -113,6 +138,8 @@ test('a clip with a playbackUrl gets a real player — the Blaze upgrade path', 
     clip(uid, { location: 'REMOTE', playbackUrl: 'http://127.0.0.1:4300/clip.mp4' }),
   );
   await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/review/clip-1');
 
   // The element exists and is wired to the URL. Whether the file resolves is the
   // server's business, not the UI's — and this is the only branch that changes
@@ -154,12 +181,19 @@ test('rejecting a clip is recorded just as explicitly as approving', async ({ pa
     .toEqual({ stringValue: 'REJECTED' });
 });
 
-test('another user’s clip never appears in this user’s queue', async ({ page }) => {
-  // The rules enforce this; the UI must also not *ask* for it, or the listener
-  // fails outright rather than returning nothing.
+test('a clip somebody else submitted is still this workspace’s to review', async ({
+  page,
+}) => {
+  // One workspace, one library: `allow read: if isApproved()` deliberately does
+  // not scope clips to whoever submitted them. Whoever is holding a phone is the
+  // reviewer, and a queue that hid half the work would be the bug.
+  //
+  // This asserted the opposite until now, and passed only by racing the listener
+  // and winning: the page starts empty, so an immediate check for the empty state
+  // succeeds before the snapshot arrives.
   await signIn(page);
   await write('candidates/cand-1', candidate('someone-else'));
   await write('clips/clip-1', clip('someone-else'));
 
-  await expect(page.getByText('Nothing waiting for review')).toBeVisible();
+  await expect(page.getByText('Most developers never realise this')).toBeVisible();
 });

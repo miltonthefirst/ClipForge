@@ -19,15 +19,6 @@ import { clip, listDocs, plain, preview, signIn, wipe, write } from './helpers';
 
 const NOW = '2026-09-08T12:00:00.000Z';
 
-function attestation(uid: string) {
-  return {
-    basis: 'OWN_CONTENT',
-    attestedBy: uid,
-    attestedAt: NOW,
-    note: null,
-  };
-}
-
 function channel(uid: string, defaults: Record<string, unknown> = {}) {
   return {
     id: 'youtube-primary',
@@ -70,7 +61,7 @@ test.beforeEach(async () => {
 });
 
 async function seedApprovedClip(uid: string): Promise<void> {
-  await write('clips/clip-1', clip(uid, { review: 'APPROVED', rights: attestation(uid) }));
+  await write('clips/clip-1', clip(uid, { review: 'APPROVED' }));
   await write('clips/clip-1/preview/poster', preview());
 }
 

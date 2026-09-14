@@ -407,8 +407,8 @@ def fail_stage(
     """Record a stage failure and decide whether the job retries or dies.
 
     A non-retryable error skips the remaining attempts entirely. Burning two more
-    attempts on a malformed URL or a refused rights attestation wastes twenty
-    minutes and tells nobody anything new.
+    attempts on a malformed URL, an unapproved clip or an uninstalled ffprobe
+    wastes twenty minutes and tells nobody anything new.
     """
     if job.status is not JobStatus.RUNNING:
         raise LeaseError(f"cannot fail a stage on a {job.status.value} job")

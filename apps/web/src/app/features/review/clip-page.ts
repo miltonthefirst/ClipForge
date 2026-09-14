@@ -29,14 +29,12 @@ import type {
   PublishOptions,
   PublishPrivacy,
   RemakeOptions,
-  RightsBasis,
   SpeechMode,
   SubScores,
   VoiceCaptions,
 } from '@clipforge/contracts';
 
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
-import { RIGHTS_BASES, draftIsComplete } from '../../core/rights';
 import { CATEGORIES, PRIVACY_OPTIONS, categoryLabel } from '../../core/youtube';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
@@ -179,7 +177,6 @@ export class ClipPage implements OnDestroy {
   private stopClip: (() => void) | null = null;
   private stopChannels: (() => void) | null = null;
 
-  protected readonly bases = RIGHTS_BASES;
   protected readonly categories = CATEGORIES;
   protected readonly privacies = PRIVACY_OPTIONS;
   protected readonly categoryLabel = categoryLabel;
@@ -264,8 +261,6 @@ export class ClipPage implements OnDestroy {
   protected readonly draftPrivacy = signal<PublishPrivacy | null>(null);
   protected readonly draftCategory = signal<string | null>(null);
   protected readonly draftSchedule = signal('');
-  protected readonly draftBasis = signal<RightsBasis | null>(null);
-  protected readonly draftRightsNote = signal('');
   protected readonly showPublishOptions = signal(false);
 
   // ── Music ──────────────────────────────────────────────────────────────────
@@ -273,8 +268,6 @@ export class ClipPage implements OnDestroy {
   protected readonly musicSource = signal('');
   protected readonly musicMode = signal<MusicMode>('BED');
   protected readonly musicCaptions = signal<MusicCaptions>('KEEP');
-  protected readonly musicBasis = signal<RightsBasis | null>(null);
-  protected readonly musicNote = signal('');
 
   /**
    * REMOVE re-cuts the segment from the original video, because captions are
@@ -284,10 +277,7 @@ export class ClipPage implements OnDestroy {
    */
   protected readonly captionsNeedSource = computed(() => this.musicCaptions() === 'REMOVE');
 
-  protected readonly canAddMusic = computed(
-    () =>
-      this.musicSource().trim().length > 0 && draftIsComplete(this.musicBasis(), this.musicNote()),
-  );
+  protected readonly canAddMusic = computed(() => this.musicSource().trim().length > 0);
 
   // ── Remake ─────────────────────────────────────────────────────────────────
   //
@@ -498,19 +488,8 @@ export class ClipPage implements OnDestroy {
     }));
   });
 
-  protected readonly attested = computed(() => !!this.clip()?.rights);
   protected readonly published = computed(
     () => this.publications().find((p) => p.state === 'PUBLISHED') ?? null,
-  );
-
-  /** A basis of FAIR_USE_ASSERTED has to say why; the rules require it too. */
-  protected readonly needsRightsNote = computed(() => this.draftBasis() === 'FAIR_USE_ASSERTED');
-
-  // `draftIsComplete` is the same rule the Publish page applies, imported
-  // rather than restated — two copies of "when may this be attested" is one
-  // copy too many for a gate.
-  protected readonly canAttest = computed(() =>
-    draftIsComplete(this.draftBasis(), this.draftRightsNote()),
   );
 
   protected readonly title = computed(() => this.draftTitle() ?? this.clip()?.title ?? '');
@@ -569,14 +548,10 @@ export class ClipPage implements OnDestroy {
     this.draftPrivacy.set(null);
     this.draftCategory.set(null);
     this.draftSchedule.set('');
-    this.draftBasis.set(null);
-    this.draftRightsNote.set('');
     this.showPublishOptions.set(false);
 
     this.showMusic.set(false);
     this.musicSource.set('');
-    this.musicBasis.set(null);
-    this.musicNote.set('');
 
     this.showRemake.set(false);
     this.remakeNotes.set('');
@@ -648,16 +623,6 @@ export class ClipPage implements OnDestroy {
         description: this.description().trim() || null,
         reviewNote: this.note().trim() || null,
       }),
-    );
-  }
-
-  protected async attest(): Promise<void> {
-    const clip = this.clip();
-    const uid = this.session.uid;
-    const basis = this.draftBasis();
-    if (!clip || !uid || !basis) return;
-    await this.run('Rights recorded', () =>
-      this.store.attest(uid, clip.id, basis, this.draftRightsNote().trim() || null),
     );
   }
 
@@ -734,19 +699,12 @@ export class ClipPage implements OnDestroy {
   protected async addMusic(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
-    const basis = this.musicBasis();
-    if (!clip || !uid || !basis) return;
+    if (!clip || !uid) return;
 
     const options: MusicOptions = {
       source: this.musicSource().trim(),
       mode: this.musicMode(),
       captions: this.musicCaptions(),
-      rights: {
-        basis,
-        attestedBy: uid,
-        attestedAt: new Date().toISOString(),
-        note: this.musicNote().trim() || null,
-      },
     };
 
     await this.run(
@@ -875,8 +833,8 @@ export class ClipPage implements OnDestroy {
    *
    * The record only. Its file stays on whichever machine holds it, and its
    * publications stay too — those are the record of what was actually posted
-   * and under what rights, and an audit trail that vanishes when somebody tidies
-   * their queue is not an audit trail.
+   * and where, and an audit trail that vanishes when somebody tidies their
+   * queue is not an audit trail.
    */
   protected async deleteClip(): Promise<void> {
     const clip = this.clip();

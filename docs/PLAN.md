@@ -231,7 +231,6 @@ clips/{clipId}                    # a rendered artefact — the FILE stays on th
   localPath                        # always set
   playbackUrl                      # the bucket copy, for 5 days after the render
   review: PENDING|APPROVED|REJECTED
-  rights: { basis, attestedBy, attestedAt, note }
   preview/poster                   # base64 poster + filmstrip, ~40-60 KB.
                                    # A subcollection so the review-queue query does
                                    # not drag image bytes on every read
@@ -819,6 +818,14 @@ unreliable, and say so in the README.
 
 #### Phase 8 — Publishing, with a rights gate → *toward v0.2.0*
 
+> **The rights gate described below was removed on 2026-09-14** — see
+> [ADR-0020](adr/0020-removing-the-rights-attestation.md). What survives is the rest of this
+> phase: the PUBLISH job type, worker-held credentials, the resumable upload, the audit record,
+> and the two conditions that were always load-bearing — publishing off by default, and nothing
+> published that a person has not approved. The gate is left described here because this section
+> is the record of what was built and what it taught — including the Content ID claim below,
+> which is half the reason it went.
+
 **Goal.** An approved clip reaches YouTube — deliberately, credentialed locally, and with an audit trail
 of why publishing it was legitimate.
 
@@ -880,11 +887,12 @@ rules, worker and UI; an ADR on worker-held credentials.
      clip from consideration over it. The fix exists and is tested; what has *not* happened is a
      publication made after it, so Phase 8e's value is still unproven where it counts.
 2. ✅ Enforced twice, tested independently: 17 pure-function tests in
-   `apps/worker/tests/unit/test_rights.py`, and 15 emulator tests in
+   a dedicated `test_rights.py` (both since removed — see ADR-0020), and 15 emulator tests in
    `firebase/tests/publishing.rules.spec.ts`. Neither copy is redundant — the worker uses the Admin
    SDK and bypasses rules entirely, and a rule is the only thing that can stop a client enqueueing
    publish work in the first place. A third, *advisory* copy lives in the PWA
-   (`apps/web/src/app/core/rights.ts`) so a refusal is explained in the interface instead of failing
+   (the PWA's own copy, now `apps/web/src/app/core/publishable.ts`) so a refusal is explained in
+   the interface instead of failing
    opaquely after the button is pressed.
 3. ✅ Asserted three ways, by counting videos on a fake platform across a crash: interrupt
    mid-upload and resume the checkpointed session; find a PUBLISHED record and skip; and the case
@@ -1685,8 +1693,10 @@ the right caption and the right AI disclosure — by whichever route that platfo
 - Per-platform metadata: title, description and hashtags to each platform's conventions and limits.
 - A `synthesis` provenance record on `Clip` — which of script, voice, visuals and music were
   machine-made, and the model and prompt version for each — written by the stages that did the work,
-  never ticked by a human afterwards. It sits beside `RightsAttestation`, which already established
-  the pattern of recording *why* a publish was permitted.
+  never ticked by a human afterwards. Unlike the rights attestation
+  ([ADR-0020](adr/0020-removing-the-rights-attestation.md)), this is a record of what the machine
+  did rather than a restatement of a human judgement — which is why the same argument for removing
+  that one does not apply to this.
 - Disclosure derived from that record: YouTube's altered-content declaration, TikTok's AIGC label,
   Meta's label. **A publish whose provenance record is unset fails closed.**
 

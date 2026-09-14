@@ -77,7 +77,6 @@ export function pendingClip(uid: string, overrides: Record<string, unknown> = {}
     durationSec: 38.2,
     review: 'PENDING',
     reviewedAt: null,
-    rights: null,
     createdAt: TIMESTAMP,
     ...overrides,
   };

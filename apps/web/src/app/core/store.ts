@@ -18,7 +18,6 @@ import type {
   PublishOptions,
   RemakeOptions,
   ReviewState,
-  RightsBasis,
   Source,
   UserProfile,
   UserRole,
@@ -500,8 +499,8 @@ export class ClipForgeStore {
    * Forget one clip. Its media stays on whichever machine holds it.
    *
    * Publications are left behind on purpose. They are the record of what was
-   * actually posted and under what rights, and an audit trail that vanishes
-   * when somebody tidies their queue is not an audit trail.
+   * actually posted and where, and an audit trail that vanishes when somebody
+   * tidies their queue is not an audit trail.
    */
   async deleteClip(clipId: string): Promise<void> {
     const { deleteDoc } = await import('firebase/firestore');
@@ -583,31 +582,7 @@ export class ClipForgeStore {
   }
 
   /**
-   * Record why this clip may be published.
-   *
-   * `attestedBy` is the caller's own uid and `attestedAt` is set here rather
-   * than accepted from the caller: an attestation whose author or date could be
-   * supplied by whoever wrote it would answer neither of the questions the audit
-   * log exists to answer. firestore.rules requires both to be present.
-   */
-  async attest(
-    uid: string,
-    clipId: string,
-    basis: RightsBasis,
-    note: string | null,
-  ): Promise<void> {
-    await updateDoc(doc(this.firebase.db, 'clips', clipId), {
-      rights: {
-        basis,
-        attestedBy: uid,
-        attestedAt: new Date().toISOString(),
-        note: note?.trim() ? note.trim() : null,
-      },
-    });
-  }
-
-  /**
-   * Ask the worker to publish an approved, attested clip.
+   * Ask the worker to publish an approved clip.
    *
    * This creates a job, not an upload. The credentials live on the worker
    * (docs/adr/0010-worker-held-publishing-credentials.md), so the phone's role

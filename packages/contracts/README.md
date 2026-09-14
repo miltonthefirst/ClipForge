@@ -64,7 +64,7 @@ pointless: CI regenerates and compares.
 | `Source`, `Transcript` | Ingestion and transcription stages |
 | `Candidate`, `SubScores` | Clip selection and scoring |
 | `LlmClipResponse`, `LlmClipProposal` | The model's schema-constrained reply |
-| `Clip`, `RightsAttestation` | Render output, review state, rights attestation |
+| `Clip` | Render output, review state, where the file lives |
 | `WorkerHeartbeat`, `GpuInfo` | Worker status indicator in the PWA |
 
 The root `ClipForgeContracts` object exists so that every definition is reachable from the schema

@@ -14,10 +14,9 @@ import type {
   Publication,
   PublishOptions,
   PublishPrivacy,
-  RightsBasis,
 } from '@clipforge/contracts';
 
-import { RIGHTS_BASES, checkPublishable, draftIsComplete } from '../../core/rights';
+import { checkPublishable } from '../../core/publishable';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
 import {
@@ -59,7 +58,6 @@ export class PublishPage implements OnDestroy {
   private stop: (() => void) | null = null;
   private stopChannels: (() => void) | null = null;
 
-  protected readonly bases = RIGHTS_BASES;
   protected readonly categories = CATEGORIES;
   protected readonly privacies = PRIVACY_OPTIONS;
   protected readonly categoryLabel = categoryLabel;
@@ -70,9 +68,6 @@ export class PublishPage implements OnDestroy {
   protected readonly busy = signal<string | null>(null);
   protected readonly queued = signal<string | null>(null);
 
-  /** The attestation being composed, per clip. Never sent until it is complete. */
-  protected readonly draftBasis = signal<Record<string, RightsBasis | null>>({});
-  protected readonly draftNote = signal<Record<string, string>>({});
   protected readonly draftSchedule = signal<Record<string, string>>({});
 
   /**
@@ -147,7 +142,7 @@ export class PublishPage implements OnDestroy {
     return checkPublishable(card.clip)?.message ?? null;
   }
 
-  protected attested(card: PublishCard): boolean {
+  protected publishable(card: PublishCard): boolean {
     return checkPublishable(card.clip) === null;
   }
 
@@ -164,24 +159,8 @@ export class PublishPage implements OnDestroy {
     return card.publications.find((p) => p.state === 'FAILED') ?? null;
   }
 
-  protected basisFor(clipId: string): RightsBasis | null {
-    return this.draftBasis()[clipId] ?? null;
-  }
-
-  protected noteFor(clipId: string): string {
-    return this.draftNote()[clipId] ?? '';
-  }
-
   protected scheduleFor(clipId: string): string {
     return this.draftSchedule()[clipId] ?? '';
-  }
-
-  protected chooseBasis(clipId: string, basis: RightsBasis): void {
-    this.draftBasis.update((all) => ({ ...all, [clipId]: basis }));
-  }
-
-  protected setNote(clipId: string, note: string): void {
-    this.draftNote.update((all) => ({ ...all, [clipId]: note }));
   }
 
   protected setSchedule(clipId: string, when: string): void {
@@ -322,38 +301,13 @@ export class PublishPage implements OnDestroy {
     };
   }
 
-  /** Fair use is the one basis whose reasoning is required, not optional. */
-  protected needsNote(clipId: string): boolean {
-    return this.basisFor(clipId) === 'FAIR_USE_ASSERTED';
-  }
-
-  protected canAttest(clipId: string): boolean {
-    return draftIsComplete(this.basisFor(clipId), this.noteFor(clipId));
-  }
-
-  protected async attest(card: PublishCard): Promise<void> {
-    const uid = this.session.uid;
-    const basis = this.basisFor(card.clip.id);
-    if (!uid || !basis) return;
-
-    this.busy.set(card.clip.id);
-    this.error.set(null);
-    try {
-      await this.store.attest(uid, card.clip.id, basis, this.noteFor(card.clip.id) || null);
-    } catch (err) {
-      this.error.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.busy.set(null);
-    }
-  }
-
   protected async publish(card: PublishCard): Promise<void> {
     const uid = this.session.uid;
     if (!uid) return;
 
     // Checked here too, not only by the disabled attribute. A disabled button is
     // a hint to a person, not a constraint on a program.
-    if (!this.attested(card)) return;
+    if (!this.publishable(card)) return;
 
     const when = this.scheduleFor(card.clip.id);
     this.busy.set(card.clip.id);
@@ -367,11 +321,11 @@ export class PublishPage implements OnDestroy {
       );
       this.queued.set(card.clip.id);
     } catch (err) {
-      // The rules refuse this if the attestation is incomplete. Saying so beats
+      // The rules refuse this if the clip is not approved. Saying so beats
       // showing a raw permission error.
       this.error.set(
         err instanceof Error && err.message.includes('permission')
-          ? 'The rights gate refused this publish. Check the attestation is complete and the clip is approved.'
+          ? 'The publish gate refused this. Check the clip is still approved.'
           : err instanceof Error
             ? err.message
             : String(err),

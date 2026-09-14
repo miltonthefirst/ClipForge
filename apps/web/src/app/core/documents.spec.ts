@@ -42,12 +42,12 @@ describe('fromDocument', () => {
     expect(doc.stages[0].startedAt).toBe('2026-09-12T06:20:08.000Z');
   });
 
-  it('reaches dates nested in objects, which is where a clip keeps attestation', () => {
-    const doc = fromDocument<{ rights: { attestedAt: string; basis: string } }>({
-      rights: { basis: 'OWN_CONTENT', attestedAt: Timestamp.fromDate(new Date('2026-09-10Z')) },
+  it('reaches dates nested in objects, which is where a job keeps its lease', () => {
+    const doc = fromDocument<{ lease: { expiresAt: string; workerId: string } }>({
+      lease: { workerId: 'worker-1', expiresAt: Timestamp.fromDate(new Date('2026-09-10Z')) },
     });
-    expect(doc.rights.attestedAt).toBe('2026-09-10T00:00:00.000Z');
-    expect(doc.rights.basis).toBe('OWN_CONTENT');
+    expect(doc.lease.expiresAt).toBe('2026-09-10T00:00:00.000Z');
+    expect(doc.lease.workerId).toBe('worker-1');
   });
 
   it('leaves every other value exactly as it found it', () => {

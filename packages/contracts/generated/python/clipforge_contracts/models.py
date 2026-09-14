@@ -101,7 +101,7 @@ class StageError(BaseModel):
     traceback: str | None = None
     retryable: bool | None = True
     """
-    False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts.
+    False marks a failure that will never succeed on retry (bad input, a missing tool, an age-restricted video), so the scheduler fails the job immediately instead of burning its remaining attempts.
     """
 
 
@@ -148,6 +148,31 @@ class MusicCaptions(StrEnum):
 
     KEEP = "KEEP"
     REMOVE = "REMOVE"
+
+
+class MusicOptions(BaseModel):
+    """
+    What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    source: str = Field(..., min_length=1)
+    """
+    A YouTube URL, or a path to an audio file on the worker. Only the audio is ever fetched from a URL — the video of a music source is of no use here and would cost bandwidth for nothing.
+    """
+    mode: MusicMode
+    captions: MusicCaptions
+    gain_db: float | None = Field(None, alias="gainDb", ge=-40.0, le=12.0)
+    """
+    Trim on the music, relative to the level the stage picks. Null means 'use the stage's judgement', which targets a bed roughly 18 LUFS below speech and a replacement at the clip's own loudness target.
+    """
+    align_to_beat: bool | None = Field(True, alias="alignToBeat")
+    """
+    Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure.
+    """
 
 
 class PreferenceScope(StrEnum):
@@ -597,7 +622,7 @@ class VoiceCaptions(StrEnum):
 
 class VoiceOptions(BaseModel):
     """
-    A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make footage safe to publish — that is what the rights attestation is for.
+    A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make third-party footage safe to publish — nothing here decides that, and the operator still does.
     """
 
     model_config = ConfigDict(
@@ -991,18 +1016,6 @@ class ReviewState(StrEnum):
     REJECTED = "REJECTED"
 
 
-class RightsBasis(StrEnum):
-    """
-    Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
-    """
-
-    OWN_CONTENT = "OWN_CONTENT"
-    LICENSED = "LICENSED"
-    PERMISSION_GRANTED = "PERMISSION_GRANTED"
-    FAIR_USE_ASSERTED = "FAIR_USE_ASSERTED"
-    PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
-
-
 class ChannelConnection(StrEnum):
     """
     Whether the worker can currently publish to this channel. NOT_CONFIGURED means no OAuth client has been supplied; NEEDS_AUTH means one has but nobody has authorised it, or the refresh token expired — which it does every 7 days while the consent screen is in Testing mode.
@@ -1058,17 +1071,6 @@ class UserProfile(BaseModel):
     """
     The uid of the admin who made that decision. Recorded so 'who let this person in?' is answerable later.
     """
-
-
-class RightsAttestation(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-    )
-    basis: RightsBasis
-    attested_by: str | None = Field(None, alias="attestedBy")
-    attested_at: AwareDatetime | None = Field(None, alias="attestedAt")
-    note: str | None = None
 
 
 class ClipLocation(StrEnum):
@@ -1162,7 +1164,7 @@ class PublishPrivacy(StrEnum):
 
 class Publication(BaseModel):
     """
-    One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.
+    One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records what title, description and privacy actually went out, to which channel and when, so 'what did we post' is answerable for any published clip without reading worker logs.
     """
 
     model_config = ConfigDict(
@@ -1190,10 +1192,6 @@ class Publication(BaseModel):
     category_id: str | None = Field(None, alias="categoryId")
     """
     Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing.
-    """
-    rights: RightsAttestation | None = None
-    """
-    Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
     """
     attempts: int | None = Field(0, ge=0)
     quota_units: int | None = Field(None, alias="quotaUnits", ge=0)
@@ -1566,36 +1564,6 @@ class AppliedMusic(BaseModel):
     """
     Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
     """
-    rights: RightsAttestation | None = None
-
-
-class MusicOptions(BaseModel):
-    """
-    What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-    )
-    source: str = Field(..., min_length=1)
-    """
-    A YouTube URL, or a path to an audio file on the worker. Only the audio is ever fetched from a URL — the video of a music source is of no use here and would cost bandwidth for nothing.
-    """
-    mode: MusicMode
-    captions: MusicCaptions
-    gain_db: float | None = Field(None, alias="gainDb", ge=-40.0, le=12.0)
-    """
-    Trim on the music, relative to the level the stage picks. Null means 'use the stage's judgement', which targets a bed roughly 18 LUFS below speech and a replacement at the clip's own loudness target.
-    """
-    align_to_beat: bool | None = Field(True, alias="alignToBeat")
-    """
-    Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure.
-    """
-    rights: RightsAttestation
-    """
-    Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards.
-    """
 
 
 class RemakeDefaults(BaseModel):
@@ -1861,7 +1829,6 @@ class Clip(BaseModel):
     """
     What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
     """
-    rights: RightsAttestation | None = None
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
@@ -1891,7 +1858,7 @@ class Job(BaseModel):
     """
     clip_id: str | None = Field(None, alias="clipId")
     """
-    The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+    The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all.
     """
     music_options: MusicOptions | None = Field(None, alias="musicOptions")
     """

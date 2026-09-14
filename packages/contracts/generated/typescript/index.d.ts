@@ -25,11 +25,6 @@ export type MusicMode = 'BED' | 'REPLACE';
  */
 export type MusicCaptions = 'KEEP' | 'REMOVE';
 /**
- * Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
- */
-export type RightsBasis =
-  'OWN_CONTENT' | 'LICENSED' | 'PERMISSION_GRANTED' | 'FAIR_USE_ASSERTED' | 'PUBLIC_DOMAIN';
-/**
  * How the 9:16 window is decided. AS_RENDERED keeps the profile's fixed crop, which is what every clip got before this existed. FIT crops nothing at all — the whole landscape frame is scaled into the canvas and the dead space is filled — so a subject that moves can never leave the picture; the cost is a smaller picture. PAN moves a full-height window along the source over time, between points the reviewer set. TRACK does the same thing but works the points out from the footage, by following where the motion is. FIT and TRACK exist because a fixed crop keeps about a third of a broadcast frame's width and holds still, which is the wrong answer for any sport where the thing worth watching moves.
  */
 export type FramingMode = 'AS_RENDERED' | 'FIT' | 'PAN' | 'TRACK';
@@ -269,7 +264,7 @@ export interface Job {
    */
   submission?: string | null;
   /**
-   * The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+   * The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all.
    */
   clipId?: string | null;
   /**
@@ -328,16 +323,6 @@ export interface MusicOptions {
    * Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure.
    */
   alignToBeat?: boolean;
-  rights: RightsAttestation;
-}
-/**
- * Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards.
- */
-export interface RightsAttestation {
-  basis: RightsBasis;
-  attestedBy?: string | null;
-  attestedAt?: string | null;
-  note?: string | null;
 }
 /**
  * A reviewer's corrections to a finished clip. Every field is optional because a remake is usually one complaint, not a rebuild: 'the framing lost the ball' and 'this needs to be in Spanish' are separate errands and should not have to be sent together.
@@ -424,7 +409,7 @@ export interface PanKeyframe {
   xPct: number;
 }
 /**
- * A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make footage safe to publish — that is what the rights attestation is for.
+ * A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make third-party footage safe to publish — nothing here decides that, and the operator still does.
  */
 export interface VoiceOptions {
   mode: SpeechMode;
@@ -586,7 +571,7 @@ export interface StageError {
   code?: string | null;
   traceback?: string | null;
   /**
-   * False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts.
+   * False marks a failure that will never succeed on retry (bad input, a missing tool, an age-restricted video), so the scheduler fails the job immediately instead of burning its remaining attempts.
    */
   retryable?: boolean;
 }
@@ -886,7 +871,6 @@ export interface Clip {
    * What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
    */
   reviewNote?: string | null;
-  rights?: RightsAttestation1 | null;
   createdAt: string;
 }
 /**
@@ -911,13 +895,6 @@ export interface AppliedMusic {
    * Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
    */
   musicStartSec?: number | null;
-  rights?: RightsAttestation1 | null;
-}
-export interface RightsAttestation1 {
-  basis: RightsBasis;
-  attestedBy?: string | null;
-  attestedAt?: string | null;
-  note?: string | null;
 }
 /**
  * What was asked for, and what was done. Carried on the clip the remake produced, beside `derivedFromClipId`, so the pair reads as a correction and its result rather than as two unrelated clips.
@@ -1034,7 +1011,7 @@ export interface ClipPreview {
   createdAt: string;
 }
 /**
- * One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.
+ * One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records what title, description and privacy actually went out, to which channel and when, so 'what did we post' is answerable for any published clip without reading worker logs.
  */
 export interface Publication {
   id: string;
@@ -1059,10 +1036,6 @@ export interface Publication {
    * Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing.
    */
   categoryId?: string | null;
-  /**
-   * Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
-   */
-  rights?: RightsAttestation1 | null;
   attempts?: number;
   /**
    * What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure.
