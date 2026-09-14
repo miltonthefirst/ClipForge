@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 from clipforge_contracts import IngestErrorCode, SourceProvider
 
 from clipforge.media.ffprobe import MediaInfo, ProbeError, probe
+from clipforge.media.toolchain import resolve_toolchain, yt_dlp_location
 from clipforge.observability import get_logger
 
 log = get_logger(__name__)
@@ -40,6 +41,7 @@ __all__ = [
     "YouTubeAdapter",
     "classify_youtube_error",
     "content_hash",
+    "resolve_audio_source",
     "select_adapter",
 ]
 
@@ -534,8 +536,34 @@ class FetchedAudio:
     title: str | None
 
 
+class _YtDlpLog:
+    """Send yt-dlp's own diagnostics to the worker log.
+
+    Not decoration. The bug this replaces announced itself in a yt-dlp warning
+    — *"ffmpeg-location ffmpeg does not exist! Continuing without ffmpeg"* —
+    and `no_warnings: True` threw it away, so what reached the operator was
+    `ffprobe and ffmpeg not found` with nothing to say why. Warnings and errors
+    from a dependency this fragile are exactly the ones worth keeping.
+
+    `debug` is dropped on purpose: yt-dlp routes ordinary progress through it
+    and a per-chunk download log is noise.
+    """
+
+    def debug(self, message: str) -> None:
+        return None
+
+    def info(self, message: str) -> None:
+        return None
+
+    def warning(self, message: str) -> None:
+        log.warning("ytdlp.warning", message=message.strip())
+
+    def error(self, message: str) -> None:
+        log.error("ytdlp.error", message=message.strip())
+
+
 def resolve_audio_source(
-    submission: str, dest_dir: Path, *, ffmpeg: str = "ffmpeg"
+    submission: str, dest_dir: Path, *, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"
 ) -> FetchedAudio:
     """Get the audio for a music submission — a YouTube URL, or a file here.
 
@@ -548,6 +576,11 @@ def resolve_audio_source(
     identify, deduplicate and garbage-collect *source video*. A music track is
     not a Source: it is not clipped, not transcribed, and not tracked — it is
     fetched, used, and left in tmp for the workspace to sweep.
+
+    The extraction runs through ffmpeg, so the tools are located **before** the
+    download rather than discovered missing by a postprocessor afterwards. A
+    machine with no ffprobe should learn that in a second, not after pulling
+    forty megabytes of an hour-long mix.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -561,24 +594,32 @@ def resolve_audio_source(
             f"not a YouTube link or a file on this machine: {submission!r}",
         )
 
+    tools = resolve_toolchain(ffmpeg, ffprobe)
+    tools.require("Fetching audio for a music track")
+
     # Imported here: yt-dlp is the `media` extra, and the worker must import
     # this module without it.
     import yt_dlp
 
     template = str(dest_dir / "music-%(id)s.%(ext)s")
-    options = {
+    options: dict[str, Any] = {
         "format": "bestaudio/best",
         "outtmpl": template,
         "quiet": True,
-        "no_warnings": True,
         "noprogress": True,
+        "logger": _YtDlpLog(),
         # m4a rather than mp3: no transcode when YouTube already serves AAC,
         # which it usually does, and ffmpeg reads it just as happily.
         "postprocessors": [
             {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "192"}
         ],
-        "ffmpeg_location": ffmpeg,
     }
+    # Set only when it says something PATH does not already say. yt-dlp
+    # path-checks this value and, on a miss, abandons ffmpeg *and* ffprobe
+    # rather than falling back — so the absent key is the safe one.
+    location = yt_dlp_location(tools)
+    if location is not None:
+        options["ffmpeg_location"] = location
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:

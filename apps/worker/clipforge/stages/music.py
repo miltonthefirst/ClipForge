@@ -110,7 +110,10 @@ class MusicStage:
 
         # ── The track ────────────────────────────────────────────────────────
         track = resolve_audio_source(
-            options.source, self._workspace.tmp_dir, ffmpeg=self._settings.ffmpeg_bin
+            options.source,
+            self._workspace.tmp_dir,
+            ffmpeg=self._settings.ffmpeg_bin,
+            ffprobe=self._settings.ffprobe_bin,
         )
         analysis = analyse(track.path, self._settings.ffmpeg_bin)
 
