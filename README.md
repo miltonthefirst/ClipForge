@@ -44,8 +44,8 @@ residency is scheduled explicitly and jobs are checkpointed pipelines that can r
                 ▼
 ┌───────────────────────────────┐
 │  FIREBASE - control plane     │   Auth · Firestore · FCM · Hosting
-│  Spark free tier              │   rules enforce per-user isolation
-│  no Storage, no Functions     │   the lease reaper runs on the worker
+│  Blaze, since Sept 2026       │   rules enforce the write surface
+│  Storage: 5-day clip copies   │   the lease reaper runs on the worker
 └───────────────┬───────────────┘
                 │ Admin SDK - onSnapshot, transactional lease claim
                 ▼
@@ -53,21 +53,28 @@ residency is scheduled explicitly and jobs are checkpointed pipelines that can r
 │  LOCAL WORKER - Python 3.12   │
 │                               │
 │  Scheduler ── GPU lane (1) ───┼─▶ faster-whisper ─┐
-│            └─ CPU lane (N) ───┼─▶ Ollama LLM  ────┼─ ModelBroker (exclusive)
-│                               │   yt-dlp ─────────┤
-│  Stage runner + checkpoints   │   ffmpeg/NVENC ───┘
-│  Local file server 127.0.0.1  │
+│            └─ CPU lane (N) ───┼─▶ Ollama LLM  ────┼─ ModelBroker (exclusive,
+│                               │   vision model ───┤   and non-reentrant)
+│  Stage runner + checkpoints   │   yt-dlp ─────────┤
+│  File server    127.0.0.1     │   ffmpeg/NVENC ───┘
+│  Control API    127.0.0.1     │
 └───────────────────────────────┘
-        rendered clips stay here
+     master files + bin stay here
 ```
 
-**Rendered clips never leave the machine.** Cloud Storage for Firebase has required a paid plan since
-February 2026, and ClipForge is built to run without one. The phone gets the poster frame, the hook,
-the score breakdown and the transcript excerpt — enough to approve or reject, which is the decision
-that actually matters — and the video itself plays when the PWA is opened on the worker machine. All
-artefact writes go through a `BlobStore` port, so enabling the paid plan later is one adapter and one
-environment variable, not a redesign. See
-[ADR-0009](docs/adr/0009-spark-tier-local-artefacts.md).
+**The worker holds the master; the bucket holds a copy you can watch.** An `UPLOAD` job puts a clip
+in Cloud Storage so the PWA plays real video on any device, and a lifecycle rule expires it after
+five days — the copy exists so somebody can watch and decide, and a decision that has not been made
+in five days is not waiting on video. The local file stays put and is what every later correction
+re-cuts from.
+
+This was the other way round until September 2026: ClipForge was built for the Spark free tier, where
+a phone got a poster frame and a transcript excerpt and nothing else. That is fine for a talking head
+and useless for football, where every judgement — did the crop keep the ball, does the narration line
+up, is the logo still there — is about motion. All artefact writes go through a `BlobStore` port, so
+the switch really was one adapter and one environment variable. See
+[ADR-0018](docs/adr/0018-blaze-and-a-short-lived-bucket-copy.md) and the
+[ADR-0009](docs/adr/0009-spark-tier-local-artefacts.md) it supersedes.
 
 Full detail, including the data model and the job/lease protocol, is in
 [`docs/PLAN.md`](docs/PLAN.md).
@@ -78,6 +85,7 @@ Full detail, including the data model and the job/lease protocol, is in
 | --- | --- |
 | [`apps/web/`](apps/web) | Angular 22 + Tailwind PWA |
 | [`apps/worker/`](apps/worker) | Python 3.12 worker — the whole pipeline |
+| [`apps/desktop/`](apps/desktop) | Tauri shell: supervises the worker, hosts the PWA |
 | [`packages/contracts/`](packages/contracts) | JSON Schema → generated TypeScript + Pydantic types |
 | [`firebase/`](firebase) | Security rules, indexes, Cloud Functions |
 | [`docs/`](docs) | [Plan](docs/PLAN.md), [ADRs](docs/adr) |

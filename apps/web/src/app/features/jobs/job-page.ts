@@ -279,6 +279,28 @@ export class JobPage implements OnDestroy {
     }
   }
 
+  /**
+   * Which attempt this is, out of how many it may have.
+   *
+   * `attempts` counts the ones already SPENT, so a running job is on the next
+   * one and a settled job is on its last. Rendering `attempts + 1`
+   * unconditionally was right for the first case and overshot the second — a
+   * job that had used its single attempt displayed "2 of 1", which reads like a
+   * bug in the scheduler rather than in this line.
+   *
+   * There was a real bug underneath it, which is why the wrong label was worth
+   * following: reclaiming an expired lease costs an attempt and was not
+   * checking the budget, so a job created with `maxAttempts: 1` genuinely did
+   * run twice. Fixed in `lease.is_claimable`; this now cannot exceed the max
+   * because nothing can.
+   */
+  protected attemptLabel(job: Job): string {
+    const spent = job.attempts ?? 0;
+    const max = job.maxAttempts ?? 1;
+    const running = job.status === 'RUNNING';
+    return `${Math.min(running ? spent + 1 : Math.max(spent, 1), max)} of ${max}`;
+  }
+
   // ── Formatting ─────────────────────────────────────────────────────────────
 
   protected stageTone(status: StageStatus): string {

@@ -530,3 +530,46 @@ def test_a_stage_failure_says_which_stage() -> None:
     )
     failed = next(e for e in transition.events if e.kind is JobEventKind.STAGE_FAILED)
     assert failed.stage is StageName.ECHO_TWO
+
+
+def test_a_job_with_one_attempt_is_not_reclaimed_after_its_lease_expires() -> None:
+    """`maxAttempts: 1` means never retry, and reclaiming is a retry.
+
+    REMAKE is created that way on purpose: every way it can fail is a property
+    of the request rather than of the moment. One of them deadlocked, lost its
+    lease, and was picked straight back up — `reap` has always refused to
+    requeue an exhausted job, but a polling worker reaches `is_claimable` first,
+    so whichever ran sooner decided the outcome.
+    """
+    job = running_job(max_attempts=1, attempts=0)
+    expired = T0 + timedelta(seconds=LEASE_SECONDS + 1)
+
+    assert not lease.is_claimable(job, expired)
+
+
+def test_the_reaper_is_what_fails_it() -> None:
+    """Declining to take a job says nothing useful. The reaper names the reason."""
+    job = running_job(max_attempts=1, attempts=0)
+    expired = T0 + timedelta(seconds=LEASE_SECONDS + 1)
+
+    outcome = lease.reap(job, now=expired)
+
+    assert outcome is not None
+    assert outcome.job.status is JobStatus.FAILED
+    assert "attempts exhausted" in (outcome.job.error.message if outcome.job.error else "")
+
+
+def test_a_job_with_attempts_left_is_still_reclaimed() -> None:
+    """The crash-recovery path this must not break."""
+    job = running_job(max_attempts=3, attempts=0)
+    expired = T0 + timedelta(seconds=LEASE_SECONDS + 1)
+
+    assert lease.is_claimable(job, expired)
+
+
+def test_the_last_attempt_is_not_reclaimed() -> None:
+    """Two used of three allows one more; three used allows none."""
+    expired = T0 + timedelta(seconds=LEASE_SECONDS + 1)
+
+    assert lease.is_claimable(running_job(max_attempts=3, attempts=1), expired)
+    assert not lease.is_claimable(running_job(max_attempts=3, attempts=2), expired)

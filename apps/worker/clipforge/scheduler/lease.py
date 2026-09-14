@@ -162,12 +162,26 @@ def is_claimable(job: Job, now: datetime) -> bool:
     that this also holds for a reclaim: a scheduled job whose worker died stays
     unclaimable until its time, which is correct — the schedule is a property of
     the job, not of the attempt.
+
+    **A reclaim that would exceed `maxAttempts` is refused.** Reclaiming costs
+    an attempt — `claim` says so — and nothing here was checking the budget it
+    was spending. `reap` has always refused to requeue an exhausted job, but a
+    polling worker reaches `is_claimable` first, so whichever ran sooner decided
+    the outcome. A REMAKE is created with `maxAttempts: 1` precisely because
+    every way it can fail is a property of the request rather than of the
+    moment; one of them deadlocked, lost its lease, and was picked straight back
+    up for a second attempt it was never entitled to.
+
+    Refusing here rather than raising in `claim` leaves the job RUNNING with a
+    dead lease until the reaper sees it, which is exactly what the reaper is
+    for: it fails the job with a message naming the exhausted attempts, and a
+    worker that merely declined to take it has nothing useful to say.
     """
     if not is_due(job, now):
         return False
     if job.status is JobStatus.QUEUED:
         return True
-    return is_lease_expired(job, now)
+    return is_lease_expired(job, now) and job.attempts + 1 < job.max_attempts
 
 
 def _is_terminal(job: Job) -> bool:
