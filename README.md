@@ -18,9 +18,15 @@ vertical clips, review them from your phone, publish, and learn from what perfor
 ---
 
 > [!NOTE]
-> **Status: Phase 0 complete.** The toolchain, repository skeleton and CI are in place and
-> verified. The pipeline itself is not built yet — see [`docs/PLAN.md`](docs/PLAN.md) for the
-> milestone plan and where things stand.
+> **Status: `v0.1.0`, and the pipeline runs end to end.** Paste a YouTube URL from your phone; the
+> worker transcribes it locally, ranks candidate moments, cuts and captions a vertical clip, writes
+> its title from what is actually on screen, and hands it back for review — with video that plays on
+> the phone. A clip you disagree with can be re-framed, re-voiced in another language, and have a
+> broadcaster's logo covered, and the corrections it learns from you are proposed rather than
+> applied. Approved clips publish to YouTube from the machine that holds both the file and the token.
+>
+> Working towards `v0.2.0`, which closes the loop by measuring whether any of the scoring predicted
+> anything. See [`docs/PLAN.md`](docs/PLAN.md) for the milestone plan and where things stand.
 
 ## Why
 
@@ -294,7 +300,9 @@ CLIPFORGE_YOUTUBE_CLIENT_SECRETS=./.clipforge/youtube-client.json
 uv run --project apps/worker clipforge-worker youtube-auth
 ```
 
-This opens a consent page, catches the redirect on loopback, and stores a refresh token at
+This asks for three scopes — upload, read-only YouTube, and read-only analytics (the last is
+what Phase 9's metrics need, and it is requested here rather than on a second consent screen days
+later). It opens a consent page, catches the redirect on loopback, and stores a refresh token at
 `CLIPFORGE_YOUTUBE_TOKEN_STORE`. The token is encrypted to this machine and this user, is
 **never written to Firestore**, and never reaches the PWA — see
 [ADR-0010](docs/adr/0010-worker-held-publishing-credentials.md) for exactly what that
@@ -320,6 +328,43 @@ reports the token's age precisely because that is the number which predicts the 
 **Quota allows about six uploads a day.** The default YouTube Data API allowance is 10,000 units and
 an upload costs **1,600**. The worker budgets this and refuses *before* starting an upload rather
 than failing on the seventh; `clipforge-worker quota` reports what is left.
+
+### Find out whether any of it worked
+
+Everything above produces scores. This is the part that finds out whether they predicted anything,
+and it is willing to report that they did not.
+
+```bash
+# Fetch daily metrics for every published clip. Safe to run twice.
+uv run --project apps/worker clipforge-worker poll-metrics
+
+# Ask what they mean. Writes docs/calibration-report.md and a calibrations/ record.
+# --uid stamps who ran it; it does not filter what the report covers.
+uv run --project apps/worker clipforge-worker calibrate --uid <your-uid>
+
+# Re-rank every candidate ever produced under different weights. No model is called.
+uv run --project apps/worker clipforge-worker rescore --hook 0.35
+```
+
+All of it is **workspace-wide**, like the review queue and for the same reason: two people
+publishing from one ClipForge are still one channel's worth of performance, and a uid-filtered
+dashboard would draw half of it while looking complete.
+
+Then open **Insights** in the app for retention curves and the cohort breakdowns.
+
+**Analytics needs a scope publishing does not have.** `yt-analytics.readonly` is not implied by the
+upload scope, so a token authorised before this existed will be refused — by name, with the command
+to run. Re-run `youtube-auth` once and both work.
+
+**The report refuses to over-claim, and that is the feature.** Below 20 measured clips every
+correlation is printed with an explicit statement that the sample cannot support a conclusion,
+*including when the coefficient is 1.0*. Below 40, no weights are fitted at all. Fitted weights,
+when they do appear, are a **proposal** — `calibrate` never changes the scoring, and `rescore` needs
+`--apply` and prints the movement first.
+
+That means the honest output for the first several months is "we cannot tell yet" in large print. A
+report that said anything else on twelve clips would be the actual failure. See
+[ADR-0019](docs/adr/0019-reporting-a-result-we-do-not-have-yet.md).
 
 ### Develop
 

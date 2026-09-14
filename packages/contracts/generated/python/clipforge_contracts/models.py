@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from datetime import date as date_aliased
 from enum import StrEnum
 from typing import Any
 
@@ -1208,6 +1209,190 @@ class Publication(BaseModel):
     published_at: AwareDatetime | None = Field(None, alias="publishedAt")
 
 
+class RetentionPoint(BaseModel):
+    """
+    One point on the audience-retention curve. `elapsedRatio` is the position through the video, 0 to 1. `audienceWatchRatio` is the fraction of viewers still watching there, and is NOT capped at 1: a segment people scrub back to reports above 1, which is a real signal and must not be clamped away.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    elapsed_ratio: float = Field(..., alias="elapsedRatio", ge=0.0, le=1.0)
+    audience_watch_ratio: float = Field(..., alias="audienceWatchRatio", ge=0.0)
+
+
+class MetricSnapshot(BaseModel):
+    """
+    One day of realised performance for one publication, at metrics/{publicationId}_{date}.
+
+    A top-level collection rather than a subcollection of the publication, because every question Phase 9 asks is asked ACROSS clips — the correlation between predicted score and retention is not a per-clip query — and a collection group index to answer them would buy nothing that the denormalised clipId and publicationId here do not.
+
+    The join key is `externalId`, and deliberately nothing more. A publication the operator created by hand carries one just as an API upload does, so Phase 15's manual deliveries join here without a second path (see the synthesis-track notes in docs/PLAN.md).
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    clip_id: str = Field(..., alias="clipId", min_length=1)
+    publication_id: str = Field(..., alias="publicationId", min_length=1)
+    platform: PublishPlatform
+    external_id: str = Field(..., alias="externalId", min_length=1)
+    """
+    The platform's video id. How the publication got it is not recorded here and must not become load-bearing.
+    """
+    channel_id: str | None = Field(None, alias="channelId")
+    date: date_aliased
+    """
+    The metrics day in the channel's reporting timezone, YYYY-MM-DD. Not the fetch day: a poller that ran twice or missed a day must produce the same document either way, which is what makes the gap check in exit criterion 1 meaningful.
+    """
+    days_since_publish: int | None = Field(0, alias="daysSincePublish", ge=0)
+    views: int | None = Field(0, ge=0)
+    likes: int | None = Field(0, ge=0)
+    comments: int | None = Field(0, ge=0)
+    shares: int | None = Field(0, ge=0)
+    subscribers_gained: int | None = Field(0, alias="subscribersGained", ge=0)
+    estimated_minutes_watched: float | None = Field(
+        0, alias="estimatedMinutesWatched", ge=0.0
+    )
+    average_view_duration_sec: float | None = Field(
+        None, alias="averageViewDurationSec", ge=0.0
+    )
+    average_view_percentage: float | None = Field(
+        None, alias="averageViewPercentage", ge=0.0
+    )
+    """
+    Percentage of the video watched on average, 0-100. Null when the platform withheld it, which it does below its privacy threshold.
+    """
+    retention: list[RetentionPoint] | None = Field([], validate_default=True)
+    """
+    Empty is a normal state, not a failure: YouTube withholds the curve until a video clears a privacy threshold of a few hundred views. A clip with no curve is excluded from curve-based aggregation rather than counted as a flat zero.
+    """
+    partial: bool | None = False
+    """
+    True when this day is inside the platform's revision window — YouTube restates the last two to three days. A partial snapshot is overwritten on the next poll; a settled one is never rewritten, so the calibration reads a stable history.
+    """
+    fetched_at: AwareDatetime = Field(..., alias="fetchedAt")
+
+
+class ScoreWeights(BaseModel):
+    """
+    How much each rubric dimension contributes to the total. Decision D5 keeps the total in Python precisely so this can change and every historical candidate be re-ranked with no inference. The defaults reproduce the plain rubric sum exactly.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    hook: float = Field(..., ge=0.0, le=1.0)
+    curiosity: float = Field(..., ge=0.0, le=1.0)
+    standalone: float = Field(..., ge=0.0, le=1.0)
+    emotion: float = Field(..., ge=0.0, le=1.0)
+    pacing: float = Field(..., ge=0.0, le=1.0)
+    shareability: float = Field(..., ge=0.0, le=1.0)
+
+
+class CohortKind(StrEnum):
+    """
+    The dimensions performance is broken down by. Each is knowable from documents ClipForge already writes — nothing here needs a new field on a clip.
+    """
+
+    HOOK_TYPE = "HOOK_TYPE"
+    DURATION_BUCKET = "DURATION_BUCKET"
+    SCORE_BAND = "SCORE_BAND"
+    TOPIC = "TOPIC"
+    POSTING_HOUR = "POSTING_HOUR"
+    CAPTION_STYLE = "CAPTION_STYLE"
+    RENDER_PROFILE = "RENDER_PROFILE"
+
+
+class CohortStat(BaseModel):
+    """
+    One bucket of one breakdown. `n` is first and is the field to read first: with tens of clips most buckets are too small to mean anything, and a mean over two videos is a number, not a finding.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    kind: CohortKind
+    bucket: str = Field(..., min_length=1)
+    n: int = Field(..., ge=0)
+    mean_predicted_score: float | None = Field(None, alias="meanPredictedScore")
+    mean_views: float | None = Field(None, alias="meanViews")
+    mean_view_percentage: float | None = Field(None, alias="meanViewPercentage")
+    mean_retention_at_half: float | None = Field(None, alias="meanRetentionAtHalf")
+    """
+    Audience still watching at the midpoint. Chosen as the headline retention number because it is comparable across clips of different lengths, which raw seconds-watched is not.
+    """
+
+
+class CalibrationMethod(StrEnum):
+    """
+    Spearman is the default: it is rank-based, so it survives the outlier that one clip going mildly viral produces in a sample of tens, where Pearson would report that outlier as the whole finding.
+    """
+
+    SPEARMAN = "SPEARMAN"
+    PEARSON = "PEARSON"
+
+
+class CalibrationCorrelation(BaseModel):
+    """
+    The correlation between the predicted score and one realised outcome. A coefficient near zero is a result, and reporting it as one is the point of the phase.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    outcome: str = Field(..., min_length=1)
+    method: CalibrationMethod
+    n: int = Field(..., ge=0)
+    coefficient: float = Field(..., ge=-1.0, le=1.0)
+    ci_low: float | None = Field(None, alias="ciLow")
+    ci_high: float | None = Field(None, alias="ciHigh")
+    interpretation: str | None = None
+    """
+    Plain words, generated from n and the interval — not from the coefficient alone. At n below the threshold this says the sample cannot support a conclusion, whatever the coefficient happens to be.
+    """
+
+
+class CalibrationReport(BaseModel):
+    """
+    What the scores turned out to predict, at calibrations/{reportId}.
+
+    Written, never applied. `fittedWeights` is a proposal the operator adopts by putting it in configuration, in the same spirit as a Preference: a report that silently re-weighted the rubric would destroy the attribution that `modelVersion` and `promptVersion` exist to preserve.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    generated_at: AwareDatetime = Field(..., alias="generatedAt")
+    n: int = Field(..., ge=0)
+    """
+    Publications with enough settled metrics to be included. The denominator for every claim in the report.
+    """
+    window_days: int | None = Field(28, alias="windowDays", ge=1)
+    correlations: list[CalibrationCorrelation]
+    cohorts: list[CohortStat]
+    baseline_weights: ScoreWeights = Field(..., alias="baselineWeights")
+    fitted_weights: ScoreWeights | None = Field(None, alias="fittedWeights")
+    """
+    Null when the sample is too small to fit responsibly, which at the volumes this project produces is the expected answer for a long time.
+    """
+    underpowered: bool | None = True
+    """
+    True when n is below the threshold for any conclusion. Defaults to true so a report that fails to set it errs towards claiming nothing.
+    """
+    notes: list[str] | None = []
+
+
 class WorkerStatus(StrEnum):
     ONLINE = "ONLINE"
     BUSY = "BUSY"
@@ -1765,6 +1950,10 @@ class ClipForgeContracts(BaseModel):
     clip: Clip | None = None
     clip_preview: ClipPreview | None = Field(None, alias="clipPreview")
     publication: Publication | None = None
+    metric_snapshot: MetricSnapshot | None = Field(None, alias="metricSnapshot")
+    calibration_report: CalibrationReport | None = Field(
+        None, alias="calibrationReport"
+    )
     channel: Channel | None = None
     user_profile: UserProfile | None = Field(None, alias="userProfile")
     worker_heartbeat: WorkerHeartbeat | None = Field(None, alias="workerHeartbeat")

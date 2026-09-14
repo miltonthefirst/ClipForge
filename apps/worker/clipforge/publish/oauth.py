@@ -28,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from clipforge.publish.credentials import CredentialError, OAuthTokens
-from clipforge.publish.youtube import TOKEN_URL, UPLOAD_SCOPE
+from clipforge.publish.youtube import ANALYTICS_SCOPE, TOKEN_URL, UPLOAD_SCOPE
 
 __all__ = ["AuthorizationResult", "authorization_url", "exchange_code", "listen_for_redirect"]
 
@@ -37,7 +37,17 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 # `youtube.readonly` is requested alongside upload so a retry can ask whether a
 # video already exists. Without it, reconciling an interrupted upload would be
 # impossible and the safe fallback would be to never retry at all.
-SCOPES = (UPLOAD_SCOPE, "https://www.googleapis.com/auth/youtube.readonly")
+#
+# `yt-analytics.readonly` arrived with Phase 9 and is the reason an operator who
+# authorised before it has to authorise again. It is requested here rather than
+# incrementally, on its own consent screen, because two separate authorisations
+# is two things to get right and the second one would only ever be prompted for
+# by a failure days later, when the first metrics poll came back 403.
+SCOPES = (
+    UPLOAD_SCOPE,
+    "https://www.googleapis.com/auth/youtube.readonly",
+    ANALYTICS_SCOPE,
+)
 
 _DONE_PAGE = b"""<!doctype html><meta charset="utf-8">
 <title>ClipForge</title>

@@ -2,12 +2,14 @@ import { Injectable, inject } from '@angular/core';
 import type {
   AgentDesired,
   AgentReport,
+  CalibrationReport,
   Candidate,
   Channel,
   Clip,
   ClipPreview,
   Job,
   JobEvent,
+  MetricSnapshot,
   MusicOptions,
   ObscureOptions,
   Publication,
@@ -485,7 +487,6 @@ export class ClipForgeStore {
     await updateDoc(doc(this.firebase.db, 'sources', sourceId), { obscure });
   }
 
-
   // ── Tidying up ─────────────────────────────────────────────────────────────
   //
   // **Deleting a record never touches a file.** The two are separate acts
@@ -868,5 +869,50 @@ export class ClipForgeStore {
       status: 'CANCELLED',
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Every metric snapshot in the workspace, oldest day first.
+   *
+   * **Not scoped by uid**, like every other listener here. The first two clips
+   * this project published went out under two different accounts, and a
+   * uid-filtered version of this would have drawn half the channel while
+   * looking complete — the same failure the review queue already fixed.
+   */
+  watchMetrics(
+    onData: (snapshots: MetricSnapshot[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      // **Descending**, then reversed. Every listener here is bounded, and a
+      // bound only makes sense with the newest end kept: ordered ascending, the
+      // 2001st snapshot would push the dashboard into showing the oldest 2000
+      // for ever — freezing on the first clips ever published while new ones
+      // silently never appeared, with nothing on screen to say so.
+      query(collection(this.firebase.db, 'metrics'), orderBy('date', 'desc'), limit(2000)),
+      (snapshot) =>
+        onData(snapshot.docs.map((d) => fromDocument<MetricSnapshot>(d.data())).reverse()),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * The most recent calibration report, whoever ran it.
+   *
+   * One, not all of them. The history matters — a conclusion that changed is
+   * the interesting case — but it belongs on a screen somebody asks for, not on
+   * the one that answers "how are we doing". `uid` on a report records who
+   * generated it, not whose data it covers, so it is not filtered on.
+   */
+  watchLatestCalibration(
+    onData: (report: CalibrationReport | null) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'calibrations'), orderBy('generatedAt', 'desc'), limit(1)),
+      (snapshot) =>
+        onData(snapshot.empty ? null : fromDocument<CalibrationReport>(snapshot.docs[0]!.data())),
+      (error) => onError?.(error),
+    );
   }
 }

@@ -230,7 +230,7 @@ export class JobPage implements OnDestroy {
    * that holds it — see Settings ▸ Storage, which is the only surface that can
    * reach a particular disk.
    */
-  protected async removeJob():Promise<void> {
+  protected async removeJob(): Promise<void> {
     const job = this.job();
     if (!job) return;
     if (!confirm(`Delete job ${job.id} and its log? The files it produced stay on disk.`)) return;

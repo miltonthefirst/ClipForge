@@ -34,6 +34,7 @@ from clipforge.publish.credentials import CredentialError, OAuthTokens, TokenSto
 log = get_logger(__name__)
 
 __all__ = [
+    "ANALYTICS_SCOPE",
     "DAILY_QUOTA_UNITS",
     "UPLOAD_QUOTA_UNITS",
     "QuotaExceededError",
@@ -48,6 +49,12 @@ VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 # The scope needed to upload. Sensitive, hence the verification requirement.
 UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+
+# Read-only analytics, used by Phase 9 and by nothing in this module. It lives
+# here beside the scope it is requested with, so that `oauth.py` can assemble the
+# consent screen without importing the analytics package — the direction of that
+# dependency should stay analytics-reads-publishing, never the reverse.
+ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly"
 
 DAILY_QUOTA_UNITS = 10_000
 UPLOAD_QUOTA_UNITS = 1_600

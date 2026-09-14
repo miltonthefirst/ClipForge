@@ -38,6 +38,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/jobs/job-page').then((m) => m.JobPage),
   },
   {
+    path: 'insights',
+    title: 'Insights · ClipForge',
+    loadComponent: () => import('./features/insights/insights-page').then((m) => m.InsightsPage),
+  },
+  {
     path: 'settings',
     title: 'Settings · ClipForge',
     loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),

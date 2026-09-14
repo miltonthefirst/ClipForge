@@ -23,17 +23,19 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Collection, Iterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from typing import Any
 
 from clipforge_contracts import (
     AgentReport,
+    CalibrationReport,
     Candidate,
     Clip,
     ClipPreview,
     Job,
     JobStatus,
+    MetricSnapshot,
     Preference,
     PreferenceScope,
     PreferenceStatus,
@@ -66,6 +68,8 @@ PREFERENCES = "preferences"
 PREVIEW = "preview"
 PUBLICATIONS = "publications"
 EVENTS = "events"
+METRICS = "metrics"
+CALIBRATIONS = "calibrations"
 
 
 def firestore_client(settings: Settings) -> firestore.Client:
@@ -96,7 +100,9 @@ def _to_document(
     | Clip
     | ClipPreview
     | Preference
-    | Publication,
+    | Publication
+    | MetricSnapshot
+    | CalibrationReport,
 ) -> dict[str, Any]:
     """Model to Firestore document.
 
@@ -110,11 +116,30 @@ def _to_document(
 
 
 def _unwrap_enums(value: Any) -> Any:
-    """StrEnum is a str subclass, so Firestore would accept it — but it would
+    """Convert the Python types Firestore will not take, at the boundary.
+
+    **StrEnum** is a str subclass, so Firestore would accept it — but it would
     round-trip as the enum's repr in some client versions. Converting explicitly
-    removes the ambiguity."""
+    removes the ambiguity.
+
+    **A plain date** it will not take at all. Firestore has a timestamp type and
+    no date type, and the client raises ``TypeError`` on
+    ``datetime.date``. ``MetricSnapshot.date`` is a calendar day — the day a
+    channel reported, in its own reporting timezone — and promoting it to a
+    timestamp would attach a midnight and a timezone that the value does not
+    have and that nothing could interpret correctly afterwards. It is stored as
+    its ISO string, which is what the contract already says it is, what the
+    snapshot ids are built from, and what the range queries compare against.
+
+    The `datetime` check comes first because `datetime` *is* a `date`, and
+    without it every timestamp in the system would be flattened to a day.
+    """
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {k: _unwrap_enums(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -557,6 +582,63 @@ class CandidateStore:
         )
         return [_read(Candidate, doc.to_dict() or {}) for doc in query.stream()]
 
+    def all(self) -> list[Candidate]:
+        """Every candidate in the workspace, newest first.
+
+        For rescoring, which is a whole-history operation by definition: the
+        point of D5 is that a changed weighting re-ranks work already done, and a
+        re-rank over the most recent job only would answer a different and much
+        less interesting question. Workspace-wide rather than uid-scoped for the
+        same reason as everything else here — a re-ranking that skipped another
+        account's candidates would report a movement that is not the movement.
+        """
+        query = self._db.collection(CANDIDATES)
+        found = [_read(Candidate, doc.to_dict() or {}) for doc in query.stream()]
+        return sorted(found, key=lambda c: c.created_at, reverse=True)
+
+    def rescore(self, totals: Sequence[tuple[str, int]]) -> int:
+        """Write new totals, and touch nothing else.
+
+        Only ``total`` moves. ``subScores`` are what the model said, and
+        ``modelVersion`` and ``promptVersion`` are what said it — a recalibration
+        that overwrote any of those would destroy the attribution that makes a
+        score traceable to the thing that produced it, which is the one property
+        Phase 9 is explicitly warned not to break.
+        """
+        written = 0
+        for start in range(0, len(totals), 400):
+            written += self._rescore_chunk(totals[start : start + 400])
+        return written
+
+    def _rescore_chunk(self, chunk: Sequence[tuple[str, int]]) -> int:
+        """Write one batch, falling back to one-at-a-time if any row is gone.
+
+        `update` fails on a document that no longer exists, and a batch fails
+        whole. Without this, one candidate deleted while a long rescore was
+        running would abort the rest — after earlier batches had already
+        committed, leaving the collection half re-ranked with no way to tell
+        which half. Re-running would then be scored against a mixture.
+
+        The fallback writes the survivors and skips the missing, which is the
+        only outcome that leaves the collection consistent.
+        """
+        batch = self._db.batch()
+        for candidate_id, total in chunk:
+            batch.update(self._db.collection(CANDIDATES).document(candidate_id), {"total": total})
+        try:
+            batch.commit()
+        except gcloud_exceptions.NotFound:
+            written = 0
+            for candidate_id, total in chunk:
+                try:
+                    self._db.collection(CANDIDATES).document(candidate_id).update({"total": total})
+                except gcloud_exceptions.NotFound:
+                    log.info("rescore.candidate_gone", candidate_id=candidate_id)
+                    continue
+                written += 1
+            return written
+        return len(chunk)
+
     def replace_for_job(self, job_id: str, candidates: list[Candidate]) -> None:
         """Write this job's candidates, removing any from a previous attempt.
 
@@ -722,6 +804,34 @@ class PublicationStore:
             _to_document(publication)
         )
 
+    def all_published(self) -> list[Publication]:
+        """Every completed publication in the workspace, across all clips.
+
+        **Not scoped by uid**, and that is deliberate rather than lazy. ClipForge
+        is one shared workspace — the review queue stopped filtering by uid for
+        the same reason, and the note there records the cost: "filtering here was
+        what made one system look like two". The first two clips this project
+        ever published went out under two different accounts, so a uid-scoped
+        version of this query would have measured one of them and silently
+        ignored the other, leaving a dashboard that showed half a channel while
+        looking complete.
+
+        A collection-group query, which is the one place the audit-log shape
+        costs something: publications are a subcollection because "what happened
+        to this clip" is the common question, and Phase 9 asks the uncommon one —
+        "what happened to everything we published".
+
+        Filtered on state rather than on `externalId != null` because Firestore
+        cannot index an inequality against null, and PUBLISHED is what the state
+        machine guarantees an external id alongside.
+        """
+        found: list[Publication] = []
+        for doc in self._db.collection_group(PUBLICATIONS).stream():
+            publication = _read(Publication, doc.to_dict() or {})
+            if publication.state is PublicationState.PUBLISHED and publication.external_id:
+                found.append(publication)
+        return found
+
     def live_for_clip(self, clip_id: str, platform: str) -> Publication | None:
         """An attempt on this platform that is not finished and not abandoned.
 
@@ -850,3 +960,158 @@ def iter_all_jobs(client: firestore.Client) -> Iterator[Job]:
     """Every job, for tests and diagnostics. Never used on a hot path."""
     for doc in client.collection(JOBS).stream():
         yield _to_job(doc.to_dict() or {})
+
+
+class MetricStore:
+    """Daily performance snapshots at ``metrics/{publicationId}_{date}``.
+
+    A composite id rather than a generated one, and that is the whole design.
+    Polling is not transactional and will be run twice, by a cron that overlapped
+    with itself or by an operator who ran the command by hand — and a generated
+    id would turn each of those into a duplicate row that quietly doubles a
+    clip's view count in every aggregate downstream. With the day in the id, a
+    second poll of the same day overwrites rather than accumulates.
+
+    The collection is top-level because every question Phase 9 asks spans clips.
+    See the contract for why that beats a subcollection plus a collection-group
+    index.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    @staticmethod
+    def document_id(publication_id: str, day: date) -> str:
+        return f"{publication_id}_{day.isoformat()}"
+
+    def get(self, publication_id: str, day: date) -> MetricSnapshot | None:
+        snapshot = (
+            self._db.collection(METRICS).document(self.document_id(publication_id, day)).get()
+        )
+        if not snapshot.exists:
+            return None
+        return _read(MetricSnapshot, snapshot.to_dict() or {})
+
+    def for_publication(
+        self, publication_id: str, *, since: date | None = None
+    ) -> list[MetricSnapshot]:
+        """Snapshots for one publication, oldest day first, optionally windowed.
+
+        `since` is a real filter and has to be. A report that names a window in
+        its own header and then computes over all history is not slightly
+        imprecise — it is a report whose stated scope is false, which is the one
+        thing this phase cannot afford to be.
+        """
+        query: Any = self._db.collection(METRICS).where(
+            filter=firestore.FieldFilter("publicationId", "==", publication_id)
+        )
+        if since is not None:
+            query = query.where(filter=firestore.FieldFilter("date", ">=", since.isoformat()))
+        found = [_read(MetricSnapshot, doc.to_dict() or {}) for doc in query.stream()]
+        return sorted(found, key=lambda s: s.date)
+
+    def all(self, *, since: date | None = None) -> list[MetricSnapshot]:
+        """Every snapshot in the workspace, for the dashboard and the report.
+
+        Workspace-wide for the same reason :meth:`PublicationStore.all_published`
+        is: a snapshot carries the uid of whoever published the clip, and two
+        people publishing from one ClipForge are still one channel's performance.
+        Filtering by the reader's own uid would show them only the half of the
+        channel they happened to upload themselves.
+        """
+        query: Any = self._db.collection(METRICS)
+        if since is not None:
+            query = query.where(filter=firestore.FieldFilter("date", ">=", since.isoformat()))
+        found = [_read(MetricSnapshot, doc.to_dict() or {}) for doc in query.stream()]
+        return sorted(found, key=lambda s: (s.publication_id, s.date))
+
+    def save_all(self, snapshots: Sequence[MetricSnapshot]) -> int:
+        """Write snapshots, refusing to overwrite a day that has already settled.
+
+        A settled snapshot is never rewritten. YouTube restates the last two or
+        three days and then stops, so a day outside that window is final — and
+        rewriting it anyway would mean a calibration run today and the same run
+        tomorrow could disagree about what happened last month, which destroys
+        the only property that makes the report worth keeping.
+
+        Returns how many were actually written, which is what the caller reports
+        rather than the number it offered.
+        """
+        written = 0
+        batch = self._db.batch()
+        pending = 0
+        for snapshot in snapshots:
+            existing = self.get(snapshot.publication_id, snapshot.date)
+            if existing is not None and not existing.partial:
+                continue
+            reference = self._db.collection(METRICS).document(
+                self.document_id(snapshot.publication_id, snapshot.date)
+            )
+            batch.set(reference, _to_document(snapshot))
+            written += 1
+            pending += 1
+            # Firestore caps a batch at 500 writes. A long backfill of a year of
+            # daily snapshots crosses that easily.
+            if pending >= 400:
+                batch.commit()
+                batch = self._db.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+        return written
+
+    def missing_days(self, publication_id: str, *, start: date, end: date) -> list[date]:
+        """Which days in the range have no snapshot at all.
+
+        This is exit criterion 1 made checkable. "Accrues daily snapshots without
+        gaps" is not observable from a count — a publication with 20 snapshots
+        over 25 days looks healthy until someone asks which five are missing.
+        """
+        held = {snapshot.date for snapshot in self.for_publication(publication_id)}
+        span = (end - start).days
+        return [
+            day
+            for offset in range(span + 1)
+            for day in (start + timedelta(days=offset),)
+            if day not in held
+        ]
+
+
+class CalibrationStore:
+    """Written calibration reports at ``calibrations/{reportId}``.
+
+    Append-only by convention and by rules. A report is evidence about what was
+    believed on a date, and overwriting one would leave no way to see that the
+    conclusion changed — which is the single thing this collection exists to
+    make visible.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def save(self, report: CalibrationReport) -> None:
+        self._db.collection(CALIBRATIONS).document(report.id).set(_to_document(report))
+
+    def get(self, report_id: str) -> CalibrationReport | None:
+        snapshot = self._db.collection(CALIBRATIONS).document(report_id).get()
+        if not snapshot.exists:
+            return None
+        return _read(CalibrationReport, snapshot.to_dict() or {})
+
+    def latest(self) -> CalibrationReport | None:
+        """The most recent report, whoever ran it.
+
+        `uid` on a report records who generated it, not whose data it covers —
+        the analysis is workspace-wide. Querying by the reader's uid would hide a
+        colleague's report and then quietly claim none had been run.
+        """
+        query = (
+            self._db.collection(CALIBRATIONS)
+            .order_by("generatedAt", direction=firestore.Query.DESCENDING)
+            .limit(1)
+        )
+        for doc in query.stream():
+            return _read(CalibrationReport, doc.to_dict() or {})
+        return None
