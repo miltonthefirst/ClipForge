@@ -1,8 +1,7 @@
 <h1 class="text-xl font-semibold">Worker</h1>
 <p class="mt-1 max-w-2xl text-sm text-ink-muted">
-  The process that does the expensive work: transcribing, analysing, cutting and
-  uploading. Nothing moves while it is not running — no job fails, they simply
-  wait.
+  The process that does the expensive work: transcribing, analysing, cutting and uploading. Nothing
+  moves while it is not running — no job fails, they simply wait.
 </p>
 
 <!-- Start, stop, uptime and the log. The same component the Jobs page uses, so
@@ -13,9 +12,9 @@
 
 @if (!inDesktopShell) {
   <p class="mt-6 rounded-lg border border-line bg-panel px-4 py-3 text-sm text-ink-muted">
-    This is the browser build. Starting a worker and reading its configuration
-    both happen over loopback on the machine it runs on, so this page can only
-    show them in the desktop app. Everything else here works from anywhere.
+    This is the browser build. Starting a worker and reading its configuration both happen over
+    loopback on the machine it runs on, so this page can only show them in the desktop app.
+    Everything else here works from anywhere.
   </p>
 } @else {
   <section class="mt-6 rounded-xl border border-line bg-panel p-4">
@@ -54,8 +53,9 @@
           class="mt-3 rounded-lg border border-warn-ink/40 bg-warn-bg px-3 py-2 text-xs text-warn-ink"
         >
           This worker writes to <b>{{ workerDatabase() }}</b> while this app reads
-          <b>{{ appDatabase }}</b>. Nothing it does will appear anywhere in here. It was started
-          outside the app — stop it and press Start above, which always uses this app's database.
+          <b>{{ appDatabase }}</b
+          >. Nothing it does will appear anywhere in here. It was started outside the app — stop it
+          and press Start above, which always uses this app's database.
         </p>
       }
     } @else {

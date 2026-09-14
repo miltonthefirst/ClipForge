@@ -22,9 +22,11 @@ from clipforge.config import Settings
 from clipforge.store.firestore import CalibrationStore, MetricStore
 from clipforge_contracts import (
     CalibrationReport,
+    Candidate,
     MetricSnapshot,
     PublishPlatform,
     ScoreWeights,
+    SubScores,
 )
 from google.cloud import firestore
 
@@ -180,3 +182,55 @@ def test_a_calibration_report_round_trips(calibrations: CalibrationStore) -> Non
     assert found.underpowered is True
     assert found.n == 3
     assert calibrations.latest() is not None
+
+
+def test_a_window_is_a_filter_and_not_a_label(metrics: MetricStore) -> None:
+    """`--window 7` and `--window 365` must not produce identical numbers.
+
+    The report prints its window in its own header. Computing over all history
+    while naming 28 days would not be a rounding error — it would be a report
+    whose stated scope is false, which is the single thing this phase cannot
+    afford to be.
+    """
+    for day in (date(2026, 8, 1), date(2026, 9, 1), date(2026, 9, 12)):
+        metrics.save_all([_snapshot(day, views=1)])
+
+    everything = metrics.for_publication(PUB)
+    windowed = metrics.for_publication(PUB, since=date(2026, 9, 1))
+
+    assert len(everything) == 3
+    assert [s.date for s in windowed] == [date(2026, 9, 1), date(2026, 9, 12)]
+
+
+def test_a_rescore_survives_a_candidate_deleted_underneath_it(
+    client: firestore.Client, settings: Settings
+) -> None:
+    """One missing row must not abort the rest of a batch.
+
+    `update` fails on a document that no longer exists and a batch fails whole,
+    so without the per-row fallback a candidate deleted mid-run would leave the
+    collection half re-ranked with no way to tell which half.
+    """
+    from clipforge.store.firestore import CandidateStore
+
+    candidates = CandidateStore(client, settings)
+    existing = Candidate(
+        id="cand-1",
+        uid=UID,
+        source_id="src-1",
+        start_sec=0.0,
+        end_sec=30.0,
+        sub_scores=SubScores(
+            hook=20, curiosity=15, standalone=15, emotion=10, pacing=5, shareability=5
+        ),
+        total=70,
+        created_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    candidates.replace_for_job("job-1", [existing])
+
+    written = candidates.rescore([("cand-1", 81), ("cand-gone", 55)])
+
+    assert written == 1
+    found = candidates.get("cand-1")
+    assert found is not None
+    assert found.total == 81

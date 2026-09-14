@@ -222,6 +222,15 @@ class AnalyticsClient:
         self._ledger.spend(REPORT_QUOTA_UNITS)
 
         if response.status_code == 403:
+            # Google returns 403 for quota and rate limiting as well as for a
+            # missing scope, and the three want opposite responses: re-authorise
+            # (a human, now) versus wait (nobody, later). `ensure_scope` has
+            # already passed by this point, so a scope problem here is the less
+            # likely reading — telling the operator to re-authorise over a quota
+            # blip would send them to a consent screen that fixes nothing.
+            reason = response.text.lower()
+            if "quota" in reason or "ratelimit" in reason or "rate limit" in reason:
+                raise QuotaExceededError(self._ledger.used_units, REPORT_QUOTA_UNITS)
             raise AnalyticsScopeError(self._scopes)
         if response.status_code == 429:
             raise QuotaExceededError(self._ledger.used_units, REPORT_QUOTA_UNITS)

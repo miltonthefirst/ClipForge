@@ -1309,7 +1309,26 @@ hour. Google meters the two APIs separately in the console; sharing one ledger i
 claim about their billing, and if they are wholly independent the only cost is polling slightly less
 aggressively than necessary.
 
-**Three bugs, and a different thing found each one.**
+**Seven bugs, and a different thing found each one — which is the point.**
+
+A review of the finished phase found four more, and all four were one mistake in
+different clothes: **a number presented as measured that was actually assumed.**
+`--window` was decorative, so the report named a window in its header and
+computed over all history; a zero-filled day was written as *settled*, so one
+dropped row became a permanent fabricated zero that `missing_days` then reported
+as no gap; a cohort mean was withheld on the bucket's size rather than on how
+many clips actually contributed a value, so a bucket of five with one retention
+figure published it as five clips' worth; and the dashboard's `orderBy('date')`
+with a limit kept the *oldest* two thousand snapshots, so past that it would
+freeze on the first clips ever published and silently never show a new one.
+
+Not one of those would have thrown, failed a test, or looked wrong on screen.
+Each produces a plausible number. That is exactly the failure this phase exists
+to resist, and its own first draft contained four instances — which is the best
+argument available for why the honesty rules here are enforced in code and tests
+rather than left to intention. All four now have tests.
+
+**Three earlier ones, each found by a different thing.**
 
 `The analytics queries were scoped by uid.` Every one of them — publications, snapshots, reports,
 candidates — filtered on the reader's own account. This repository had already made and corrected
@@ -1852,8 +1871,8 @@ where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 840 | nothing |
-| Worker integration | 112 | Firestore emulator |
+| Worker unit | 846 | nothing |
+| Worker integration | 114 | Firestore emulator |
 | Security rules | 203 | Auth + Firestore + Storage emulators |
 | Web unit | 59 | nothing |
 | Playwright E2E | 47 | Auth + Firestore emulators, stubbed worker |

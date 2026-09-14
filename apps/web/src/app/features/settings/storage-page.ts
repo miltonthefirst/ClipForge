@@ -131,7 +131,11 @@ export class StoragePage {
     const count = all ? this.trash().length : ids.length;
     const bytes = all ? (this.report()?.trashBytes ?? 0) : this.pickedBytes();
     const size = (bytes / 1024 / 1024 / 1024).toFixed(2);
-    if (!confirm(`Permanently delete ${count} item(s), freeing about ${size} GB? This cannot be undone.`)) {
+    if (
+      !confirm(
+        `Permanently delete ${count} item(s), freeing about ${size} GB? This cannot be undone.`,
+      )
+    ) {
       return;
     }
 

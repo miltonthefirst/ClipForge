@@ -487,7 +487,6 @@ export class ClipForgeStore {
     await updateDoc(doc(this.firebase.db, 'sources', sourceId), { obscure });
   }
 
-
   // ── Tidying up ─────────────────────────────────────────────────────────────
   //
   // **Deleting a record never touches a file.** The two are separate acts
@@ -885,8 +884,14 @@ export class ClipForgeStore {
     onError?: (error: Error) => void,
   ): Unsubscribe {
     return onSnapshot(
-      query(collection(this.firebase.db, 'metrics'), orderBy('date', 'asc'), limit(2000)),
-      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<MetricSnapshot>(d.data()))),
+      // **Descending**, then reversed. Every listener here is bounded, and a
+      // bound only makes sense with the newest end kept: ordered ascending, the
+      // 2001st snapshot would push the dashboard into showing the oldest 2000
+      // for ever — freezing on the first clips ever published while new ones
+      // silently never appeared, with nothing on screen to say so.
+      query(collection(this.firebase.db, 'metrics'), orderBy('date', 'desc'), limit(2000)),
+      (snapshot) =>
+        onData(snapshot.docs.map((d) => fromDocument<MetricSnapshot>(d.data())).reverse()),
       (error) => onError?.(error),
     );
   }
@@ -904,15 +909,9 @@ export class ClipForgeStore {
     onError?: (error: Error) => void,
   ): Unsubscribe {
     return onSnapshot(
-      query(
-        collection(this.firebase.db, 'calibrations'),
-        orderBy('generatedAt', 'desc'),
-        limit(1),
-      ),
+      query(collection(this.firebase.db, 'calibrations'), orderBy('generatedAt', 'desc'), limit(1)),
       (snapshot) =>
-        onData(
-          snapshot.empty ? null : fromDocument<CalibrationReport>(snapshot.docs[0]!.data()),
-        ),
+        onData(snapshot.empty ? null : fromDocument<CalibrationReport>(snapshot.docs[0]!.data())),
       (error) => onError?.(error),
     );
   }

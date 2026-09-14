@@ -107,9 +107,7 @@ export class InsightsPage {
 
   protected readonly rollups = computed(() => rollUp(this.snapshots()));
 
-  protected readonly curves = computed(() =>
-    toCurves(this.rollups(), CHART_WIDTH, CHART_HEIGHT),
-  );
+  protected readonly curves = computed(() => toCurves(this.rollups(), CHART_WIDTH, CHART_HEIGHT));
 
   protected readonly totalViews = computed(() =>
     this.rollups().reduce((total, row) => total + row.views, 0),

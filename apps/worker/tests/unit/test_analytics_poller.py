@@ -10,7 +10,7 @@ silently produce wrong numbers live.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -23,7 +23,7 @@ from clipforge.analytics.youtube import (
     DailyRow,
     is_partial,
 )
-from clipforge.publish.youtube import ANALYTICS_SCOPE, QuotaLedger
+from clipforge.publish.youtube import ANALYTICS_SCOPE, QuotaExceededError, QuotaLedger
 from clipforge_contracts import (
     CohortKind,
     Publication,
@@ -256,17 +256,19 @@ def test_a_quiet_day_becomes_a_zero_not_a_gap() -> None:
 
 
 def test_days_inside_the_revision_window_are_marked_partial() -> None:
+    """YouTube restates recent days, so recent days stay rewritable.
+
+    Every day is *reported* here, so the only thing deciding `partial` is the
+    distance from today — which is what this is about. The other reason a day
+    can be partial, that the API never mentioned it, has its own test.
+    """
     publication = _publication()
-    snapshots = snapshots_for(
-        publication,
-        [],
-        [],
-        start=date(2026, 9, 8),
-        end=TODAY,
-        today=TODAY,
-    )
+    span = [date(2026, 9, 8) + timedelta(days=offset) for offset in range(7)]
+    rows = [DailyRow(day=day, views=5) for day in span]
+    snapshots = snapshots_for(publication, rows, [], start=span[0], end=TODAY, today=TODAY)
     settled = {s.date: s.partial for s in snapshots}
     assert settled[date(2026, 9, 8)] is False
+    assert settled[date(2026, 9, 10)] is False
     assert settled[date(2026, 9, 13)] is True
     assert settled[TODAY] is True
 
@@ -321,3 +323,111 @@ def test_a_publication_with_no_external_id_is_reported_not_polled() -> None:
 def test_partial_is_decided_by_distance_not_by_fetch_time() -> None:
     assert is_partial(date(2026, 9, 13), today=TODAY) is True
     assert is_partial(date(2026, 9, 10), today=TODAY) is False
+
+
+# ── What the review caught ───────────────────────────────────────────────────
+
+
+def test_a_day_the_api_never_mentioned_stays_repairable() -> None:
+    """A zero-filled day is an inference and must not harden into a fact.
+
+    `save_all` never rewrites a settled day, so marking an unreported day
+    settled would make a fabricated zero permanent — and `missing_days` would
+    report no gap, because a fabricated zero is not a gap. The clip would carry
+    a wrong number for ever and every check would call the history healthy.
+    """
+    publication = _publication()
+    rows = [DailyRow(day=date(2026, 9, 5), views=40)]
+    snapshots = snapshots_for(
+        publication, rows, [], start=date(2026, 9, 4), end=date(2026, 9, 6), today=TODAY
+    )
+    by_day = {s.date: s for s in snapshots}
+
+    # Reported and long past: settled, and never to be touched again.
+    assert by_day[date(2026, 9, 5)].partial is False
+    # Never reported: zero-filled, and still correctable by a later poll.
+    assert by_day[date(2026, 9, 4)].partial is True
+    assert by_day[date(2026, 9, 4)].views == 0
+    assert by_day[date(2026, 9, 6)].partial is True
+
+
+def test_a_quota_403_is_not_reported_as_a_missing_scope() -> None:
+    """The two want opposite responses: wait, versus go and re-authorise.
+
+    `ensure_scope` has already passed by the time a request is made, so a 403
+    here is more likely quota than scope — and sending the operator to a consent
+    screen over a limit that clears on its own fixes nothing.
+    """
+    client = AnalyticsClient(
+        access_token=lambda: "t",
+        scopes=(ANALYTICS_SCOPE,),
+        transport=_transport({"error": {"message": "quotaExceeded"}}, status=403),
+    )
+    with pytest.raises(QuotaExceededError):
+        client.daily("vid123", start=TODAY, end=TODAY)
+
+
+def test_a_genuine_403_still_names_the_scope() -> None:
+    client = AnalyticsClient(
+        access_token=lambda: "t",
+        scopes=(ANALYTICS_SCOPE,),
+        transport=_transport({"error": {"message": "insufficientPermissions"}}, status=403),
+    )
+    with pytest.raises(AnalyticsScopeError):
+        client.daily("vid123", start=TODAY, end=TODAY)
+
+
+def test_a_posting_band_converts_rather_than_assuming_utc() -> None:
+    """The label says UTC, so the number had better be UTC.
+
+    22:30 in UTC+4 is 18:30 UTC. Reading `.hour` off the original would file it
+    under "20-24 UTC" — a bucket whose own label says it is not.
+    """
+    east = timezone(timedelta(hours=4))
+    facts = ClipFacts(
+        clip_id="c",
+        publication_id="p",
+        published_at=datetime(2026, 9, 10, 22, 30, tzinfo=east),
+    )
+    assert bucket_for(CohortKind.POSTING_HOUR, facts) == "16-20 UTC"
+
+
+def test_a_mean_needs_enough_values_not_enough_clips() -> None:
+    """Five clips in a bucket and one retention figure is not five clips of evidence.
+
+    YouTube withholds the curve below its privacy threshold, so this is the
+    normal case rather than an odd one: the bucket is large and the measurement
+    is rare. Publishing that single number beside n=5 is exactly the
+    misrepresentation the threshold exists to prevent.
+    """
+    facts = [
+        ClipFacts(
+            clip_id=f"c{i}",
+            publication_id=f"p{i}",
+            duration_sec=20.0,
+            views=100,
+            retention_at_half=0.9 if i == 0 else None,
+        )
+        for i in range(5)
+    ]
+    stat = next(s for s in summarise(facts) if s.kind is CohortKind.DURATION_BUCKET)
+    assert stat.n == 5
+    assert stat.mean_views is not None
+    assert stat.mean_retention_at_half is None
+
+
+def test_every_cohort_kind_has_a_bucket_rule() -> None:
+    """`assert_never` makes a new dimension a type error, not a silent one.
+
+    An earlier version let RENDER_PROFILE be the catch-all, so any unhandled
+    kind would have been bucketed by render profile while a comment claimed the
+    chain was proven exhaustive.
+    """
+    facts = ClipFacts(
+        clip_id="c",
+        publication_id="p",
+        render_profile="default",
+        caption_style="karaoke",
+    )
+    for kind in CohortKind:
+        bucket_for(kind, facts)

@@ -790,7 +790,7 @@ def calibrate(
     Changes nothing. Fitted weights, when the sample is large enough to produce
     any, are a proposal for a human to put into configuration.
     """
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     from clipforge_contracts import ScoreWeights
 
@@ -816,10 +816,14 @@ def calibrate(
     metrics = MetricStore(db, settings)
     reports = CalibrationStore(db, settings)
 
+    # The window is a filter, not a label. A report whose header names 28 days
+    # and whose numbers cover all history is a report with a false scope.
+    since = (datetime.now(UTC) - timedelta(days=window)).date()
+
     facts = []
     # Workspace-wide. `uid` above stamps who ran this, not whose clips count.
     for publication in publications.all_published():
-        snapshots = metrics.for_publication(publication.id)
+        snapshots = metrics.for_publication(publication.id, since=since)
         if not snapshots:
             # No metrics means no evidence. Including it as a row of zeroes
             # would report "we published it and nobody watched" for a clip that

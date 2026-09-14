@@ -108,6 +108,53 @@ workspace-wide system needs workspace-wide queries, and that a test fixture
 which only ever constructs one of something cannot tell you what happens with
 two.
 
+## What a review caught, and the pattern in it
+
+Nine findings against the first draft of this phase. Four of them mattered, and
+all four were the same mistake wearing different clothes: **a number that is
+presented as measured when it was actually assumed.**
+
+- **`--window` was decorative.** The report printed "28-day window" in its own
+  header and then computed over all history, so `--window 7` and `--window 365`
+  produced identical output under different headings. A report whose stated
+  scope is false is worse than one with no scope at all, because the reader has
+  no reason to doubt it. `for_publication` now takes `since` and the CLI passes
+  it.
+
+- **A zero-filled day hardened into a fact.** Days the API did not mention were
+  written as zero *and settled*, and a settled day is never rewritten — so one
+  dropped row became a permanent fabricated zero, with `missing_days` reporting
+  no gap, because a fabricated zero is not a gap. Every check would have called
+  that history healthy. A zero-fill is an inference and is now marked partial
+  until the platform actually reports the day.
+
+- **A bucket mean was withheld on the wrong count.** The threshold compared
+  against the number of clips in the bucket rather than the number that
+  contributed a value. Since YouTube withholds retention below a privacy
+  threshold, the normal case is a large bucket with one measurement — which was
+  being published beside `n=5` as though five clips said it.
+
+- **The dashboard kept the oldest 2000 snapshots**, not the newest: `orderBy`
+  ascending with a limit. Past that many rows the Insights page would have
+  frozen on the earliest clips and silently never shown a new one.
+
+None of these would have failed a test, thrown an error, or looked wrong on
+screen. Each produces a plausible number. That is the failure mode this whole
+phase is built to resist, and the first draft of it contained four instances —
+which is the most useful thing the review found, and the reason the honesty
+rules here are enforced by code and tests rather than by intention.
+
+Three smaller ones are worth recording because they were each a comment or a
+message that had stopped being true: every 403 was reported as a missing scope
+when Google also returns 403 for quota (opposite remedies — wait, versus go and
+re-authorise); the "no weights fitted" note stated a sample-size reason even
+when the real cause was that no dimension fitted positive; and a comment claimed
+mypy proved the cohort dispatch exhaustive when the last branch was an
+unconditional catch-all, so a new dimension would have been silently bucketed by
+render profile. That last one is the same species as the tier-marker bug in the
+same commit: **a claim about a safety property, with no safety property behind
+it.** `assert_never` is there now, and it is the thing the comment claimed.
+
 ## Two more things the build surfaced
 
 **Firestore has no date type.** `MetricSnapshot.date` is a calendar day — the

@@ -70,6 +70,11 @@ def snapshots_for(
 ) -> list[MetricSnapshot]:
     """Turn one publication's API rows into snapshots, one per day in range.
 
+    Days the API did not mention are filled with zeroes and marked partial, so a
+    later poll can replace them with real numbers. A genuinely quiet day is
+    re-filled identically on every poll, which costs a write and keeps the
+    history correctable; that trade is the right way round.
+
     The retention curve is attached to **every** day rather than only the last.
     It is a lifetime-to-date measure, not a daily one, so a snapshot carrying the
     curve as it stood on that date is the honest record — and it means a clip
@@ -112,7 +117,16 @@ def snapshots_for(
                 average_view_duration_sec=row.average_view_duration_sec if row else None,
                 average_view_percentage=row.average_view_percentage if row else None,
                 retention=curve,
-                partial=is_partial(day, today=reference),
+                # Partial if the platform may still restate it, *or* if the
+                # platform never mentioned it. The second half matters more than
+                # it looks: a zero-filled day is an inference — "the API said
+                # nothing, so presumably nothing happened" — and marking an
+                # inference settled makes it permanent, because save_all never
+                # rewrites a settled day. One dropped row, one response that came
+                # back empty for a reason other than silence, and that clip
+                # carries a fabricated zero for ever, with missing_days reporting
+                # no gap because a fabricated zero is not a gap.
+                partial=is_partial(day, today=reference) or row is None,
                 fetched_at=datetime.now(UTC),
             )
         )

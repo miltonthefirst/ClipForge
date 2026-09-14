@@ -79,6 +79,12 @@ def build_report(
 
     target = fit_against or OUTCOMES[0]
     fitted = fit_weights(facts, target)
+    # How many rows the fit could actually have used — clips carrying both
+    # sub-scores and this outcome. Not len(facts): a null fit has two quite
+    # different causes, and reporting "needs n=40 and there were 57" when the
+    # real reason was that no dimension fitted positive is a note that sends the
+    # reader looking for more data to solve a problem more data will not solve.
+    usable = sum(1 for f in facts if f.sub_scores is not None and target.value(f) is not None)
 
     n = len(facts)
     notes = [
@@ -89,12 +95,17 @@ def build_report(
         f"Cohort means are withheld for buckets smaller than {MIN_BUCKET_N}; "
         f"the bucket and its count are still shown.",
     ]
-    if fitted is None:
+    if fitted is None and usable < MIN_N_FOR_FIT:
         notes.append(
-            f"No weights were fitted. A fit needs n={MIN_N_FOR_FIT} against "
-            f"'{target.label}' and there were {n}; and even above that, fitted "
-            f"weights are a proposal for a human to adopt in configuration, "
-            f"never something this report applies."
+            f"No weights were fitted: a fit needs n={MIN_N_FOR_FIT} clips carrying "
+            f"both sub-scores and '{target.label}', and there were {usable}."
+        )
+    elif fitted is None:
+        notes.append(
+            f"No weights were fitted, and not for want of data — {usable} clips "
+            f"qualified. Every rubric dimension fitted zero or negative against "
+            f"'{target.label}', which is a finding rather than a shortage: as "
+            f"written, the rubric has no positive relationship with this outcome."
         )
     else:
         notes.append(

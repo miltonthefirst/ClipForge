@@ -19,9 +19,10 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import fmean
+from typing import assert_never
 
 from clipforge_contracts import CohortKind, CohortStat, SubScores
 
@@ -154,7 +155,13 @@ def _posting_band(published_at: datetime | None) -> str | None:
     """
     if published_at is None:
         return None
-    start = (published_at.hour // 4) * 4
+    # Converted, not assumed. The label says UTC, and a naive or differently
+    # offset datetime would land in a band the label then misnames — which is
+    # worse than no breakdown, because it looks like a finding about timing.
+    moment = (
+        published_at.astimezone(UTC) if published_at.tzinfo else published_at.replace(tzinfo=UTC)
+    )
+    start = (moment.hour // 4) * 4
     return f"{start:02d}-{start + 4:02d} UTC"
 
 
@@ -207,10 +214,14 @@ def bucket_for(kind: CohortKind, facts: ClipFacts) -> str | None:
         return _posting_band(facts.published_at)
     if kind == CohortKind.CAPTION_STYLE:
         return facts.caption_style or None
-    # No fallback return, deliberately. mypy proves this chain exhaustive, so
-    # adding a CohortKind without giving it a bucket here is a type error at the
-    # point the enum grows rather than a dimension that silently reports nothing.
-    return facts.render_profile or None
+    if kind == CohortKind.RENDER_PROFILE:
+        return facts.render_profile or None
+    # Not a fallback: `assert_never` makes adding a CohortKind without giving it
+    # a bucket a type error where the enum grows. An earlier version let
+    # RENDER_PROFILE be the catch-all and claimed in a comment that mypy proved
+    # the chain exhaustive — it did not, and a new dimension would have been
+    # silently bucketed by render profile.
+    assert_never(kind)
 
 
 def retention_at(curve: Sequence[tuple[float, float]], point: float = 0.5) -> float | None:
@@ -237,9 +248,17 @@ def retention_at(curve: Sequence[tuple[float, float]], point: float = 0.5) -> fl
     return None
 
 
-def _mean_or_none(values: list[float], *, n: int) -> float | None:
-    """A mean, withheld below the bucket threshold or with nothing to average."""
-    if n < MIN_BUCKET_N or not values:
+def _mean_or_none(values: list[float]) -> float | None:
+    """A mean, withheld unless enough clips actually contributed a value.
+
+    The threshold is checked against **how many values were averaged**, not how
+    many clips are in the bucket. Those differ constantly: YouTube withholds a
+    retention curve below its privacy threshold, so a bucket of five clips may
+    hold one retention number — and reporting that single figure next to `n=5`
+    would be precisely the misrepresentation this threshold exists to prevent,
+    dressed up as five clips' worth of evidence.
+    """
+    if len(values) < MIN_BUCKET_N:
         return None
     return round(fmean(values), 4)
 
@@ -275,16 +294,13 @@ def summarise(facts: Iterable[ClipFacts]) -> list[CohortStat]:
                             for m in members
                             if m.predicted_score is not None
                         ],
-                        n=n,
                     ),
-                    mean_views=_mean_or_none([float(m.views) for m in members], n=n),
+                    mean_views=_mean_or_none([float(m.views) for m in members]),
                     mean_view_percentage=_mean_or_none(
-                        [m.view_percentage for m in members if m.view_percentage is not None],
-                        n=n,
+                        [m.view_percentage for m in members if m.view_percentage is not None]
                     ),
                     mean_retention_at_half=_mean_or_none(
-                        [m.retention_at_half for m in members if m.retention_at_half is not None],
-                        n=n,
+                        [m.retention_at_half for m in members if m.retention_at_half is not None]
                     ),
                 )
             )

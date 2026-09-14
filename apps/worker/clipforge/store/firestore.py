@@ -605,23 +605,39 @@ class CandidateStore:
         score traceable to the thing that produced it, which is the one property
         Phase 9 is explicitly warned not to break.
         """
-        batch = self._db.batch()
-        pending = 0
         written = 0
-        for candidate_id, total in totals:
-            batch.update(
-                self._db.collection(CANDIDATES).document(candidate_id),
-                {"total": total},
-            )
-            written += 1
-            pending += 1
-            if pending >= 400:
-                batch.commit()
-                batch = self._db.batch()
-                pending = 0
-        if pending:
-            batch.commit()
+        for start in range(0, len(totals), 400):
+            written += self._rescore_chunk(totals[start : start + 400])
         return written
+
+    def _rescore_chunk(self, chunk: Sequence[tuple[str, int]]) -> int:
+        """Write one batch, falling back to one-at-a-time if any row is gone.
+
+        `update` fails on a document that no longer exists, and a batch fails
+        whole. Without this, one candidate deleted while a long rescore was
+        running would abort the rest — after earlier batches had already
+        committed, leaving the collection half re-ranked with no way to tell
+        which half. Re-running would then be scored against a mixture.
+
+        The fallback writes the survivors and skips the missing, which is the
+        only outcome that leaves the collection consistent.
+        """
+        batch = self._db.batch()
+        for candidate_id, total in chunk:
+            batch.update(self._db.collection(CANDIDATES).document(candidate_id), {"total": total})
+        try:
+            batch.commit()
+        except gcloud_exceptions.NotFound:
+            written = 0
+            for candidate_id, total in chunk:
+                try:
+                    self._db.collection(CANDIDATES).document(candidate_id).update({"total": total})
+                except gcloud_exceptions.NotFound:
+                    log.info("rescore.candidate_gone", candidate_id=candidate_id)
+                    continue
+                written += 1
+            return written
+        return len(chunk)
 
     def replace_for_job(self, job_id: str, candidates: list[Candidate]) -> None:
         """Write this job's candidates, removing any from a previous attempt.
@@ -977,11 +993,21 @@ class MetricStore:
             return None
         return _read(MetricSnapshot, snapshot.to_dict() or {})
 
-    def for_publication(self, publication_id: str) -> list[MetricSnapshot]:
-        """Every snapshot for one publication, oldest day first."""
-        query = self._db.collection(METRICS).where(
+    def for_publication(
+        self, publication_id: str, *, since: date | None = None
+    ) -> list[MetricSnapshot]:
+        """Snapshots for one publication, oldest day first, optionally windowed.
+
+        `since` is a real filter and has to be. A report that names a window in
+        its own header and then computes over all history is not slightly
+        imprecise — it is a report whose stated scope is false, which is the one
+        thing this phase cannot afford to be.
+        """
+        query: Any = self._db.collection(METRICS).where(
             filter=firestore.FieldFilter("publicationId", "==", publication_id)
         )
+        if since is not None:
+            query = query.where(filter=firestore.FieldFilter("date", ">=", since.isoformat()))
         found = [_read(MetricSnapshot, doc.to_dict() or {}) for doc in query.stream()]
         return sorted(found, key=lambda s: s.date)
 
