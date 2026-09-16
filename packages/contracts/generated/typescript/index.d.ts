@@ -360,6 +360,10 @@ export interface RemakeOptions {
    * Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
    */
   profile?: string | null;
+  /**
+   * Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one.
+   */
+  keepMusic?: boolean | null;
 }
 /**
  * The reframe half of a remake. Every mode other than AS_RENDERED re-cuts from the original source, because the rendered clip has already had the discarded pixels thrown away — so these need the source media to still be on the worker, and fail clearly when the workspace collector has taken it.
@@ -903,6 +907,14 @@ export interface AppliedMusic {
    * Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
    */
   musicStartSec?: number | null;
+  /**
+   * The trim the reviewer asked for, copied from MusicOptions. Null when they asked for none and the stage's own level stands. Recorded because the music is baked into the rendered file: a remake re-renders and has to mix the track again, and without this number it comes back at the default level, silently undoing a correction the reviewer had already made and approved.
+   */
+  gainDb?: number | null;
+  /**
+   * Whether the excerpt was started on a beat, copied from MusicOptions. Null on clips scored before this was recorded, which is not the same as false. Kept for the same reason as gainDb: reproducing the mix the reviewer approved needs every input to it, not only the track and the start offset.
+   */
+  alignToBeat?: boolean | null;
 }
 /**
  * What was asked for, and what was done. Carried on the clip the remake produced, beside `derivedFromClipId`, so the pair reads as a correction and its result rather than as two unrelated clips.

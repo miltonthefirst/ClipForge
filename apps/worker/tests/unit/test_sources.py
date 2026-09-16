@@ -14,9 +14,11 @@ them fails instead of a user silently getting UNKNOWN.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
+from clipforge.media import sources
 from clipforge.media.sources import (
     IngestError,
     LocalFileAdapter,
@@ -28,6 +30,7 @@ from clipforge.media.sources import (
     resolve_audio_source,
     select_adapter,
 )
+from clipforge.media.toolchain import Toolchain
 from clipforge_contracts import IngestErrorCode, SourceProvider
 
 FIXTURES = Path(__file__).resolve().parents[2] / "assets" / "fixtures"
@@ -434,3 +437,109 @@ def test_a_refused_link_leaves_nothing_behind(tmp_path: Path) -> None:
         resolve_audio_source("https://youtu.be/kdQJnqHGI8c?list=RDabc", dest)
 
     assert not dest.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The music cache — the fetch that must not happen twice
+# ─────────────────────────────────────────────────────────────────────────────
+
+# `None` in sys.modules is how CPython spells "this import must fail": the import
+# machinery finds the entry, sees it is not a module, and raises ImportError. It
+# is the only way to prove a code path never reached `import yt_dlp`, because
+# yt-dlp really is installed on this machine.
+_NO_YT_DLP = "yt_dlp"
+
+
+@pytest.mark.unit
+def test_a_track_already_fetched_is_returned_without_importing_yt_dlp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """yt-dlp has a skip of its own for a file it has already downloaded, and it
+    never fires here — it looks for the pre-postprocessing extension, and the
+    m4a extraction deletes exactly that file. So every re-mix of the same track
+    re-downloaded it, tens of seconds each time, which is most of the wait a
+    reviewer sits through when a remake carries its music forward.
+
+    Asserted through the import rather than by timing it: the check has to
+    happen before the toolchain lookup and the yt-dlp import, not merely before
+    the network call.
+    """
+    cached = tmp_path / "music-dQw4w9WgXcQ.m4a"
+    cached.write_bytes(b"not aac, but it is a file with bytes in it")
+    monkeypatch.setitem(sys.modules, _NO_YT_DLP, None)
+
+    found = resolve_audio_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+
+    assert found.path == cached
+
+
+@pytest.mark.unit
+def test_a_cached_track_reports_no_title_rather_than_inventing_one_from_the_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file is named after the video id, so its stem is `music-dQw4w9WgXcQ`
+    — which is not what anything called the track. `RemakeStage._score` falls
+    back to the title already on the clip only when this is None, so a stem here
+    overwrote a title the reviewer had approved as "Slow Burn" with the video id
+    on three screens, on the first remake that carried the music forward."""
+    (tmp_path / "music-dQw4w9WgXcQ.m4a").write_bytes(b"a track this machine already has")
+    monkeypatch.setitem(sys.modules, _NO_YT_DLP, None)
+
+    found = resolve_audio_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+
+    assert found.title is None
+
+
+@pytest.mark.unit
+def test_a_local_track_keeps_the_name_the_reviewer_gave_it(tmp_path: Path) -> None:
+    """The other half of the rule above. A path someone typed has a meaningful
+    stem, and it is the only name that track has anywhere."""
+    track = tmp_path / "Slow Burn.m4a"
+    track.write_bytes(b"a track on this machine")
+
+    assert resolve_audio_source(str(track), tmp_path).title == "Slow Burn"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("music-dQw4w9WgXcQ.m4a", b""),
+        ("music-dQw4w9WgXcQ.webm.part", b"the first half of a track"),
+        # The one the `.part` filter never covered. `FFmpegExtractAudioPP.run`
+        # transcodes straight into the output name when the downloaded extension
+        # differs, with no `.part` marker over that window — so a worker killed
+        # mid-transcode used to leave a truncated, non-empty, perfectly
+        # finished-looking track. It cannot any more, because yt-dlp is told to
+        # write under this prefix and the rename into `music-` is what says the
+        # file is whole.
+        ("fetching-dQw4w9WgXcQ.m4a", b"eight seconds of a three-minute track"),
+    ],
+)
+def test_the_wreckage_of_a_killed_download_is_not_a_cached_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, content: bytes
+) -> None:
+    """Every one of these is what a worker killed mid-fetch leaves behind, and
+    every one is the right shape to look finished. Handing one back would put an
+    empty or truncated file into the mix and then never fetch the real one
+    again, because the cache hit is what stops the fetch."""
+    (tmp_path / name).write_bytes(content)
+    monkeypatch.setattr(sources, "resolve_toolchain", _pretend_tools_are_installed)
+    monkeypatch.setitem(sys.modules, _NO_YT_DLP, None)
+
+    with pytest.raises(ImportError):
+        resolve_audio_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+
+
+def _pretend_tools_are_installed(ffmpeg: str, ffprobe: str) -> Toolchain:
+    """So the test above fails at the import it is about, on any machine.
+
+    Without it a runner with no ffmpeg raises ToolchainError first, and the test
+    would pass for the wrong reason on that machine and fail on this one.
+    """
+    return Toolchain(
+        ffmpeg=Path(ffmpeg),
+        ffprobe=Path(ffprobe),
+        requested_ffmpeg=ffmpeg,
+        requested_ffprobe=ffprobe,
+    )

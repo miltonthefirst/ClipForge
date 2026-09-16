@@ -361,7 +361,8 @@ service cloud.firestore {
       return options != null
              && options.keys().hasOnly(
                   ['notes', 'interpretNotes', 'framing', 'voice',
-                   'startDeltaSec', 'endDeltaSec', 'profile', 'obscure'])
+                   'startDeltaSec', 'endDeltaSec', 'profile', 'obscure',
+                   'keepMusic'])
              && (options.get('notes', null) == null
                  || (options.notes is string && options.notes.size() <= 2000))
              && (options.get('interpretNotes', null) == null || options.interpretNotes is bool)
@@ -381,6 +382,11 @@ service cloud.firestore {
              && (options.get('endDeltaSec', null) == null
                  || (options.endDeltaSec is number
                      && options.endDeltaSec >= -30 && options.endDeltaSec <= 30))
+             // Null and true both mean "carry the clip's soundtrack into the
+             // remake"; only false drops it. Type-checked here as well as listed
+             // in hasOnly because hasOnly alone would let a string through, and
+             // the worker reads this as a boolean.
+             && (options.get('keepMusic', null) == null || options.keepMusic is bool)
              && framingOk(options.get('framing', null))
              && voiceOk(options.get('voice', null))
              && obscureOk(options.get('obscure', null));

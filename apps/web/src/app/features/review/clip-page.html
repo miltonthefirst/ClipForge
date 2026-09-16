@@ -1011,6 +1011,34 @@
               </p>
             </fieldset>
 
+            <!-- Music.
+                 Shown only for a clip that has a track, and phrased as an
+                 opt-out. The music is mixed into the rendered file rather than
+                 kept beside it, so a remake has to fetch the track and mix it
+                 in again — and one that did not handed back a silent clip whose
+                 record still named a soundtrack. What the excerpt and the level
+                 will be is decided by the rest of this form, and by whatever the
+                 worker reads in the note, which is why the sentences come from
+                 core/remake-music.ts rather than sitting here as fixed text. -->
+            @if (remakeMusic(); as music) {
+              <fieldset>
+                <label class="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    [checked]="remakeKeepMusic()"
+                    (change)="remakeKeepMusic.set(!remakeKeepMusic())"
+                  />
+                  Keep the music
+                </label>
+                <p class="mt-1 text-xs text-ink-subtle">{{ music.summary }}</p>
+                @for (warning of music.warnings; track warning) {
+                  <p class="mt-2 rounded-lg bg-panel-soft px-3 py-2 text-xs text-ink-muted">
+                    {{ warning }}
+                  </p>
+                }
+              </fieldset>
+            }
+
             <button
               type="button"
               class="w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"

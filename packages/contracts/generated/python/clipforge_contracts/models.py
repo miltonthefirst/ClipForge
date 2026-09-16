@@ -713,6 +713,10 @@ class RemakeOptions(BaseModel):
     """
     Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
     """
+    keep_music: bool | None = Field(None, alias="keepMusic")
+    """
+    Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one.
+    """
 
 
 class NoteInterpretation(BaseModel):
@@ -1571,6 +1575,14 @@ class AppliedMusic(BaseModel):
     music_start_sec: float | None = Field(None, alias="musicStartSec")
     """
     Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
+    """
+    gain_db: float | None = Field(None, alias="gainDb", ge=-40.0, le=12.0)
+    """
+    The trim the reviewer asked for, copied from MusicOptions. Null when they asked for none and the stage's own level stands. Recorded because the music is baked into the rendered file: a remake re-renders and has to mix the track again, and without this number it comes back at the default level, silently undoing a correction the reviewer had already made and approved.
+    """
+    align_to_beat: bool | None = Field(None, alias="alignToBeat")
+    """
+    Whether the excerpt was started on a beat, copied from MusicOptions. Null on clips scored before this was recorded, which is not the same as false. Kept for the same reason as gainDb: reproducing the mix the reviewer approved needs every input to it, not only the track and the start offset.
     """
 
 

@@ -38,6 +38,7 @@ import type {
 import { youtubePlaylist } from '../../core/music-source';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { publishStateOf } from '../../core/publish-state';
+import { remakeMusicOutlook } from '../../core/remake-music';
 import { CATEGORIES, PRIVACY_OPTIONS, categoryLabel } from '../../core/youtube';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
@@ -374,6 +375,16 @@ export class ClipPage implements OnDestroy {
   protected readonly remakeVoiceCaptions = signal<VoiceCaptions>('REBUILD');
   protected readonly remakeScript = signal('');
 
+  /**
+   * Whether the new version gets this clip's track. An opt-OUT, defaulting to
+   * carrying it.
+   *
+   * Reset to true for every clip, deliberately: dropping the soundtrack is a
+   * thing you decide about one remake, and a control that remembered the last
+   * answer would silently strip the music from the next clip.
+   */
+  protected readonly remakeKeepMusic = signal(true);
+
   protected readonly notesMax = NOTES_MAX;
   protected readonly scriptMax = SCRIPT_MAX;
   protected readonly trimLimit = TRIM_LIMIT_SEC;
@@ -408,6 +419,27 @@ export class ClipPage implements OnDestroy {
         this.remakeKeepMarks() ||
         this.remakeStartDelta() !== 0 ||
         this.remakeEndDelta() !== 0),
+  );
+
+  /**
+   * What this remake will do to the clip's music, or null when it has none.
+   *
+   * Computed rather than written into the template because the answer depends
+   * on the rest of what has been asked for — a trim that changes the length
+   * moves the excerpt, and a track that replaces the audio has to give way to a
+   * narration this remake adds. The note goes in too, not to be read but to be
+   * counted: the worker interprets it into these same options after this screen
+   * is gone, so its presence is what turns the definite sentences into
+   * conditional ones. See core/remake-music.ts.
+   */
+  protected readonly remakeMusic = computed(() =>
+    remakeMusicOutlook(this.clip()?.music, {
+      keepMusic: this.remakeKeepMusic(),
+      startDeltaSec: this.remakeStartDelta(),
+      endDeltaSec: this.remakeEndDelta(),
+      addsNarration: this.remakeVoiceOn(),
+      notes: this.remakeNotes(),
+    }),
   );
 
   /** Where the playhead is, so a pan point can be set against what is on screen. */
@@ -654,6 +686,7 @@ export class ClipPage implements OnDestroy {
     this.remakeHideMarks.set(false);
     this.remakeKeepMarks.set(false);
     this.remakeScript.set('');
+    this.remakeKeepMusic.set(true);
     this.remakeStartDelta.set(0);
     this.remakeEndDelta.set(0);
     this.playhead.set(0);
@@ -1021,6 +1054,11 @@ export class ClipPage implements OnDestroy {
             }
           : null,
       profile: null,
+      // An opt-OUT, so the boolean goes out on every remake rather than only
+      // when it is false: the worker reads null and true alike as "carry it",
+      // and saying so explicitly is what makes the request readable later
+      // beside a clip that came back without its track.
+      keepMusic: this.remakeKeepMusic(),
     };
 
     await this.run('Remake queued — the new version will appear in the review queue', async () => {

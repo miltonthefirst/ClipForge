@@ -648,6 +648,51 @@ class _YtDlpLog:
         log.error("ytdlp.error", message=message.strip())
 
 
+# What a finished track is called once it is this machine's to keep, and what
+# yt-dlp is told to write while it is still working. Two names rather than one:
+# see :func:`_cached_audio`.
+_CACHED = "music-"
+_FETCHING = "fetching-"
+
+
+def _cached_audio(dest_dir: Path, video_id: str, *, prefix: str = _CACHED) -> Path | None:
+    """A track this machine already fetched, or ``None`` to go and get it.
+
+    yt-dlp has a skip of its own for a file it has already downloaded and it
+    never fires here, because of how the m4a extraction is put together.
+    `YoutubeDL.existing_video_file` looks for the output under the extension of
+    the *downloaded format* — `<id>.webm`, usually — since `final_ext` is only
+    ever set by yt-dlp's command-line front end and not by the library API this
+    module calls. But `FFmpegExtractAudioPP.run` returns that pre-conversion
+    file in its files-to-delete list, and `YoutubeDL.run_pp` deletes everything
+    in that list unless `keepvideo` is set. So the only file left after a
+    successful fetch is the `.m4a`, and the skip is looking for a name nothing
+    will ever have. (Read against yt-dlp 2026.08.19.)
+
+    That cost tens of seconds per re-mix, which is the whole of the wait a
+    reviewer sits through when a remake carries its music forward.
+
+    **The cache only ever looks at a name this module finished writing.**
+    Filtering `.part` and `.ytdl` does not cover the window that matters:
+    `FFmpegExtractAudioPP.run` transcodes straight into the output name whenever
+    the downloaded extension differs, with no `.part` marker over that stretch,
+    so a worker killed mid-transcode left a truncated but non-empty file under
+    exactly the name a cache hit looks for — and that hit is what stops the
+    fetch that would replace it, so the machine was wedged on half a track
+    forever. yt-dlp therefore downloads under `_FETCHING` and the finished file
+    is renamed into `_CACHED`, which makes "finished" a fact this module
+    establishes rather than one it infers afterwards. Probing the candidate
+    instead would only ask whether the bytes decode, and would put ffprobe back
+    on the one path that deliberately runs before the toolchain lookup.
+    """
+    for match in sorted(dest_dir.glob(f"{prefix}{video_id}.*")):
+        if match.suffix in {".part", ".ytdl"} or not match.is_file():
+            continue
+        if match.stat().st_size > 0:
+            return match
+    return None
+
+
 def resolve_audio_source(
     submission: str, dest_dir: Path, *, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"
 ) -> FetchedAudio:
@@ -667,6 +712,10 @@ def resolve_audio_source(
     download rather than discovered missing by a postprocessor afterwards. A
     machine with no ffprobe should learn that in a second, not after pulling
     forty megabytes of an hour-long mix.
+
+    A track already in ``dest_dir`` is returned without going near the network
+    or yt-dlp at all — see :func:`_cached_audio` for why yt-dlp's own skip does
+    not cover this.
     """
     local = Path(submission).expanduser()
     if local.is_file():
@@ -685,6 +734,23 @@ def resolve_audio_source(
             f"not a YouTube link or a file on this machine: {submission!r}",
         )
 
+    # Before the toolchain check and the yt-dlp import, both of which are only
+    # needed to *fetch*: a re-mix of a track that is already here should not
+    # depend on either.
+    cached = _cached_audio(dest_dir, video_id)
+    if cached is not None:
+        log.info("music.track_cached", track=cached.name)
+        # **No title, rather than the stem.** The file is named after the video
+        # id, so the stem is `music-dQw4w9WgXcQ` — which is not what anything
+        # called the track. `RemakeStage._score` falls back to the title already
+        # on the clip only when this is None, so returning the stem overwrote a
+        # title the reviewer had seen as "Slow Burn" with the video id on three
+        # screens, on the first remake that carried the music. None is already
+        # what `trackTitle` means for "the source did not say". The local-file
+        # branch above keeps its stem for the opposite reason: that name is one
+        # the reviewer typed.
+        return FetchedAudio(path=cached, title=None)
+
     tools = resolve_toolchain(ffmpeg, ffprobe)
     tools.require("Fetching audio for a music track")
 
@@ -697,7 +763,7 @@ def resolve_audio_source(
     # this module without it.
     import yt_dlp
 
-    template = str(dest_dir / "music-%(id)s.%(ext)s")
+    template = str(dest_dir / f"{_FETCHING}%(id)s.%(ext)s")
     options: dict[str, Any] = {
         "format": "bestaudio/best",
         "outtmpl": template,
@@ -735,11 +801,22 @@ def resolve_audio_source(
             f"could not fetch audio: {exc}",
         ) from exc
 
-    matches = sorted(dest_dir.glob(f"music-{video_id}.*"))
-    if not matches:
+    # The same rule the cache check uses, so "a finished track" means one thing
+    # here and not two: a `.part` left by an earlier killed download must not be
+    # picked up as this one's output either. Under the staging prefix, so
+    # nothing that reaches this line can already have been served as a cached
+    # track. The postprocessor's `.m4a` sorts ahead of every container YouTube
+    # serves audio in, so a pre-conversion leftover cannot be preferred to it.
+    fetched = _cached_audio(dest_dir, video_id, prefix=_FETCHING)
+    if fetched is None:
         raise IngestError(
             IngestErrorCode.NO_SUITABLE_FORMAT,
             "the download reported success but produced no audio file",
         )
 
-    return FetchedAudio(path=matches[0], title=info.get("title"))
+    # The rename is the commit, and it is the whole of the fix: same directory,
+    # so it is atomic, and the name it lands under is the only one a later job
+    # will look for.
+    finished = dest_dir / f"{_CACHED}{video_id}{fetched.suffix}"
+    fetched.replace(finished)
+    return FetchedAudio(path=finished, title=info.get("title"))

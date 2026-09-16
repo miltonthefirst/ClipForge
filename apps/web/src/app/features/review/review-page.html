@@ -142,6 +142,22 @@
 
           <p class="mt-1 text-xs text-ink-subtle">
             {{ card.clip.durationSec | number: '1.0-0' }}s
+            <!-- Which version this is, and whether it has a soundtrack.
+                 The queue collapses a whole lineage into one row, so without
+                 these a remade clip and a scored one look exactly like the
+                 original they came from. That matters most when something has
+                 gone wrong between versions: a remake that lost the music is
+                 otherwise a row that looks like your clip and sounds wrong,
+                 with nothing here to say it is not the one you approved. -->
+            @if ((card.clip.version ?? 1) > 1) {
+              ·
+              <span title="The latest version of this clip. The earlier ones are on its own page"
+                >v{{ card.clip.version }}</span
+              >
+            }
+            @if (card.clip.music; as music) {
+              · <span [title]="music.trackTitle || music.source">music</span>
+            }
             @if (card.source.kind === 'poster') {
               · <span class="text-warn-ink">no cloud copy</span>
             } @else if (card.source.kind === 'blocked') {

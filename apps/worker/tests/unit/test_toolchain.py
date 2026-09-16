@@ -182,13 +182,19 @@ def test_whatever_is_reported_is_a_path_that_exists() -> None:
 
 
 class _FakeYoutubeDL:
-    """Captures the options and writes the file the caller will look for."""
+    """Captures the options and writes the file the template asks for.
+
+    The template and not the name the caller will look for afterwards, because
+    those are deliberately different: yt-dlp downloads under a staging name and
+    the finished file is renamed into the cached one, so that a worker killed
+    mid-transcode cannot leave half a track under a name the cache trusts.
+    """
 
     captured: ClassVar[dict[str, Any]] = {}
 
     def __init__(self, options: dict[str, Any]) -> None:
         type(self).captured = options
-        self._dest = Path(options["outtmpl"]).parent
+        self._template = Path(options["outtmpl"])
 
     def __enter__(self) -> _FakeYoutubeDL:
         return self
@@ -197,7 +203,8 @@ class _FakeYoutubeDL:
         return None
 
     def extract_info(self, url: str, download: bool = True) -> dict[str, Any]:
-        (self._dest / "music-kdQJnqHGI8c.m4a").write_bytes(b"\x00")
+        written = self._template.name.replace("%(id)s", "kdQJnqHGI8c").replace("%(ext)s", "m4a")
+        self._template.with_name(written).write_bytes(b"\x00")
         return {"id": "kdQJnqHGI8c", "title": "A Track"}
 
 
@@ -439,7 +446,10 @@ def test_a_link_naming_one_video_is_still_fetched(
 
     fetched = resolve_audio_source(submission, tmp_path)
 
+    # Renamed out of the staging name yt-dlp was given, which is what makes a
+    # cache hit mean "this machine finished writing this file".
     assert fetched.path.name == "music-kdQJnqHGI8c.m4a"
+    assert fetched.path.is_file()
     assert fetched.title == "A Track"
 
 

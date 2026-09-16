@@ -782,6 +782,13 @@ export class ClipForgeStore {
    * a source the workspace collector has taken, a language with no voice, nudges
    * that cross over — and a retry reproduces them exactly while spending the
    * render time twice.
+   *
+   * The options go into the job verbatim, including `keepMusic`, which decides
+   * whether the new version gets the track this clip was scored with. Verbatim
+   * means every field has to be in the `hasOnly` list `remakeOptionsOk` in
+   * firebase/firestore.rules enforces: a field this app invents and the rules
+   * have not been told about does not arrive stripped, it gets the whole create
+   * denied with "Missing or insufficient permissions", which names nothing.
    */
   async requestRemake(uid: string, clipId: string, options: RemakeOptions): Promise<string> {
     const reference = doc(collection(this.firebase.db, 'jobs'));
