@@ -1,4 +1,4 @@
-import { DecimalPipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -19,6 +19,7 @@ import type {
   CropAnchor,
   FitFill,
   FramingMode,
+  Job,
   MusicCaptions,
   MusicMode,
   MusicOptions,
@@ -34,7 +35,9 @@ import type {
   VoiceCaptions,
 } from '@clipforge/contracts';
 
+import { youtubePlaylist } from '../../core/music-source';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
+import { publishStateOf } from '../../core/publish-state';
 import { CATEGORIES, PRIVACY_OPTIONS, categoryLabel } from '../../core/youtube';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
@@ -161,7 +164,7 @@ const SUB_SCORE_MAXIMA: readonly (readonly [keyof SubScores, string, number])[] 
  */
 @Component({
   selector: 'app-clip-page',
-  imports: [DecimalPipe, FormsModule, RouterLink],
+  imports: [DatePipe, DecimalPipe, FormsModule, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './clip-page.html',
 })
@@ -176,6 +179,7 @@ export class ClipPage implements OnDestroy {
 
   private stopClip: (() => void) | null = null;
   private stopChannels: (() => void) | null = null;
+  private stopDelivery: (() => void) | null = null;
 
   protected readonly categories = CATEGORIES;
   protected readonly privacies = PRIVACY_OPTIONS;
@@ -185,6 +189,18 @@ export class ClipPage implements OnDestroy {
   protected readonly preview = signal<ClipPreview | null>(null);
   protected readonly candidate = signal<Candidate | null>(null);
   protected readonly publications = signal<Publication[]>([]);
+  /**
+   * Outstanding publish jobs for this clip.
+   *
+   * Watched because a `Publication` does not exist until the worker picks the
+   * job up, so without these a publish that has been *asked for* — scheduled
+   * for Friday, or queued behind a worker that is not running — is
+   * indistinguishable from one nobody has requested. This screen offered
+   * Publish again in exactly that state, which is how the same video goes out
+   * twice. The publish queue reads the same two sources through the same
+   * function (core/publish-state.ts), so the two screens cannot disagree.
+   */
+  protected readonly publishJobs = signal<Job[]>([]);
   /**
    * Every version of this clip, oldest first.
    *
@@ -277,7 +293,26 @@ export class ClipPage implements OnDestroy {
    */
   protected readonly captionsNeedSource = computed(() => this.musicCaptions() === 'REMOVE');
 
-  protected readonly canAddMusic = computed(() => this.musicSource().trim().length > 0);
+  /**
+   * The playlist in what they typed, when there is one.
+   *
+   * Not corrected on their behalf. A `list=` can mean "play me this mix" or
+   * "here is the track I meant, with some rubbish on the end", and silently
+   * picking the second is the same guess that let a MUSIC job fetch 190 tracks
+   * before anyone noticed. The field keeps what they pasted; the message below
+   * it says what to paste instead.
+   */
+  protected readonly musicPlaylist = computed(() => youtubePlaylist(this.musicSource()));
+
+  /**
+   * The worker refuses a playlist link too, and that guard is the authoritative
+   * one. This is the same answer without the round trip: a job created here
+   * would be queued, and a QUEUED job on this project means going to find out
+   * whether a worker is running at all before it can even fail.
+   */
+  protected readonly canAddMusic = computed(
+    () => this.musicSource().trim().length > 0 && !this.musicPlaylist(),
+  );
 
   // ── Remake ─────────────────────────────────────────────────────────────────
   //
@@ -407,11 +442,52 @@ export class ClipPage implements OnDestroy {
       this.stopChannels = stop;
       onCleanup(stop);
     });
+
+    /**
+     * What is happening to this clip on its way out, watched only once it is
+     * approved.
+     *
+     * Gated rather than always on, and gated on a *computed* rather than on
+     * `clip()` itself: a clip document changes whenever a review note is saved,
+     * and keying the effect on the whole document would tear both listeners
+     * down and build them again on every save. `approved()` flips once, which
+     * is the only time this needs to change.
+     *
+     * Publications are watched rather than loaded once for the reason the
+     * publish page watches them: the worker writes PENDING before it calls
+     * YouTube and stamps PUBLISHED after, so a page that read once sits on
+     * "uploading" until somebody reloads it.
+     */
+    effect((onCleanup) => {
+      const id = this.id();
+      if (!this.approved()) {
+        this.publications.set([]);
+        this.publishJobs.set([]);
+        return;
+      }
+
+      const stopPublications = this.store.watchPublications(
+        id,
+        (publications) => this.publications.set(publications),
+        () => this.publications.set([]),
+      );
+      const stopJobs = this.store.watchPublishJobs(
+        (jobs) => this.publishJobs.set(jobs.filter((job) => job.clipId === id)),
+        () => this.publishJobs.set([]),
+      );
+
+      this.stopDelivery = () => {
+        stopPublications();
+        stopJobs();
+      };
+      onCleanup(this.stopDelivery);
+    });
   }
 
   ngOnDestroy(): void {
     this.stopClip?.();
     this.stopChannels?.();
+    this.stopDelivery?.();
     if (this.retryPlayback) clearInterval(this.retryPlayback);
   }
 
@@ -460,9 +536,9 @@ export class ClipPage implements OnDestroy {
     if (!this.candidate()) {
       this.candidate.set(await this.store.loadCandidate(clip.candidateId).catch(() => null));
     }
-    if (clip.review === 'APPROVED' && this.publications().length === 0) {
-      this.publications.set(await this.store.loadPublications(clip.id).catch(() => []));
-    }
+    // Publications are not fetched here. They have a listener of their own,
+    // because the interesting moments — PENDING becoming PUBLISHED — happen
+    // while this page is open and would otherwise need a reload to be seen.
   }
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -487,6 +563,21 @@ export class ClipPage implements OnDestroy {
       pct: Math.round((Number(scores[key]) / max) * 100),
     }));
   });
+
+  /** Whether this clip has been said yes to, and so may be published at all. */
+  protected readonly approved = computed(() => this.clip()?.review === 'APPROVED');
+
+  /**
+   * Where this clip has got to on its way to a platform.
+   *
+   * `new Date()` is read here rather than held in a ticking signal: the only
+   * thing it decides is whether a scheduled publish is still in the future, and
+   * this recomputes whenever a publication or a job changes — every occasion on
+   * which that answer can change what to offer.
+   */
+  protected readonly publishState = computed(() =>
+    publishStateOf(this.publications(), this.publishJobs(), new Date()),
+  );
 
   protected readonly published = computed(
     () => this.publications().find((p) => p.state === 'PUBLISHED') ?? null,
@@ -533,6 +624,7 @@ export class ClipPage implements OnDestroy {
     this.preview.set(null);
     this.candidate.set(null);
     this.publications.set([]);
+    this.publishJobs.set([]);
     this.lineage.set([]);
     this.showHistory.set(false);
     this.source.set({ kind: 'poster' });
@@ -630,11 +722,30 @@ export class ClipPage implements OnDestroy {
     const clip = this.clip();
     const uid = this.session.uid;
     if (!clip || !uid) return;
+    // Refused here as well as by the disabled button, because a disabled
+    // button is a hint to a person and not a constraint on a program. Queueing
+    // a second publish behind one that has not run yet is how the same video
+    // reaches the same channel twice.
+    if (this.publishState().kind !== 'READY' && this.publishState().kind !== 'FAILED') return;
 
     const when = this.draftSchedule() ? new Date(this.draftSchedule()) : null;
     await this.run('Queued for publishing', async () => {
       await this.store.requestPublish(uid, clip.id, when, this.publishOptions());
     });
+  }
+
+  /**
+   * Call off a publish that has not started.
+   *
+   * The counterpart to refusing a second one: a job queued for Friday is
+   * claimable by any worker that comes up after Friday, so "I changed my mind"
+   * has to be expressible before then — and cancelling the job is the only
+   * place it can be said, because there is no publication yet to withdraw.
+   */
+  protected async cancelScheduled(): Promise<void> {
+    const job = this.publishState().job;
+    if (!job || job.status !== 'QUEUED') return;
+    await this.run('Publish called off', () => this.store.cancel(job.id));
   }
 
   /**
@@ -699,7 +810,7 @@ export class ClipPage implements OnDestroy {
   protected async addMusic(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
-    if (!clip || !uid) return;
+    if (!clip || !uid || !this.canAddMusic()) return;
 
     const options: MusicOptions = {
       source: this.musicSource().trim(),

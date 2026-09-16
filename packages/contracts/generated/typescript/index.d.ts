@@ -554,6 +554,14 @@ export interface Stage {
   checkpoint?: {
     [k: string]: unknown;
   } | null;
+  /**
+   * One sentence on what this stage is doing right now — 'Fetching the track', 'Analysing the beat grid', 'Mixing'. Null until the stage says something.
+   *
+   * It exists because a long stage was indistinguishable from a hung one: a MUSIC job that ran for thirty minutes produced exactly two events, CLAIMED and STAGE_STARTED, and nothing after them until it finished. A sentence rather than an object with a percentage, because no stage here can honestly compute one — the work being waited on belongs to a remote server or a model, not to a loop with a countable denominator — and a bar stuck at 80 percent for nine minutes reads as broken in a way that a line of prose which keeps changing does not. It sits beside the checkpoint rather than inside it because a checkpoint is opaque to the scheduler by contract, and this is the one thing about a running stage that the scheduler and the PWA both have to read (docs/adr/0007-checkpointed-stage-pipeline.md). It is carried out by the lease heartbeat, which already rewrites the whole job document every 30 seconds, so it costs no Firestore write of its own — job-progress writes being throttled is a requirement rather than an optimisation (docs/adr/0004-dedicated-firebase-project.md).
+   *
+   * Capped at 120 characters, which is longer than any honest description of a step and short enough that whoever sets it has to write a sentence rather than paste a tool's output line. Callers truncate; the cap is a guard, not a formatter.
+   */
+  progress?: string | null;
   error?: StageError | null;
 }
 /**

@@ -9,6 +9,7 @@ import type {
   ClipPreview,
   Job,
   JobEvent,
+  JobStatus,
   MetricSnapshot,
   MusicOptions,
   ObscureOptions,
@@ -46,6 +47,14 @@ import { FirebaseService } from './firebase';
 const BATCH_LIMIT = 500;
 
 /**
+ * How many jobs one queue listener delivers.
+ *
+ * Exported because the page has to say when it is showing fewer jobs than exist,
+ * and it can only know that by comparing what arrived against this.
+ */
+export const JOB_PAGE = 25;
+
+/**
  * Firestore reads and writes, as signals.
  *
  * Every listener is **bounded**, and that is a cost decision: Firestore bills a
@@ -74,13 +83,58 @@ export class ClipForgeStore {
    * would push the caller into creating an `effect` to read it — and an effect
    * created inside another effect is not valid in Angular, which is exactly the
    * shape a re-subscribing watcher wants to take.
+   *
+   * `statuses` narrows the query rather than the delivered result, and the
+   * difference is the point. The bound below is a *window on the newest*, not a
+   * sample of each status, so once the queue outgrows it a tab built by
+   * filtering this listener's output shows whatever happens to have survived
+   * into the window and looks complete — it has no way to know what fell off
+   * the end. (Measured on the live project in September 2026, the newest 25
+   * jobs held about two thirds of the COMPLETED ones.)
+   *
+   * Several statuses go in one `in` query rather than one listener each, the
+   * same way {@link countJobs} asks for a tab's total. A merged pair would have
+   * two bounds where the page needs one: "the newest 25" is a single answer,
+   * and "the newest 25 of each, re-sorted" costs twice the reads to arrive at
+   * it and leaves the page unable to say plainly how much it is not showing.
+   *
+   * Filtering by status needs a composite index — `jobs [status ASC, createdAt
+   * DESC]`, in firebase/firestore.indexes.json. The existing ASC pair does not
+   * serve it: verified against the project, which answered FAILED_PRECONDITION
+   * and named that exact index.
    */
-  watchJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
+  watchJobs(
+    onData: (jobs: Job[]) => void,
+    statuses: readonly JobStatus[] | null = null,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    const jobs = collection(this.firebase.db, 'jobs');
+    const newest = [orderBy('createdAt', 'desc'), limit(JOB_PAGE)] as const;
     return onSnapshot(
-      query(collection(this.firebase.db, 'jobs'), orderBy('createdAt', 'desc'), limit(25)),
+      statuses === null
+        ? query(jobs, ...newest)
+        : query(jobs, where('status', 'in', [...statuses]), ...newest),
       (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
       (error) => onError?.(error),
     );
+  }
+
+  /**
+   * How many jobs are in one slice, without reading them.
+   *
+   * An aggregation rather than a longer listen: the tab labels have to be true
+   * about jobs the bounded listener never delivers, and counting them by
+   * fetching them would cost a read each for a number. It needs no composite
+   * index — there is no ordering to serve — so the counts are right even while
+   * the index the lists depend on is still being built.
+   */
+  async countJobs(statuses: readonly JobStatus[] | null): Promise<number> {
+    const { getCountFromServer } = await import('firebase/firestore');
+    const jobs = collection(this.firebase.db, 'jobs');
+    const snapshot = await getCountFromServer(
+      statuses === null ? query(jobs) : query(jobs, where('status', 'in', [...statuses])),
+    );
+    return snapshot.data().count;
   }
 
   /**
@@ -513,7 +567,16 @@ export class ClipForgeStore {
     await deleteDoc(doc(this.firebase.db, 'candidates', candidateId));
   }
 
-  /** Forget one job and its event log. */
+  /**
+   * Forget one job. Its event log stays where it is.
+   *
+   * Deleting a document does not delete its subcollections, and `events` is
+   * `allow write: if false` in the rules, so nothing on this side could clear
+   * the log even in a loop. Orphaning it is the accepted outcome
+   * (docs/adr/0017-deleting-a-record-is-not-deleting-a-file.md) — this says so
+   * because the sentence that used to be here claimed the log went too, and the
+   * confirmation the operator reads was repeating it.
+   */
   async deleteJob(jobId: string): Promise<void> {
     const { deleteDoc } = await import('firebase/firestore');
     await deleteDoc(doc(this.firebase.db, 'jobs', jobId));
@@ -755,6 +818,87 @@ export class ClipForgeStore {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
     return snapshot.docs.map((d) => fromDocument<Publication>(d.data()));
+  }
+
+  /**
+   * The same audit trail, live.
+   *
+   * The one-shot load is right for a queue of fifty rows; it is wrong for the
+   * page you are looking at while the upload happens. The worker writes a
+   * PENDING publication before it calls YouTube and stamps it PUBLISHED after,
+   * so a page that read once shows "pending" until somebody reloads it — which
+   * is exactly the moment an operator concludes the worker is stuck.
+   *
+   * Bounded like every other listener here. A clip with more than twenty
+   * publish attempts has a problem no screen can solve.
+   */
+  watchPublications(
+    clipId: string,
+    onData: (publications: Publication[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'clips', clipId, 'publications'), limit(20)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Publication>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Every publish job, whatever state it is in.
+   *
+   * What a `Publication` cannot tell you: a publish that has been *asked for*
+   * and not yet run has no publication at all — the worker writes that document
+   * when it starts. Without this, a scheduled upload and an untouched clip look
+   * identical the moment the page is reloaded, and the queue invites the
+   * operator to publish the same clip twice.
+   *
+   * One equality filter and a bound, so no composite index is needed. Sorting
+   * is left to the caller for the same reason: `where` plus `orderBy` on a
+   * different field is what would require one.
+   */
+  watchPublishJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'jobs'), where('type', '==', 'PUBLISH'), limit(100)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Everything the worker was ever asked to do to one clip.
+   *
+   * Publish, upload, music, remake — the operational history behind a single
+   * video, which is otherwise only legible by scrolling the Jobs page and
+   * matching ids by eye.
+   */
+  async loadJobsForClip(clipId: string): Promise<Job[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(
+      query(collection(this.firebase.db, 'jobs'), where('clipId', '==', clipId), limit(25)),
+    );
+    return snapshot.docs
+      .map((d) => fromDocument<Job>(d.data()))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
+
+  /**
+   * What actually happened to one clip after it went out, day by day.
+   *
+   * The Insights page asks this across every clip at once; this asks it about
+   * the one on screen, which is the question somebody looking at a published
+   * video actually has. Ordered here rather than in the query, because
+   * `where` plus `orderBy('date')` is a composite index for a result set that
+   * is at most a few dozen rows.
+   */
+  async loadMetricsForClip(clipId: string): Promise<MetricSnapshot[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(
+      query(collection(this.firebase.db, 'metrics'), where('clipId', '==', clipId), limit(400)),
+    );
+    return snapshot.docs
+      .map((d) => fromDocument<MetricSnapshot>(d.data()))
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
   }
 
   /**

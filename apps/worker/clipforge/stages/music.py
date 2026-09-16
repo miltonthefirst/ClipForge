@@ -109,12 +109,20 @@ class MusicStage:
             )
 
         # ── The track ────────────────────────────────────────────────────────
+        #
+        # The narration starts here because this is where the waiting starts.
+        # Fetching one track off YouTube is tens of seconds on this machine, and
+        # a stage that says nothing for tens of seconds looks identical to a
+        # stage that has hung — which is what a thirty-minute MUSIC job taught us.
+        context.progress("Fetching the track")
         track = resolve_audio_source(
             options.source,
             self._workspace.tmp_dir,
             ffmpeg=self._settings.ffmpeg_bin,
             ffprobe=self._settings.ffprobe_bin,
         )
+
+        context.progress("Analysing the beat grid")
         analysis = analyse(track.path, self._settings.ffmpeg_bin)
 
         clip_duration = float(original.duration_sec or 0.0)
@@ -132,6 +140,10 @@ class MusicStage:
 
         # ── The picture ──────────────────────────────────────────────────────
         if options.captions is MusicCaptions.REMOVE:
+            # Only this branch is worth announcing: it is a full re-encode of the
+            # segment. Keeping the captions copies the video stream untouched,
+            # and narrating something instant is how a ticker loses its meaning.
+            context.progress("Re-rendering the clip without captions")
             picture = self._rerender_without_captions(original)
             reencode = False  # already encoded, just now caption-free
         else:
@@ -143,6 +155,7 @@ class MusicStage:
         key = f"clips/{job.uid}/{clip_id}.mp4"
         staged = self._workspace.tmp_dir / f"{clip_id}.mp4"
 
+        context.progress("Mixing the music into the clip")
         args = build_ffmpeg_args(
             plan,
             clip_path=str(picture),
@@ -153,6 +166,10 @@ class MusicStage:
         )
         _run(args, what="mixing the music")
 
+        # The mix is over; the note has to move with it. Putting a whole MP4 into
+        # the bucket is the longer of the two waits on a home connection, and
+        # until this line it was reported as mixing.
+        context.progress("Uploading the finished clip")
         ref = self._blobs.put(key, staged, content_type="video/mp4")
         staged.unlink(missing_ok=True)
 
@@ -265,11 +282,30 @@ class MusicStage:
         return staged
 
 
-def _run(argv: list[str], *, what: str) -> None:
+def _run(argv: list[str], *, what: str, timeout_s: float = 1800.0) -> None:
+    """Run ffmpeg and turn a failure into something a reviewer can act on.
+
+    The bound matches the render ceiling in media/render.py, because the worst
+    case here is the same work: one ffmpeg pass over one clip. The mix itself
+    measures under a second, so this is not a deadline anyone is expected to
+    meet — it is what stops a wedged ffmpeg from becoming an immortal job.
+    Nothing else would stop it: the reaper deliberately leaves alone any job its
+    worker is still running (JobStore.reap), so a process that never exits holds
+    its lease for as long as the worker lives.
+    """
     import subprocess
 
-    proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        argv, capture_output=True, text=True
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            argv, capture_output=True, text=True, timeout=timeout_s, check=False
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A TimeoutError, not a MusicStageError, and the difference is the job's
+        # remaining attempts. MusicStageError means the request itself cannot
+        # work, so the runner gives up on the spot; a wedged ffmpeg is the one
+        # failure in this stage that the next attempt very likely gets past.
+        # TimeoutError is already what StageRunner._record_failure reads as
+        # retryable, so this needs no new classification of its own.
+        raise TimeoutError(f"{what} timed out after {timeout_s}s") from exc
     if proc.returncode != 0:
         raise MusicStageError(f"{what} failed: {proc.stderr[-600:]}")

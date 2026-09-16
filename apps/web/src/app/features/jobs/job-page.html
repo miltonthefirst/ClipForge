@@ -14,7 +14,15 @@
   Jobs
 </a>
 
-@if (job() === undefined) {
+<!-- A read that was refused is not a read still in flight. The banner further
+     down only renders once the job has arrived, so this state had no way to
+     show itself and the page simply went on loading. -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">This job could not be loaded.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (job() === undefined) {
   <p class="py-16 text-center text-ink-subtle">Loading…</p>
 } @else if (job() === null) {
   <p class="py-16 text-center text-ink-subtle">
@@ -191,6 +199,16 @@
             </span>
           </div>
 
+          <!-- What the stage says it is doing, or said last before it failed —
+               where a stage got to is the one thing an error message usually
+               leaves out. Filtered by `note`, which shows it for those two
+               statuses only: the worker clears the field when a stage ends, and
+               a sentence beside a duration and a green chip would be describing
+               a moment that has passed. -->
+          @if (note(stage); as saying) {
+            <p class="mt-2 text-xs text-ink-muted">{{ saying }}</p>
+          }
+
           @if (stage.error; as failure) {
             <div class="mt-2 rounded-lg bg-danger-bg px-3 py-2 text-xs text-danger-ink">
               <p class="font-medium">
@@ -233,7 +251,12 @@
     </div>
 
     @if (showLog()) {
-      @if (events() === null) {
+      @if (eventsFailure(); as failure) {
+        <!-- Said here rather than left to an empty rail: "nothing recorded yet"
+             and "the log could not be read" are opposite conclusions about a
+             job that is stuck. -->
+        <p class="mt-2 text-xs text-danger-ink">The history could not be loaded. {{ failure }}</p>
+      } @else if (events() === null) {
         <p class="mt-2 text-xs text-ink-subtle">Loading history…</p>
       } @else if (events()!.length === 0) {
         <p class="mt-2 text-xs text-ink-subtle">Nothing recorded yet.</p>
@@ -291,14 +314,21 @@
       <a routerLink="/settings/storage" class="text-accent-ink hover:underline">Storage</a>.
     </p>
     <div class="mt-3 flex flex-wrap gap-2">
-      <button
-        type="button"
-        class="rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
-        [disabled]="busy()"
-        (click)="removeJob()"
-      >
-        Delete this job
-      </button>
+      <!-- Only once the job has stopped. Deleting one a worker still holds does
+           not stop the worker: renewing a lease on a missing document is only
+           logged, the stage runs to the end, and writing its result recreates
+           the job — which the runner then reads back and marks COMPLETED. The
+           record returns looking like a success nobody asked for. -->
+      @if (terminal(job)) {
+        <button
+          type="button"
+          class="rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+          [disabled]="busy()"
+          (click)="removeJob()"
+        >
+          Delete this job
+        </button>
+      }
       @if (source(); as src) {
         <button
           type="button"
@@ -310,5 +340,25 @@
         </button>
       }
     </div>
+
+    <p class="mt-3 text-xs text-ink-subtle">
+      <!-- RUNNING and QUEUED are refused for different reasons, and saying the
+           RUNNING one about a QUEUED job was visibly wrong: nothing is holding
+           a queued job and nothing would write it back. What makes it unsafe is
+           that a worker can claim it at any moment. -->
+      @if (terminal(job)) {
+        Deleting a job leaves its event log behind — the log is a subcollection, which the worker
+        writes and no client may clear.
+      } @else if (job.status === 'RUNNING') {
+        This job cannot be deleted while a worker is running it. Removing the record would not stop
+        the work: the stage finishes anyway and writes the job back, so it reappears marked
+        completed. Cancel it first.
+      } @else {
+        This job cannot be deleted while it is waiting. Nothing is holding it right now, but a
+        worker can claim it at any moment — and a claimed job finishes its stage and writes itself
+        back, so the record you deleted returns marked completed. Cancel it first: a cancelled job
+        is never claimed.
+      }
+    </p>
   </section>
 }

@@ -10,18 +10,46 @@ starts the music off-beat, and off-beat is more noticeable than unaligned.
 wrong one costs a full encode to discover. `build_audio_filter` is pure so the
 distinction that matters — REPLACE must not reference the clip's audio at all —
 can be asserted in microseconds.
+
+**Neither ffmpeg call can run forever.** One is in the media layer and one is in
+the stage above it, which is how both came to be missed, and an unbounded ffmpeg
+is how a job becomes immortal: the reaper deliberately leaves alone any job its
+own worker is still running, so nothing else would ever cut it off.
+
+**And a mix that hung is not the same failure as a mix that refused.**
+`MusicStageError` means the request itself cannot work, and the runner spends no
+further attempt on one. A wedged ffmpeg is nothing of the sort, and the attempt
+that comes after is the entire value of having noticed it.
 """
 
 from __future__ import annotations
 
 import subprocess
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from clipforge.media.beats import BeatAnalysis, analyse, pick_section
+from clipforge.config import Settings
+from clipforge.media.beats import BeatAnalysis, analyse, decode_mono, pick_section
 from clipforge.media.music import build_audio_filter, build_ffmpeg_args, plan_music
-from clipforge_contracts import MusicMode
+from clipforge.models.broker import ModelBroker
+from clipforge.scheduler.lease import Transition
+from clipforge.scheduler.runner import StageRunner
+from clipforge.stages.base import StageContext, StageOutcome, StageRegistry
+from clipforge.stages.music import MusicStageError, _run
+from clipforge_contracts import (
+    Job,
+    JobStatus,
+    JobType,
+    Lane,
+    MusicMode,
+    Stage,
+    StageName,
+    StageStatus,
+)
 
 
 def click_track(path: Path, bpm: float, seconds: float = 20.0) -> Path:
@@ -291,3 +319,109 @@ def test_the_loop_flag_precedes_the_music_input_it_applies_to() -> None:
     music_at = args.index("m.m4a")
     assert loop_at < music_at
     assert args[music_at - 1] == "-i"
+
+
+# ── Bounds ───────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_a_decode_that_never_returns_is_cut_off_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Provoked rather than waited for: what is under test is that a bound is
+    passed at all and that the operator gets a sentence instead of a traceback
+    from inside subprocess."""
+    seen: dict[str, Any] = {}
+
+    def _wedge(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(argv, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _wedge)
+
+    with pytest.raises(TimeoutError, match=r"timed out after 30\.0s"):
+        decode_mono(tmp_path / "track.mp3", timeout_s=30.0)
+
+    assert seen["timeout"] == 30.0
+
+
+@pytest.mark.unit
+def test_a_mix_that_hangs_fails_the_stage_instead_of_holding_the_lease() -> None:
+    """A real process that will not exit, killed by the real timeout. What the
+    retry logic and the PWA both read is the error, so a TimeoutExpired escaping
+    raw would be reported as a crash in the scheduler."""
+    with pytest.raises(TimeoutError, match="mixing the music timed out"):
+        _run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            what="mixing the music",
+            timeout_s=0.5,
+        )
+
+
+@pytest.mark.unit
+def test_a_mix_that_ran_and_refused_is_the_stages_own_never_retryable_error() -> None:
+    """The other half of the distinction the next test turns on: ffmpeg that
+    started, read the inputs and said no will say the same no twice more."""
+    with pytest.raises(MusicStageError, match="mixing the music failed"):
+        _run([sys.executable, "-c", "raise SystemExit(1)"], what="mixing the music")
+
+
+class WedgedMixStage:
+    """A MUSIC stage that dies where a hung mix really dies: inside `_run`."""
+
+    name = StageName.MUSIC
+    lane = Lane.CPU
+
+    def run(self, context: StageContext) -> StageOutcome:
+        _run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            what="mixing the music",
+            timeout_s=0.5,
+        )
+        raise AssertionError("the mix was supposed to time out")
+
+
+class CapturingJobStore:
+    """The only method the runner touches on the way to recording a failure."""
+
+    def __init__(self) -> None:
+        self.job: Job | None = None
+
+    def apply(self, transition: Transition) -> None:
+        self.job = transition.job
+
+
+@pytest.mark.unit
+def test_a_mix_that_timed_out_is_retried_rather_than_spending_the_last_attempt() -> None:
+    """Asserted from the far end, because the cost is paid there. The runner
+    classifies a failure by the exception's type — `MusicStageError` is a
+    `RuntimeError`, which it reads as terminal — and `lease.fail_stage` then
+    takes a terminal failure straight to FAILED with the remaining attempts
+    unspent. So the one failure in this stage that another attempt would fix was
+    the one failure that never got another attempt."""
+    job = Job(
+        id="job-1",
+        uid="user-1",
+        type=JobType.MUSIC,
+        status=JobStatus.RUNNING,
+        worker_id="worker-1",
+        lease_expires_at=datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+        stages=[Stage(name=StageName.MUSIC, lane=Lane.CPU, status=StageStatus.PENDING)],
+        attempts=1,
+        max_attempts=3,
+        created_at=datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+    )
+    registry = StageRegistry()
+    registry.register(WedgedMixStage())
+
+    final = StageRunner(
+        store=CapturingJobStore(),  # type: ignore[arg-type]
+        registry=registry,
+        settings=Settings(use_emulators=True),
+        broker=ModelBroker(reserve_mb=0),
+    ).run(job)
+
+    assert final.status is JobStatus.QUEUED, "a wedged ffmpeg is not a terminal failure"
+    assert final.attempts == 2, "one attempt spent of three, not all three"
+    assert final.error is not None and final.error.retryable

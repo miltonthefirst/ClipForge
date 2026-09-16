@@ -188,6 +188,10 @@ class PublishStage:
             )
             self._publications.save(publication)
 
+            # The one long wait in this stage, and it is somebody else's
+            # server: a resumable upload of a finished clip over a home
+            # connection, with nothing else happening until it returns.
+            context.progress("Uploading the video to YouTube")
             result = client.upload_bytes(session_url, source_file)
         except YouTubeError as exc:
             self._record_failure(publication, exc)

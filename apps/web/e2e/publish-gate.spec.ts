@@ -15,6 +15,10 @@ import { clip, preview, signIn, wipe, write } from './helpers';
  * The gate used to demand a rights attestation as well. That was removed; what
  * remains is the condition that was always the load-bearing one — a person
  * watched this clip and said yes.
+ *
+ * The queue is now a list that clicks through to a clip's own publish page, so
+ * most of what used to be asserted on `/publish` is asserted on `/publish/:id`.
+ * The one thing that stayed on the row is the publish itself.
  */
 
 const NOW = '2026-09-08T12:00:00.000Z';
@@ -39,9 +43,25 @@ test('an approved clip is publishable with no further questions asked', async ({
   await page.goto('/publish');
 
   // Straight to the upload. Nothing between approval and publishing.
-  await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Publish \(/ })).toBeVisible();
   await expect(page.getByText(/Why may you publish this/)).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Record rights/ })).toHaveCount(0);
+});
+
+test('the queue opens the clip rather than making the row a form', async ({ page }) => {
+  // What the redesign is for. The row carries the poster, the title and the
+  // state; everything that governs what an upload says is on the clip's page.
+  const uid = await signIn(page);
+  await write('clips/clip-1', clip(uid, { review: 'APPROVED' }));
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/publish');
+  await expect(page.getByLabel('Tags', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('link', { name: 'Most developers never realise this' }).click();
+
+  await expect(page).toHaveURL(/\/publish\/clip-1$/);
+  await expect(page.getByRole('heading', { name: 'What goes out' })).toBeVisible();
 });
 
 test('publishing an approved clip creates a PUBLISH job the rules accept', async ({ page }) => {
@@ -50,11 +70,30 @@ test('publishing an approved clip creates a PUBLISH job the rules accept', async
   await write('clips/clip-1/preview/poster', preview());
 
   await page.goto('/publish');
-  await page.getByRole('button', { name: /Publish to YouTube/ }).click();
+  await page.getByRole('button', { name: /^Publish \(/ }).click();
 
-  // The confirmation appears only after the write succeeded, so seeing it means
-  // firestore.rules ran the gate and allowed it.
-  await expect(page.getByText('nothing goes public by default')).toBeVisible();
+  // The row reports the job it just created, and reports it from the job
+  // itself rather than from a confirmation held in memory — which is what
+  // makes a queued publish survive a reload.
+  await expect(page.getByText('Nothing picks this up until the worker is running')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Publish \(/ })).toHaveCount(0);
+});
+
+test('a queued publish still reads as queued after a reload', async ({ page }) => {
+  // The bug the state model exists to prevent: queue an upload, come back, and
+  // the queue offers Publish again — so the same video goes out twice.
+  const uid = await signIn(page);
+  await write('clips/clip-1', clip(uid, { review: 'APPROVED' }));
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/publish');
+  await page.getByRole('button', { name: /^Publish \(/ }).click();
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Publish \(/ })).toHaveCount(0);
 });
 
 test('a clip written before the removal, still carrying rights, publishes anyway', async ({
@@ -73,9 +112,9 @@ test('a clip written before the removal, still carrying rights, publishes anyway
   await write('clips/clip-1/preview/poster', preview());
 
   await page.goto('/publish');
-  await page.getByRole('button', { name: /Publish to YouTube/ }).click();
+  await page.getByRole('button', { name: /^Publish \(/ }).click();
 
-  await expect(page.getByText('nothing goes public by default')).toBeVisible();
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
 });
 
 test('an unlisted default is stated before the button is pressed, not after', async ({ page }) => {
@@ -84,6 +123,9 @@ test('an unlisted default is stated before the button is pressed, not after', as
   await write('clips/clip-1/preview/poster', preview());
 
   await page.goto('/publish');
+  await expect(page.getByRole('button', { name: 'Publish (unlisted)' })).toBeVisible();
+
+  await page.goto('/publish/clip-1');
   await expect(page.getByRole('button', { name: 'Publish to YouTube (unlisted)' })).toBeVisible();
 });
 
@@ -114,8 +156,15 @@ test('a published clip shows what went out instead of a publish button', async (
 
   await page.goto('/publish');
 
-  await expect(page.getByText('Published', { exact: true })).toBeVisible();
+  // The queue keeps it, under Published, rather than dropping it on success.
+  await expect(page.getByRole('heading', { name: /^Published/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Publish \(/ })).toHaveCount(0);
+
+  await page.goto('/publish/clip-1');
+
+  await expect(page.getByRole('heading', { name: 'On YouTube' })).toBeVisible();
   await expect(page.getByText('https://www.youtube.com/watch?v=vid-1')).toBeVisible();
+  await expect(page.getByText('1,600 quota units')).toBeVisible();
   await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toHaveCount(0);
 });
 
@@ -145,6 +194,53 @@ test('a failed attempt is shown rather than silently retried', async ({ page }) 
   await page.goto('/publish');
 
   await expect(page.getByText('the YouTube refresh token was rejected')).toBeVisible();
+  await expect(page.getByText('Failed', { exact: true })).toBeVisible();
+  // A retry is offered, and named as one — a failure the operator can see and
+  // act on beats one that is quietly attempted again.
+  await expect(page.getByRole('button', { name: /^Try again \(/ })).toBeVisible();
+
+  await page.goto('/publish/clip-1');
+  await expect(page.getByRole('heading', { name: 'The last attempt failed' })).toBeVisible();
+  await expect(page.getByText('retrying will not help on its own')).toBeVisible();
+});
+
+test('the review page refuses a second publish behind the first', async ({ page }) => {
+  // Reviewing and publishing sit on one screen on purpose, so that screen has
+  // to know the same thing the queue does: a publish already asked for. It used
+  // to read only publications, and the worker does not write one until it
+  // starts — so a job queued for Friday left nothing here to notice, and the
+  // button stayed on offer.
+  const uid = await signIn(page);
+  await write('clips/clip-1', clip(uid, { review: 'APPROVED' }));
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/review/clip-1');
+  await page.getByRole('button', { name: /Publish to YouTube/ }).click();
+
+  await expect(page.getByText('Nothing picks this up until the worker is running')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toHaveCount(0);
+
+  // And it survives a reload, which is where the in-memory confirmation it
+  // replaced used to give up.
+  await page.reload();
+  await expect(page.getByText('Nothing picks this up until the worker is running')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toHaveCount(0);
+
+  // Withdrawing it is the counterpart: there is no publication to retract, so
+  // cancelling the job is the only way to change your mind.
+  await page.getByRole('button', { name: 'Call it off' }).click();
+  await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toBeVisible();
+});
+
+test('the review page points at the full record rather than duplicating it', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('clips/clip-1', clip(uid, { review: 'APPROVED' }));
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/review/clip-1');
+  await page.getByRole('link', { name: 'Publishing details →' }).click();
+
+  await expect(page).toHaveURL(/\/publish\/clip-1$/);
 });
 
 test('a clip still awaiting review never appears in the publish queue', async ({ page }) => {
@@ -164,5 +260,5 @@ test('a clip somebody else submitted is publishable from here', async ({ page })
   await write('clips/clip-1/preview/poster', preview());
 
   await page.goto('/publish');
-  await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Publish \(/ })).toBeVisible();
 });

@@ -1,43 +1,35 @@
+import { DatePipe, DecimalPipe } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
   OnDestroy,
+  computed,
   effect,
   inject,
   signal,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import type {
-  Channel,
-  Clip,
-  ClipPreview,
-  Publication,
-  PublishOptions,
-  PublishPrivacy,
-} from '@clipforge/contracts';
+import { RouterLink } from '@angular/router';
+import type { Channel, Clip, ClipPreview, Job, Publication } from '@clipforge/contracts';
 
+import { publishStateOf, type PublishState } from '../../core/publish-state';
 import { checkPublishable } from '../../core/publishable';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
-import {
-  CATEGORIES,
-  DEFAULT_CATEGORY_ID,
-  PRIVACY_OPTIONS,
-  categoryLabel,
-} from '../../core/youtube';
 
 /**
- * The publish queue: approved clips, and the one question that stands between
- * them and a channel.
+ * The publish queue: approved clips, and where each one has got to.
  *
- * Publishing a derived clip of someone else's video is a different act from
- * making one privately, and the legal basis is the operator's to establish.
- * ClipForge does not answer that question and does not pretend it away — it asks
- * it, once, in plain language, and records the answer where an audit can find it.
+ * A **list**, in the same shape as the review queue, and for the same reason it
+ * became one. Every row used to carry a full-width poster, a schedule picker
+ * and a six-field options panel — a stack of forms rather than a queue, where
+ * finding the clip published yesterday meant scrolling past everything that had
+ * not been. Deciding what to do next needs the poster, the title and the state;
+ * everything else is a click away on the clip's own publish page.
  *
- * The gate is enforced in firestore.rules and in the worker. What this screen
- * adds is the *explanation*: a Publish button that failed opaquely would be
- * worse than one that is visibly disabled with the reason next to it.
+ * The one thing that stayed on the row is Publish itself, because the common
+ * case is publishing with the channel's settings and that must remain one tap.
+ * The button names the privacy it will use, since `public` is the choice that
+ * cannot be taken back.
  */
 export interface PublishCard {
   readonly clip: Clip;
@@ -45,9 +37,20 @@ export interface PublishCard {
   readonly publications: Publication[];
 }
 
+/** One row, with everything the template needs already worked out. */
+export interface PublishRow {
+  readonly clip: Clip;
+  readonly poster: string | null;
+  readonly state: PublishState;
+  readonly channel: Channel | null;
+  readonly privacy: string;
+  /** Why this clip cannot go out, in words the operator can act on. */
+  readonly refusal: string | null;
+}
+
 @Component({
   selector: 'app-publish-page',
-  imports: [FormsModule],
+  imports: [DatePipe, DecimalPipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './publish-page.html',
 })
@@ -57,35 +60,13 @@ export class PublishPage implements OnDestroy {
 
   private stop: (() => void) | null = null;
   private stopChannels: (() => void) | null = null;
-
-  protected readonly categories = CATEGORIES;
-  protected readonly privacies = PRIVACY_OPTIONS;
-  protected readonly categoryLabel = categoryLabel;
+  private stopJobs: (() => void) | null = null;
 
   protected readonly cards = signal<PublishCard[] | null>(null);
   protected readonly channels = signal<Channel[]>([]);
+  protected readonly jobs = signal<Job[]>([]);
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal<string | null>(null);
-  protected readonly queued = signal<string | null>(null);
-
-  protected readonly draftSchedule = signal<Record<string, string>>({});
-
-  /**
-   * The overrides being composed, per clip.
-   *
-   * An **absent** key means the operator never touched that field, and that is
-   * not the same as an empty one: a cleared tag list says "no tags on this
-   * upload" and must not fall through to the channel's. `Record` with optional
-   * values keeps the two states apart all the way to the wire, where
-   * `PublishOptions` keeps them apart too — see the note on `tagsFor`.
-   */
-  protected readonly panelOpen = signal<Record<string, boolean>>({});
-  protected readonly draftChannel = signal<Record<string, string>>({});
-  protected readonly draftTitle = signal<Record<string, string>>({});
-  protected readonly draftDescription = signal<Record<string, string>>({});
-  protected readonly draftPrivacy = signal<Record<string, PublishPrivacy>>({});
-  protected readonly draftCategory = signal<Record<string, string>>({});
-  protected readonly draftTags = signal<Record<string, string>>({});
 
   constructor() {
     effect((onCleanup) => {
@@ -114,11 +95,22 @@ export class PublishPage implements OnDestroy {
       this.stopChannels = stop;
       onCleanup(stop);
     });
+
+    effect((onCleanup) => {
+      if (!this.session.uid) return;
+      const stop = this.store.watchPublishJobs(
+        (jobs) => void this.onJobs(jobs),
+        () => this.jobs.set([]),
+      );
+      this.stopJobs = stop;
+      onCleanup(stop);
+    });
   }
 
   ngOnDestroy(): void {
     this.stop?.();
     this.stopChannels?.();
+    this.stopJobs?.();
   }
 
   private async buildCards(clips: Clip[]): Promise<void> {
@@ -133,193 +125,138 @@ export class PublishPage implements OnDestroy {
     );
   }
 
-  protected posterSrc(card: PublishCard): string | null {
-    return card.preview ? `data:image/jpeg;base64,${card.preview.posterBase64}` : null;
+  /**
+   * What the publish jobs looked like last time, as id:status pairs.
+   *
+   * A snapshot fires for every field a worker touches — a lease extended, an
+   * attempt counted — and only a *status* change can have produced a new
+   * publication. Comparing the signature is what stops a heartbeat costing a
+   * read per clip in the queue.
+   */
+  private jobSignature = '';
+
+  private async onJobs(jobs: Job[]): Promise<void> {
+    this.jobs.set(jobs);
+
+    const signature = jobs
+      .map((job) => `${job.id}:${job.status}`)
+      .sort()
+      .join(',');
+    if (signature === this.jobSignature) return;
+    const first = this.jobSignature === '';
+    this.jobSignature = signature;
+    // Nothing to reconcile on the first delivery: `buildCards` has just read
+    // every publication there is.
+    if (first) return;
+
+    // Only clips somebody actually tried to publish, so this stays bounded by
+    // the number of publish jobs rather than by the length of the queue.
+    const touched = new Set(jobs.map((job) => job.clipId).filter((id): id is string => !!id));
+    const held = this.cards();
+    if (!held) return;
+    this.cards.set(
+      await Promise.all(
+        held.map(async (card) =>
+          touched.has(card.clip.id)
+            ? {
+                ...card,
+                publications: await this.store
+                  .loadPublications(card.clip.id)
+                  .catch(() => card.publications),
+              }
+            : card,
+        ),
+      ),
+    );
   }
 
-  /** Why this clip cannot be published yet, in words the user can act on. */
-  protected refusal(card: PublishCard): string | null {
-    return checkPublishable(card.clip)?.message ?? null;
-  }
-
-  protected publishable(card: PublishCard): boolean {
-    return checkPublishable(card.clip) === null;
-  }
-
-  /** A clip already sent to a platform, if any. */
-  protected published(card: PublishCard): Publication | null {
-    return card.publications.find((p) => p.state === 'PUBLISHED') ?? null;
-  }
-
-  protected pending(card: PublishCard): Publication | null {
-    return card.publications.find((p) => p.state === 'PENDING' || p.state === 'UPLOADING') ?? null;
-  }
-
-  protected failed(card: PublishCard): Publication | null {
-    return card.publications.find((p) => p.state === 'FAILED') ?? null;
-  }
-
-  protected scheduleFor(clipId: string): string {
-    return this.draftSchedule()[clipId] ?? '';
-  }
-
-  protected setSchedule(clipId: string, when: string): void {
-    this.draftSchedule.update((all) => ({ ...all, [clipId]: when }));
-  }
-
-  // ── Per-publish overrides ──────────────────────────────────────────────
-  //
-  // Every accessor below answers "what will actually go out", falling back
-  // through the same layers the worker's resolver uses
-  // (apps/worker/clipforge/publish/metadata.py): this publish, then the
-  // channel, then the floor. The fields therefore *show* the outcome rather
-  // than sitting empty and leaving the operator to guess — and only what the
-  // operator changed is sent, so editing the channel's defaults later still
-  // affects every publish they did not override.
-  //
-  // Title and description are the exception: they are shown empty with the
-  // default as placeholder text, because the channel's `titleSuffix` means the
-  // resolved title is not a value this side can compute without duplicating
-  // the part of the resolver that is actually subtle.
-
-  protected isOpen(clipId: string): boolean {
-    return this.panelOpen()[clipId] === true;
-  }
-
-  protected toggle(clipId: string): void {
-    this.panelOpen.update((all) => ({ ...all, [clipId]: !all[clipId] }));
-  }
-
-  /** The channel a publish will go to, chosen or defaulted. */
-  protected channelFor(clipId: string): Channel | null {
-    const chosen = this.draftChannel()[clipId];
+  /** The channel a publish would go to when nobody chooses one. */
+  private defaultChannel(): Channel | null {
     const all = this.channels();
-    if (chosen) return all.find((channel) => channel.id === chosen) ?? null;
     if (all.length === 0) return null;
-    return all.find((channel) => channel.isDefault) ?? all[0];
-  }
-
-  protected channelIdFor(clipId: string): string {
-    return this.channelFor(clipId)?.id ?? '';
-  }
-
-  protected titleFor(clipId: string): string {
-    return this.draftTitle()[clipId] ?? '';
-  }
-
-  protected descriptionFor(clipId: string): string {
-    return this.draftDescription()[clipId] ?? '';
-  }
-
-  protected privacyFor(clipId: string): PublishPrivacy {
-    return this.draftPrivacy()[clipId] ?? this.channelFor(clipId)?.defaults.privacy ?? 'unlisted';
-  }
-
-  protected categoryFor(clipId: string): string {
-    return (
-      this.draftCategory()[clipId] ??
-      this.channelFor(clipId)?.defaults.categoryId ??
-      DEFAULT_CATEGORY_ID
-    );
+    return all.find((channel) => channel.isDefault) ?? all[0]!;
   }
 
   /**
-   * The tag list as text, prefilled from the channel.
+   * The rows, in the order the queue listener delivered them.
    *
-   * Prefilled rather than left blank, and that is what makes "no tags on this
-   * one" expressible at all: the operator clears a field that had something in
-   * it, which is an unmistakable instruction. A blank field that had always
-   * been blank could not be told apart from one nobody opened.
+   * `new Date()` is read here rather than held in a ticking signal: the only
+   * thing it decides is whether a scheduled publish is still in the future, and
+   * this recomputes whenever a clip, a publication or a job changes — which is
+   * every occasion on which that answer can change what to do.
    */
-  protected tagsFor(clipId: string): string {
-    return this.draftTags()[clipId] ?? (this.channelFor(clipId)?.defaults.tags ?? []).join(', ');
-  }
+  protected readonly rows = computed<PublishRow[] | null>(() => {
+    const cards = this.cards();
+    if (cards === null) return null;
+    const jobs = this.jobs();
+    const channel = this.defaultChannel();
+    const now = new Date();
 
-  protected setChannel(clipId: string, channelId: string): void {
-    this.draftChannel.update((all) => ({ ...all, [clipId]: channelId }));
-  }
+    return cards.map((card) => ({
+      clip: card.clip,
+      poster: card.preview ? `data:image/jpeg;base64,${card.preview.posterBase64}` : null,
+      state: publishStateOf(
+        card.publications,
+        jobs.filter((job) => job.clipId === card.clip.id),
+        now,
+      ),
+      channel,
+      privacy: channel?.defaults.privacy ?? 'unlisted',
+      refusal: checkPublishable(card.clip)?.message ?? null,
+    }));
+  });
 
-  protected setTitle(clipId: string, title: string): void {
-    this.draftTitle.update((all) => ({ ...all, [clipId]: title }));
-  }
-
-  protected setDescription(clipId: string, description: string): void {
-    this.draftDescription.update((all) => ({ ...all, [clipId]: description }));
-  }
-
-  protected setPrivacy(clipId: string, privacy: PublishPrivacy): void {
-    this.draftPrivacy.update((all) => ({ ...all, [clipId]: privacy }));
-  }
-
-  protected setCategory(clipId: string, categoryId: string): void {
-    this.draftCategory.update((all) => ({ ...all, [clipId]: categoryId }));
-  }
-
-  protected setTags(clipId: string, tags: string): void {
-    this.draftTags.update((all) => ({ ...all, [clipId]: tags }));
-  }
-
-  /** Whether anything was overridden, for the summary line on a closed panel. */
-  protected overridden(clipId: string): boolean {
-    return (
-      this.draftChannel()[clipId] !== undefined ||
-      this.titleFor(clipId).trim() !== '' ||
-      this.descriptionFor(clipId).trim() !== '' ||
-      this.draftPrivacy()[clipId] !== undefined ||
-      this.draftCategory()[clipId] !== undefined ||
-      this.draftTags()[clipId] !== undefined
-    );
-  }
+  /** Still to go out — the part of this screen that is actually a queue. */
+  protected readonly waiting = computed(
+    () => this.rows()?.filter((row) => row.state.kind !== 'PUBLISHED') ?? [],
+  );
 
   /**
-   * What to send, or null when there is nothing to say.
+   * Already on a platform.
    *
-   * Only touched fields are populated. Sending the resolved value of every
-   * field instead would look equivalent and is not: it would pin this upload to
-   * today's channel defaults, so a scheduled publish would ignore a correction
-   * made to the channel before it ran.
+   * Kept on this page rather than hidden away, because "what did we put out,
+   * and when" is asked from here more often than from anywhere else — and
+   * because a queue that silently drops a clip the moment it succeeds gives the
+   * operator no confirmation that it ever did.
    */
-  protected optionsFor(clipId: string): PublishOptions | null {
-    if (!this.overridden(clipId)) return null;
+  protected readonly done = computed(
+    () => this.rows()?.filter((row) => row.state.kind === 'PUBLISHED') ?? [],
+  );
 
-    const tags = this.draftTags()[clipId];
-    return {
-      channelId: this.draftChannel()[clipId] ?? null,
-      title: this.titleFor(clipId).trim() || null,
-      description: this.descriptionFor(clipId).trim() || null,
-      privacy: this.draftPrivacy()[clipId] ?? null,
-      categoryId: this.draftCategory()[clipId] ?? null,
-      // undefined and '' are different answers: never opened, versus opened and
-      // emptied. The first falls through to the channel, the second does not.
-      tags:
-        tags === undefined
-          ? null
-          : tags
-              .split(',')
-              .map((tag) => tag.trim())
-              .filter(Boolean),
-    };
-  }
+  protected readonly empty = computed(() => this.rows()?.length === 0);
 
-  protected async publish(card: PublishCard): Promise<void> {
+  /**
+   * The privacy an untouched publish would use, for the line at the top.
+   *
+   * Read from the channel rather than hard-coded, because a channel whose
+   * default is `public` makes that sentence a warning rather than reassurance —
+   * and a page that said "unlisted" regardless would be actively misleading.
+   */
+  protected readonly defaultPrivacy = computed(
+    () => this.defaultChannel()?.defaults.privacy ?? 'unlisted',
+  );
+
+  /**
+   * Publish with the channel's settings and nothing else.
+   *
+   * No options block is sent, and that is not the same as sending one full of
+   * nulls: nulls would pin this upload to today's defaults, so a correction
+   * made to the channel before a scheduled job ran would be ignored.
+   *
+   * Nothing is shown to confirm it, because the row itself changes: the job
+   * this creates is what the publish-job listener reads, and the state chip
+   * says "waiting for the worker" a moment later. The old confirmation line
+   * lived only in memory and vanished on reload, which is how a queued clip
+   * came to look untouched.
+   */
+  protected async publish(row: PublishRow): Promise<void> {
     const uid = this.session.uid;
-    if (!uid) return;
+    if (!uid || row.refusal) return;
 
-    // Checked here too, not only by the disabled attribute. A disabled button is
-    // a hint to a person, not a constraint on a program.
-    if (!this.publishable(card)) return;
-
-    const when = this.scheduleFor(card.clip.id);
-    this.busy.set(card.clip.id);
+    this.busy.set(row.clip.id);
     this.error.set(null);
     try {
-      await this.store.requestPublish(
-        uid,
-        card.clip.id,
-        when ? new Date(when) : null,
-        this.optionsFor(card.clip.id),
-      );
-      this.queued.set(card.clip.id);
+      await this.store.requestPublish(uid, row.clip.id, null, null);
     } catch (err) {
       // The rules refuse this if the clip is not approved. Saying so beats
       // showing a raw permission error.

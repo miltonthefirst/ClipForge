@@ -342,6 +342,34 @@
                 >
               </label>
 
+              <!-- Refused rather than quietly trimmed to the one video. What
+                   the share button hands you is indistinguishable from someone
+                   deliberately linking a mix, and guessing between them is how
+                   a MUSIC job spent half an hour fetching 190 tracks. The typed
+                   text is left exactly as it is: rewriting it would be the same
+                   guess with a friendlier face. -->
+              @if (musicPlaylist(); as playlist) {
+                <div
+                  class="rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+                >
+                  <p class="font-medium">That link is a playlist, not a single video.</p>
+                  @if (playlist.singleVideoUrl; as single) {
+                    <p class="mt-1 leading-relaxed">
+                      The <span class="font-mono">list={{ playlist.listId }}</span> on the end is
+                      the mix YouTube was playing — the Share button puts it on everything it hands
+                      you. This is the one video in it:
+                    </p>
+                    <p class="mt-1 break-all font-mono">{{ single }}</p>
+                  } @else {
+                    <p class="mt-1 leading-relaxed">
+                      It names the playlist <span class="font-mono">{{ playlist.listId }}</span> and
+                      no video at all, so there is nothing here to suggest. Open the track itself on
+                      YouTube and copy the link from there.
+                    </p>
+                  }
+                </div>
+              }
+
               <fieldset>
                 <legend class="text-ink-muted">What it does to the existing audio</legend>
                 <div class="mt-2 space-y-2">
@@ -1001,19 +1029,82 @@
            to prevent. -->
       @if (clip.review === 'APPROVED') {
         <section class="rounded-xl border border-line bg-panel p-4">
-          <h2 class="text-sm font-semibold">Publish</h2>
+          <div class="flex items-baseline justify-between gap-3">
+            <h2 class="text-sm font-semibold">Publish</h2>
+            <!-- The full record — every attempt, the numbers the platform
+                 reported back, the jobs that ran — lives on the clip's publish
+                 page. This block is the short version, for the case where
+                 "this is good, and this is how it should go out" is one
+                 thought. -->
+            <a [routerLink]="['/publish', clip.id]" class="text-xs text-accent-ink hover:underline"
+              >Publishing details →</a
+            >
+          </div>
 
-          @if (published(); as publication) {
-            <p class="mt-2 text-sm text-ok-ink">
-              Published
-              @if (publication.externalUrl) {
-                ·
-                <a class="underline" [href]="publication.externalUrl" target="_blank" rel="noopener"
-                  >view on YouTube</a
-                >
+          <!-- ── What is already happening to it ──────────────────────────
+               Read from the publications AND the outstanding publish jobs,
+               through the same function the publish queue uses. Reading only
+               publications is what let this screen offer Publish to a clip
+               that was already queued: the worker writes a publication when it
+               STARTS, so a job waiting for Friday leaves nothing behind for a
+               page to notice. -->
+          @if (publishState(); as delivery) {
+            @switch (delivery.kind) {
+              @case ('PUBLISHED') {
+                <p class="mt-2 text-sm text-ok-ink">
+                  Published
+                  @if (delivery.publication?.externalUrl; as url) {
+                    ·
+                    <a class="underline" [href]="url" target="_blank" rel="noopener"
+                      >view on YouTube</a
+                    >
+                  }
+                </p>
               }
-            </p>
-          } @else {
+              @case ('UPLOADING') {
+                <p class="mt-2 text-sm text-ink-muted">
+                  The worker has this one. It appears on the channel when the platform accepts it.
+                </p>
+              }
+              @case ('SCHEDULED') {
+                <p class="mt-2 text-sm text-ink-muted">
+                  Scheduled for {{ delivery.at | date: 'EEEE d MMM, HH:mm' }}. No worker may claim
+                  it before then.
+                </p>
+                <button
+                  type="button"
+                  class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+                  [disabled]="busy()"
+                  (click)="cancelScheduled()"
+                >
+                  Call it off
+                </button>
+              }
+              @case ('QUEUED') {
+                <p class="mt-2 text-sm text-ink-muted">
+                  Queued. Nothing picks this up until the worker is running.
+                </p>
+                <button
+                  type="button"
+                  class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+                  [disabled]="busy()"
+                  (click)="cancelScheduled()"
+                >
+                  Call it off
+                </button>
+              }
+            }
+          }
+
+          @if (publishState().kind === 'READY' || publishState().kind === 'FAILED') {
+            @if (publishState().publication?.error; as failure) {
+              <p
+                class="mt-2 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink"
+              >
+                The last attempt failed: {{ failure.message }}
+              </p>
+            }
+
             <button
               type="button"
               class="mt-3 text-sm text-ink-subtle hover:text-ink"
@@ -1110,7 +1201,14 @@
               [disabled]="busy()"
               (click)="publish()"
             >
-              {{ draftSchedule() ? 'Schedule upload' : 'Publish to YouTube' }}
+              <!-- Named only when the operator actually chose one. This block
+                   falls back to "Channel default" rather than resolving it, so
+                   printing a privacy here would mean duplicating the worker's
+                   resolver — and a button that guessed "unlisted" and sent
+                   "public" would be worse than one that says nothing. The
+                   publish page, which does resolve it, always names it. -->
+              {{ draftSchedule() ? 'Schedule upload' : 'Publish to YouTube'
+              }}{{ draftPrivacy() ? ' (' + draftPrivacy() + ')' : '' }}
             </button>
             <p class="mt-2 text-xs text-ink-subtle">
               Queues a job. The credentials live on the worker and never reach this app, so the

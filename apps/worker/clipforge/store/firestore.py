@@ -43,6 +43,7 @@ from clipforge_contracts import (
     PublicationState,
     Source,
     SourceProvider,
+    StageStatus,
     TranscriptRef,
     WorkerHeartbeat,
 )
@@ -250,6 +251,43 @@ def _without(data: dict[str, Any], paths: list[tuple[str, ...]]) -> dict[str, An
     return pruned
 
 
+# The cap on `Stage.progress` in packages/contracts/schemas/clipforge.json.
+# Enforced on the way in rather than trusted: `model_copy` does not validate, so
+# an over-long note would be written happily and then fail validation on every
+# subsequent read — turning a cosmetic field into a job document nobody can load.
+PROGRESS_MAX_CHARS = 120
+
+
+def clamp_progress(note: str | None) -> str | None:
+    """A note cut to the length the contract allows, or ``None`` for silence.
+
+    Shared with :meth:`clipforge.scheduler.runner.StageRunner._record_failure`,
+    which is the other place a note is put on a stage. Two copies of this rule
+    could drift, and the one that drifted would write a document that no
+    subsequent read can load.
+    """
+    if not note:
+        return None
+    return note[:PROGRESS_MAX_CHARS]
+
+
+def _with_progress(job: Job, note: str | None) -> Job:
+    """The running stage's note, on the copy of the job about to be written.
+
+    Applied even when the note is ``None``: this says what the stage is saying
+    *now*, and a stage that has gone quiet must stop appearing to talk. Only a
+    RUNNING stage can carry one — a note on a finished stage would be a claim
+    about work that is already over.
+    """
+    for index, stage in enumerate(job.stages):
+        if stage.status is not StageStatus.RUNNING:
+            continue
+        stages = list(job.stages)
+        stages[index] = stage.model_copy(update={"progress": clamp_progress(note)})
+        return job.model_copy(update={"stages": stages})
+    return job
+
+
 class JobStore:
     """Job persistence and the transactional lease protocol."""
 
@@ -425,10 +463,22 @@ class JobStore:
 
         return None
 
-    def renew(self, job_id: str, *, now: datetime | None = None) -> Job | None:
+    def renew(
+        self, job_id: str, *, now: datetime | None = None, progress: str | None = None
+    ) -> Job | None:
         """Extend this worker's lease. Returns ``None`` if the lease was lost —
         reaped and reclaimed by someone else — which the caller must treat as a
-        signal to abandon the job rather than keep working on it."""
+        signal to abandon the job rather than keep working on it.
+
+        ``progress`` is what the running stage is saying about itself right now,
+        and this is the only place it can be applied. Two reasons, both firm.
+        This transaction re-reads the stored document and writes it whole, so a
+        note the caller set on its own copy of the job would be read straight
+        back over. And the heartbeat is the only write that happens *while* a
+        stage runs — every other write is a stage boundary — so it is the only
+        one that can report a ten-minute stage before it is over. Riding it is
+        what makes the note free.
+        """
         now = now or datetime.now(UTC)
         worker_id = self._settings.worker_id
         lease_seconds = self._settings.lease_seconds
@@ -445,8 +495,9 @@ class JobStore:
             transition = lease.renew(
                 current, worker_id=worker_id, now=now, lease_seconds=lease_seconds
             )
-            transaction.set(job_ref, _to_document(transition.job))
-            return transition.job
+            renewed = _with_progress(transition.job, progress)
+            transaction.set(job_ref, _to_document(renewed))
+            return renewed
 
         try:
             return _renew(self._db.transaction())  # type: ignore[no-any-return]

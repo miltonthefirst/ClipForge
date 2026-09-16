@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from clipforge.config import Settings
+from clipforge.scheduler.lease import Transition
 from clipforge.store.firestore import JobStore, WorkerStore
 from clipforge_contracts import (
     Job,
@@ -246,6 +247,50 @@ def test_a_renewed_lease_survives_the_reaper(jobs: JobStore) -> None:
     stored = jobs.get("job-1")
     assert stored is not None
     assert stored.status is JobStatus.RUNNING
+
+
+def test_a_renewal_carries_the_running_stages_note_into_the_document(jobs: JobStore) -> None:
+    """The one thing a stage can say while it is still running.
+
+    Against a real document because the note has to survive two things that only
+    exist here: `renew` re-reads the stored job and writes it whole, so a note
+    set anywhere else would be read straight back over, and the document then has
+    to validate on the way back in — a field the reader rejects would make the
+    job unloadable rather than merely uninformative.
+    """
+    jobs.create(make_job())
+    claimed = jobs.try_claim("job-1", now=T0)
+    assert claimed is not None
+
+    stages = list(claimed.stages)
+    stages[0] = stages[0].model_copy(update={"status": StageStatus.RUNNING})
+    jobs.apply(Transition(job=claimed.model_copy(update={"stages": stages}), events=()))
+
+    jobs.renew("job-1", now=T0 + timedelta(seconds=30), progress="Fetching the track")
+
+    stored = jobs.get("job-1")
+    assert stored is not None
+    assert stored.stages[0].progress == "Fetching the track"
+    assert stored.stages[1].progress is None, "only the stage that is running is talking"
+
+
+def test_a_stage_that_has_gone_quiet_stops_appearing_to_talk(jobs: JobStore) -> None:
+    """A note is what the stage is saying *now*. The heartbeat that follows a
+    cleared note has to take the old one back out, or a stage that finished
+    fetching would go on reporting the fetch for as long as it ran."""
+    jobs.create(make_job())
+    claimed = jobs.try_claim("job-1", now=T0)
+    assert claimed is not None
+    stages = list(claimed.stages)
+    stages[0] = stages[0].model_copy(update={"status": StageStatus.RUNNING})
+    jobs.apply(Transition(job=claimed.model_copy(update={"stages": stages}), events=()))
+    jobs.renew("job-1", now=T0 + timedelta(seconds=30), progress="Fetching the track")
+
+    jobs.renew("job-1", now=T0 + timedelta(seconds=60))
+
+    stored = jobs.get("job-1")
+    assert stored is not None
+    assert stored.stages[0].progress is None
 
 
 def test_reaping_exhausts_attempts_and_fails_the_job(jobs: JobStore) -> None:

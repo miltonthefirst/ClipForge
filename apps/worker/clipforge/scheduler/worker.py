@@ -50,7 +50,7 @@ from clipforge.models.vram import probe_vram
 from clipforge.observability import bind_job, get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.runner import LeaseLostError, StageRunner
-from clipforge.stages.base import StageRegistry
+from clipforge.stages.base import StageProgress, StageRegistry
 from clipforge.stages.echo import registry_for
 from clipforge.store.firestore import JobStore, WorkerStore
 from clipforge.version import __version__
@@ -87,6 +87,10 @@ class Worker:
 
         self._stop = threading.Event()
         self._active: dict[str, Job] = {}
+        # What each running job's current stage says it is doing. Keyed the same
+        # way as `_active` and guarded by the same lock, because the thread that
+        # writes a note is never the thread that publishes it.
+        self._notes: dict[str, StageProgress] = {}
         self._active_lock = threading.Lock()
         self._started_at = datetime.now(UTC)
         self._threads: list[threading.Thread] = []
@@ -206,11 +210,19 @@ class Worker:
             self._reject(job, exc)
             return
 
+        # Registered before the runner starts, so a heartbeat landing during the
+        # first stage already has somewhere to read from rather than skipping a
+        # renewal's worth of whatever that stage was saying.
+        notes = StageProgress()
+        with self._active_lock:
+            self._notes[job.id] = notes
+
         runner = StageRunner(
             store=self._jobs,
             registry=registry,
             settings=self._settings,
             broker=self._broker,
+            progress=notes,
         )
         # A job stays in `_active` only while this worker is still responsible
         # for it. Popping unconditionally would be wrong on the shutdown path:
@@ -235,6 +247,7 @@ class Worker:
             if not still_ours:
                 with self._active_lock:
                     self._active.pop(job.id, None)
+                    self._notes.pop(job.id, None)
 
     def _reject(self, job: Job, exc: Exception) -> None:
         """Fail a job this worker cannot run, with the reason recorded."""
@@ -285,7 +298,7 @@ class Worker:
         """
         for job_id in active:
             try:
-                if self._jobs.renew(job_id) is None:
+                if self._jobs.renew(job_id, progress=self._note_for(job_id)) is None:
                     # Genuinely lost: someone else owns this now. The runner
                     # notices on its next checkpoint and abandons the job.
                     log.warning("lease.lost_during_heartbeat", job_id=job_id)
@@ -295,6 +308,26 @@ class Worker:
                 # `lease_seconds` precisely so a missed beat is survivable — so
                 # the right response is to try again on the next tick.
                 log.warning("lease.renew_failed", job_id=job_id, error=str(exc))
+
+    def _note_for(self, job_id: str) -> str | None:
+        """What this job's running stage last said, if it has said anything.
+
+        Read as late as this call site allows, which is not as late as the
+        write: `JobStore.renew` opens its transaction and re-reads the document
+        after this has already returned, so a note the stage changes during that
+        round trip goes out on the next heartbeat instead of this one. One beat
+        late, once, on a sentence describing a step measured in minutes — and
+        closing the gap would mean handing the store a callback to call inside
+        its transaction, which is machinery bought for nothing.
+
+        Reading it here rather than taking it as a parameter still earns its
+        keep: a round walks every active job in turn, so a note captured when
+        the round started would be stale by however long the jobs ahead of this
+        one took.
+        """
+        with self._active_lock:
+            notes = self._notes.get(job_id)
+        return notes.current() if notes else None
 
     def _reaper_loop(self) -> None:
         while not self._stop.wait(self._settings.reaper_interval_seconds):
@@ -379,6 +412,7 @@ class Worker:
         with self._active_lock:
             job_ids = list(self._active)
             self._active.clear()
+            self._notes.clear()
 
         for job_id in job_ids:
             current = self._jobs.get(job_id)

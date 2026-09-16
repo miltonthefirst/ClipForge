@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urlparse
 
 from clipforge_contracts import IngestErrorCode, SourceProvider
 
@@ -228,6 +228,23 @@ _YOUTUBE_HOSTS = {
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
+def _parse_url(candidate: str) -> ParseResult | None:
+    """`urlparse`, with a malformed URL answered rather than raised.
+
+    `urlparse` throws on a few shapes — `https://[oops` is `ValueError: Invalid
+    IPv6 URL` — and both parsers here are documented as pure functions that
+    answer a question about a string. A ValueError escaping one of them reaches
+    the stage as an unclassified crash instead of the "that is not a link"
+    sentence the PWA knows how to show, and the browser-side check disagrees
+    because it swallows the same input. Nothing parseable is lost: a string
+    urlparse cannot read names no YouTube video and no playlist.
+    """
+    try:
+        return urlparse(candidate if "//" in candidate else f"https://{candidate}")
+    except ValueError:
+        return None
+
+
 def parse_youtube_id(submission: str) -> str | None:
     """Extract a video id, or ``None`` if this is not a single-video URL.
 
@@ -239,7 +256,9 @@ def parse_youtube_id(submission: str) -> str | None:
     if _VIDEO_ID.match(candidate):
         return candidate
 
-    parsed = urlparse(candidate if "//" in candidate else f"https://{candidate}")
+    parsed = _parse_url(candidate)
+    if parsed is None:
+        return None
     host = (parsed.hostname or "").lower()
     if host not in _YOUTUBE_HOSTS:
         return None
@@ -258,6 +277,54 @@ def parse_youtube_id(submission: str) -> str | None:
             return video_id if _VIDEO_ID.match(video_id) else None
 
     return None
+
+
+def parse_playlist_id(submission: str) -> str | None:
+    """Extract the playlist or mix id a link names, or ``None`` for none.
+
+    Pure and offline, exactly like :func:`parse_youtube_id`: a link that cannot
+    be used should be refused in microseconds rather than halfway through a
+    download. Nothing looked at `list=` before, and a MUSIC job walked an
+    autoplay mix for half an hour — 190 tracks, 905 MB — to fetch one bed.
+
+    Any `list=` counts, whether it names a mix (`RD...`), an ordinary playlist
+    (`PL...`), Watch Later or Liked: they are all "more than the one video you
+    asked for". Only on a YouTube host, though — some other site's `list=`
+    parameter is its own business and must not be reported as a playlist here.
+    """
+    parsed = _parse_url(submission.strip())
+    if parsed is None or (parsed.hostname or "").lower() not in _YOUTUBE_HOSTS:
+        return None
+
+    # parse_qs drops a blank value, so `?list=` alone arrives as no value at all;
+    # the strip() catches `?list=%20`, which is just as empty.
+    for value in parse_qs(parsed.query).get("list", []):
+        if value.strip():
+            return value.strip()
+    return None
+
+
+def _playlist_refusal(submission: str) -> IngestError:
+    """Refuse a playlist link, and say which single-video URL to use instead.
+
+    Refusing on its own would turn one paste into five steps: open the link,
+    find the video, copy its URL, come back, paste again. The video id is
+    already in the link that was submitted, so the fix can just be handed over.
+    A `/playlist?list=...` URL names no video, so there it cannot be.
+    """
+    video_id = parse_youtube_id(submission)
+    if video_id is None:
+        return IngestError(
+            IngestErrorCode.UNSUPPORTED_URL,
+            f"that is a playlist, not a single video: {submission!r}. "
+            "Submit the link to the one video you want.",
+        )
+    return IngestError(
+        IngestErrorCode.UNSUPPORTED_URL,
+        f"that is a playlist, not a single video: {submission!r}. "
+        "To use only the video it names, submit "
+        f"https://www.youtube.com/watch?v={video_id}",
+    )
 
 
 # yt-dlp reports nearly everything as one DownloadError carrying a sentence, so
@@ -331,6 +398,12 @@ class YouTubeAdapter:
         self._ffprobe_bin = ffprobe_bin
 
     def identify(self, submission: str) -> SourceIdentity:
+        # Before parsing, because `watch?v=X&list=Y` yields a perfectly good
+        # video id and would otherwise be ingested as one video — making the
+        # refusal below a promise this code did not keep.
+        if parse_playlist_id(submission) is not None:
+            raise _playlist_refusal(submission)
+
         video_id = parse_youtube_id(submission)
         if video_id is None:
             raise IngestError(
@@ -504,7 +577,12 @@ def select_adapter(
     ffprobe_bin: str = "ffprobe",
 ) -> SourceAdapter:
     """Pick an adapter for a submission, without touching the network."""
-    if parse_youtube_id(submission) is not None:
+    # A playlist link is routed here too, so `identify` is what refuses it and
+    # names the video to use instead. `youtube.com/playlist?list=...` has no
+    # video id, so without this it reached the http branch below and was told
+    # "Only YouTube videos and local files are supported" — true of a random
+    # mp3, wrong and unhelpful about a YouTube URL.
+    if parse_youtube_id(submission) is not None or parse_playlist_id(submission) is not None:
         return YouTubeAdapter(max_duration_sec=max_duration_sec, ffprobe_bin=ffprobe_bin)
 
     stripped = submission.removeprefix("file://")
@@ -545,11 +623,19 @@ class _YtDlpLog:
     `ffprobe and ffmpeg not found` with nothing to say why. Warnings and errors
     from a dependency this fragile are exactly the ones worth keeping.
 
-    `debug` is dropped on purpose: yt-dlp routes ordinary progress through it
-    and a per-chunk download log is noise.
+    `debug` is where yt-dlp sends everything it would otherwise print, so it is
+    forwarded rather than dropped — with the per-chunk `[download]` chatter
+    filtered out, which is the only part that was ever actually noise. Dropping
+    the lot cost us the sentence *"Downloading playlist RDD2XUoPg3-KY — add
+    --no-playlist to download just the video"*, which yt-dlp emitted once a
+    minute for half an hour while a MUSIC job quietly fetched 190 tracks.
     """
 
     def debug(self, message: str) -> None:
+        text = message.strip()
+        if not text or text.startswith(("[download]", "[debug]")):
+            return None
+        log.debug("ytdlp.debug", message=text)
         return None
 
     def info(self, message: str) -> None:
@@ -582,13 +668,18 @@ def resolve_audio_source(
     machine with no ffprobe should learn that in a second, not after pulling
     forty megabytes of an hour-long mix.
     """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
     local = Path(submission).expanduser()
     if local.is_file():
         return FetchedAudio(path=local, title=local.stem)
 
-    if parse_youtube_id(submission) is None:
+    # Ahead of the refusal below, which would otherwise catch a
+    # `youtube.com/playlist?list=...` URL — parse_youtube_id rightly finds no
+    # video id in one — and tell the user it is not a YouTube link, which it is.
+    if parse_playlist_id(submission) is not None:
+        raise _playlist_refusal(submission)
+
+    video_id = parse_youtube_id(submission)
+    if video_id is None:
         raise IngestError(
             IngestErrorCode.UNSUPPORTED_URL,
             f"not a YouTube link or a file on this machine: {submission!r}",
@@ -596,6 +687,11 @@ def resolve_audio_source(
 
     tools = resolve_toolchain(ffmpeg, ffprobe)
     tools.require("Fetching audio for a music track")
+
+    # Last, so that a link refused above leaves nothing behind. A submission
+    # that is never downloaded should not create the directory it would have
+    # been downloaded into.
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
     # Imported here: yt-dlp is the `media` extra, and the worker must import
     # this module without it.
@@ -607,6 +703,11 @@ def resolve_audio_source(
         "outtmpl": template,
         "quiet": True,
         "noprogress": True,
+        # Belt and braces behind the guard above: a `list=` submission never
+        # reaches this call any more, but yt-dlp's default on one is to download
+        # every entry, and that default cost 190 tracks once. The ingest adapter
+        # has always set it; the music path is the one that went without.
+        "noplaylist": True,
         "logger": _YtDlpLog(),
         # m4a rather than mp3: no transcode when YouTube already serves AAC,
         # which it usually does, and ffmpeg reads it just as happily.
@@ -621,16 +722,19 @@ def resolve_audio_source(
     if location is not None:
         options["ffmpeg_location"] = location
 
+    # The canonical single-video URL, not the submission: a submission may be a
+    # bare id or carry tracking parameters, and the glob below looks for a file
+    # named by the video id, so the URL handed over has to be the one yt-dlp
+    # will name the output after.
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(submission, download=True)
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
     except Exception as exc:  # yt-dlp raises many shapes; all mean 'no track'
         raise IngestError(
             classify_youtube_error(str(exc)),
             f"could not fetch audio: {exc}",
         ) from exc
 
-    video_id = info.get("id")
     matches = sorted(dest_dir.glob(f"music-{video_id}.*"))
     if not matches:
         raise IngestError(

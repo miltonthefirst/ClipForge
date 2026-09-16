@@ -209,7 +209,16 @@ class AnalyzeStage:
         transcript, speech_spans, source_id = self._load(context)
         client = self._build_client(context)
 
+        windows_read = 0
+
         def propose(window: object) -> LlmClipResponse:
+            nonlocal windows_read
+            windows_read += 1
+            # A number with no total, because the windows are built inside
+            # `select_candidates` and this side does not know how many there
+            # are. A count that moves is still what separates "working" from
+            # "hung", which is the only question a long map step leaves open.
+            context.progress(f"Reading the transcript: window {windows_read}")
             return client.generate_structured(
                 schema_model=LlmClipResponse,
                 system=SYSTEM_PROMPT,
@@ -222,6 +231,11 @@ class AnalyzeStage:
 
         # The whole map step runs under one broker lease. Acquiring per window
         # would let Whisper reload between calls and thrash a 6 GB card.
+        #
+        # Said before the acquire, not after: the lease is what TRANSCRIBE is
+        # holding, so this line can block for the rest of another job's
+        # twenty-minute stage without a byte of work happening here.
+        context.progress("Waiting for the GPU")
         with context.broker.acquire(f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
             try:
                 selected = select_candidates(

@@ -23,7 +23,9 @@ from clipforge.media.sources import (
     YouTubeAdapter,
     classify_youtube_error,
     content_hash,
+    parse_playlist_id,
     parse_youtube_id,
+    resolve_audio_source,
     select_adapter,
 )
 from clipforge_contracts import IngestErrorCode, SourceProvider
@@ -89,6 +91,94 @@ def test_a_playlist_url_names_the_problem() -> None:
         YouTubeAdapter().identify("https://www.youtube.com/playlist?list=PLabc")
     assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
     assert "laylist" in str(caught.value)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Playlists are refused, and the refusal carries the fix
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("url", "playlist_id"),
+    [
+        ("https://youtu.be/dQw4w9WgXcQ?list=RDD2XUoPg3-KY", "RDD2XUoPg3-KY"),
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc", "PLabc"),
+        ("https://www.youtube.com/playlist?list=PLabc", "PLabc"),
+        ("https://m.youtube.com/watch?v=dQw4w9WgXcQ&list=WL", "WL"),
+        ("https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=LL", "LL"),
+        ("youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc", "PLabc"),
+    ],
+)
+def test_any_kind_of_list_is_read_as_a_playlist(url: str, playlist_id: str) -> None:
+    """A mix, a hand-made playlist, Watch Later, Liked — no prefix is special.
+    Each of them names more than the one video that was asked for."""
+    assert parse_playlist_id(url) == playlist_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ?si=sharetracking",
+        "dQw4w9WgXcQ",
+        # A `list=` with nothing in it names nothing, and refusing it would refuse
+        # a link that works.
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=%20",
+        # Another site's `list=` means whatever that site says it means.
+        "https://example.com/track.mp3?list=PLabc",
+        "https://vimeo.com/123456?list=PLabc",
+        "not a url at all",
+        "",
+    ],
+)
+def test_a_link_that_names_no_youtube_playlist_reports_none(url: str) -> None:
+    assert parse_playlist_id(url) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtu.be/dQw4w9WgXcQ?list=RDD2XUoPg3-KY",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc",
+        "https://m.youtube.com/watch?v=dQw4w9WgXcQ&list=WL",
+    ],
+)
+def test_a_video_inside_a_playlist_is_refused_and_the_video_url_handed_back(url: str) -> None:
+    """The message this file already promised — "Playlists are not supported" —
+    was not true of a `watch?v=X&list=Y` link: the id parsed, so the video was
+    ingested and the playlist silently dropped. Refusing is only better than
+    guessing if it says what to submit instead."""
+    with pytest.raises(IngestError) as caught:
+        YouTubeAdapter().identify(url)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    assert "playlist" in str(caught.value)
+    assert "https://www.youtube.com/watch?v=dQw4w9WgXcQ" in str(caught.value)
+
+
+@pytest.mark.unit
+def test_a_playlist_naming_no_video_is_refused_without_inventing_one() -> None:
+    with pytest.raises(IngestError) as caught:
+        YouTubeAdapter().identify("https://www.youtube.com/playlist?list=PLabc")
+
+    assert "playlist" in str(caught.value)
+    assert "watch?v=" not in str(caught.value)
+
+
+@pytest.mark.unit
+def test_a_playlist_url_is_routed_to_youtube_so_it_is_youtube_that_refuses_it() -> None:
+    """`youtube.com/playlist?list=...` holds no video id, so it used to miss the
+    YouTube branch entirely and be refused with "Only YouTube videos and local
+    files are supported" — which is true of an mp3 link and wrong about this."""
+    for url in (
+        "https://www.youtube.com/playlist?list=PLabc",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc",
+    ):
+        assert isinstance(select_adapter(url), YouTubeAdapter)
 
 
 @pytest.mark.unit
@@ -297,3 +387,50 @@ def test_an_arbitrary_http_url_is_refused_rather_than_attempted() -> None:
     with pytest.raises(IngestError) as caught:
         select_adapter("https://example.com/video.mp4")
     assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A link neither parser can read is an answer, not a crash
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "malformed",
+    ["https://[oops", "https://[", "http://[::1", "https://exam ple.com/watch?v=abc12345678"],
+)
+def test_a_url_too_malformed_to_parse_is_refused_rather_than_raised(malformed: str) -> None:
+    """`urlparse` throws on a few shapes, and both parsers promise an answer.
+
+    `https://[oops` is `ValueError: Invalid IPv6 URL`. Escaping from here, it
+    reaches the stage as an unclassified crash instead of the sentence the PWA
+    knows how to render — and the browser-side check, which swallows it,
+    would be telling the user something the worker then contradicts.
+    """
+    assert parse_youtube_id(malformed) is None
+    assert parse_playlist_id(malformed) is None
+
+
+@pytest.mark.unit
+def test_a_malformed_link_reaches_the_user_as_a_sentence(tmp_path: Path) -> None:
+    with pytest.raises(IngestError) as caught:
+        resolve_audio_source("https://[oops", tmp_path)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    # Not called a playlist: nothing here knows what it is.
+    assert "playlist" not in str(caught.value).lower()
+
+
+@pytest.mark.unit
+def test_a_refused_link_leaves_nothing_behind(tmp_path: Path) -> None:
+    """The destination is made when something is going to be downloaded into it.
+
+    Creating it first meant a refusal still left an empty directory in the
+    workspace, which the collector then walks and counts against the budget.
+    """
+    dest = tmp_path / "not-created-yet"
+
+    with pytest.raises(IngestError):
+        resolve_audio_source("https://youtu.be/kdQJnqHGI8c?list=RDabc", dest)
+
+    assert not dest.exists()

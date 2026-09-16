@@ -135,6 +135,15 @@ __all__ = ["RemakeStage", "RemakeStageError"]
 # same model, so it takes the same lease against the same budget.
 NOTE_LLM_VRAM_MB = 3600
 
+# The ceiling on the narration mix, the same one media/render.py puts on a
+# render because the worst case is the same work: one ffmpeg pass over one clip.
+# The mix measures in seconds, so this is not a deadline anyone is expected to
+# meet — it is what stops a wedged ffmpeg becoming an immortal job. Nothing else
+# would stop it: the reaper deliberately leaves alone any job its own worker is
+# still running (JobStore.reap), so a process that never exits holds its lease
+# for as long as the worker lives.
+_MIX_TIMEOUT_S = 1800.0
+
 # What to tell the reviewer about each thing the system cannot do. Phrased as an
 # answer to the person who asked, not as a capability gap, because that is what
 # they are reading: a sentence next to a clip that is missing something.
@@ -1308,7 +1317,16 @@ class RemakeStage:
             reencode_video=False,
             ffmpeg=self._settings.ffmpeg_bin,
         )
-        done = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                argv, capture_output=True, text=True, timeout=_MIX_TIMEOUT_S, check=False
+            )
+        except subprocess.TimeoutExpired as exc:
+            # A TimeoutError rather than RemakeStageError, for the reason given
+            # at the same raise in stages/music.py: everything else this stage
+            # raises is a property of the request, and the runner gives those up
+            # immediately. A hung ffmpeg is the one thing here a retry fixes.
+            raise TimeoutError(f"mixing the narration timed out after {_MIX_TIMEOUT_S}s") from exc
         if done.returncode != 0:
             raise RemakeStageError(f"the narration would not mix: {done.stderr.strip()[:400]}")
         if original.duration_sec and plan.mode is SpeechMode.BED and not media.has_audio:

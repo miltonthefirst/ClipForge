@@ -25,6 +25,15 @@ export const routes: Routes = [
     loadComponent: () => import('./features/publish/publish-page').then((m) => m.PublishPage),
   },
   {
+    // The publish queue's detail view, in the same shape as `review/:id`: the
+    // list decides what to deal with next, this decides what actually goes out
+    // and shows what happened when it did.
+    path: 'publish/:id',
+    title: 'Publish · ClipForge',
+    loadComponent: () =>
+      import('./features/publish/publication-page').then((m) => m.PublicationPage),
+  },
+  {
     path: 'jobs',
     title: 'Jobs · ClipForge',
     loadComponent: () => import('./features/jobs/jobs-page').then((m) => m.JobsPage),

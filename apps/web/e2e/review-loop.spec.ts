@@ -70,9 +70,49 @@ test('a failed job shows the worker’s reason, not a stack trace', async ({ pag
     }),
   );
 
-  await page.goto('/jobs');
+  // The failed tab, not the bare queue: the default tab shows only work that
+  // has not finished, and a job that failed has.
+  await page.goto('/jobs?tab=failed');
 
   await expect(page.getByText('age-restricted')).toBeVisible();
+});
+
+test('the default tab shows what is still moving, and the tabs say what is not', async ({
+  page,
+}) => {
+  // The queue is bounded at 25, so a Completed tab built by filtering that
+  // window would have quietly shown a fraction of the finished work. Each tab
+  // is its own query, and each label carries a count from a separate
+  // aggregation — which is how finished work stays visible rather than merely
+  // hidden behind a tab nobody opens.
+  const uid = await signIn(page);
+  await write('jobs/job-1', job(uid));
+  await write('jobs/job-2', job(uid, { id: 'job-2', status: 'COMPLETED', submission: 'done.mp4' }));
+
+  await page.goto('/jobs');
+
+  await expect(page.getByText('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeVisible();
+  await expect(page.getByText('done.mp4')).toHaveCount(0);
+
+  await page.getByRole('link', { name: 'Completed' }).click();
+
+  await expect(page.getByText('done.mp4')).toBeVisible();
+  await expect(page.getByText('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toHaveCount(0);
+});
+
+test('a running job offers Cancel and no Delete, because deleting it would not stop it', async ({
+  page,
+}) => {
+  // Traced end to end: deleting a job a worker holds leaves the stage running,
+  // and writing its result recreates the document — the job comes back marked
+  // COMPLETED.
+  const uid = await signIn(page);
+  await write('jobs/job-1', job(uid));
+
+  await page.goto('/jobs');
+
+  await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
 });
 
 test('the queue shows the poster, the hook and the score — and no more', async ({ page }) => {

@@ -28,6 +28,7 @@ from clipforge.media.toolchain import (
     resolve_toolchain,
     yt_dlp_location,
 )
+from clipforge_contracts import IngestErrorCode
 
 ffmpeg_required = pytest.mark.skipif(
     find_executable("ffmpeg") is None or find_executable("ffprobe") is None,
@@ -301,3 +302,167 @@ def test_yt_dlp_can_find_both_tools_given_the_options_we_build(
 
     assert post.available, "yt-dlp could not find ffmpeg"
     assert post.probe_available, "yt-dlp could not find ffprobe"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The mix walk: one track was asked for, 190 were fetched
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A share link copied out of the YouTube app, playing inside an autoplay mix.
+MIX_URL = "https://youtu.be/kdQJnqHGI8c?list=RDD2XUoPg3-KY"
+
+
+@pytest.mark.unit
+def test_a_link_carrying_a_mix_is_refused_and_the_one_video_is_offered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression, and it cost half an hour and a gigabyte of disk.
+
+    `?list=RD...` is an autoplay mix — effectively endless. yt-dlp's default is
+    to read it as an instruction to download every entry, and nothing here said
+    otherwise, so a MUSIC job walked it one track at a time while the PWA showed
+    "MUSIC started" and nothing else.
+
+    Taking the one video silently would be a guess about which of the two things
+    in the link was meant. The refusal says which it was, and hands back the URL
+    that would have worked, so the correction is still one paste.
+    """
+    yt_dlp = pytest.importorskip("yt_dlp")
+
+    def _must_not_run(options: dict[str, Any]) -> None:
+        raise AssertionError("the mix link started a download instead of being refused")
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _must_not_run)
+
+    with pytest.raises(IngestError) as caught:
+        resolve_audio_source(MIX_URL, tmp_path)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    assert "playlist" in str(caught.value)
+    assert "https://www.youtube.com/watch?v=kdQJnqHGI8c" in str(caught.value)
+    # Refusing after the download would be a guard in name only.
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.unit
+@ffmpeg_required
+def test_the_options_still_forbid_a_playlist_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt and braces behind the guard: no `list=` submission reaches yt-dlp any
+    more, but the default on one is to download every entry, and the ingest
+    adapter has always set this."""
+    options = _capture_options(tmp_path, monkeypatch)
+
+    assert options["noplaylist"] is True
+
+
+@pytest.mark.unit
+def test_yt_dlp_would_walk_the_mix_without_noplaylist(tmp_path: Path) -> None:
+    """Against the real dependency: prove the default is what we think it is.
+
+    Every assertion above is about our own options dict. This one asks yt-dlp
+    which extractor claims the URL — with `list=` present `YoutubeIE` declines
+    and the *tab* extractor takes it, which is the whole mechanism.
+    """
+    pytest.importorskip("yt_dlp")
+    from yt_dlp.extractor.youtube import YoutubeIE
+
+    assert YoutubeIE.suitable(MIX_URL) is False, "a mix link is not claimed by the video extractor"
+    assert YoutubeIE.suitable(MUSIC_URL), "a bare video link is"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.youtube.com/watch?v=kdQJnqHGI8c&list=PLZbXA4lyCtqoDpVGe-eBnpnBHrqEsQ4zR",
+        "https://www.youtube.com/watch?v=kdQJnqHGI8c&list=WL",
+        "https://www.youtube.com/watch?v=kdQJnqHGI8c&list=LL",
+    ],
+)
+def test_every_kind_of_list_is_refused_not_just_an_autoplay_mix(
+    url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand-made `PL...` playlist, Watch Later and Liked all name more than one
+    video, and none of them is what a MUSIC stage was handed a link for."""
+    yt_dlp = pytest.importorskip("yt_dlp")
+
+    def _must_not_run(options: dict[str, Any]) -> None:
+        raise AssertionError("a playlist link started a download instead of being refused")
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _must_not_run)
+
+    with pytest.raises(IngestError) as caught:
+        resolve_audio_source(url, tmp_path)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    assert "https://www.youtube.com/watch?v=kdQJnqHGI8c" in str(caught.value)
+
+
+@pytest.mark.unit
+def test_a_playlist_url_with_no_video_in_it_is_refused_without_a_suggestion(
+    tmp_path: Path,
+) -> None:
+    """There is no single video in `/playlist?list=...` to offer, so the message
+    asks for one instead of inventing one. It must still say *playlist*: this
+    URL has no video id, and the refusal it used to reach called it "not a
+    YouTube link", which it plainly is."""
+    with pytest.raises(IngestError) as caught:
+        resolve_audio_source("https://www.youtube.com/playlist?list=PLabc", tmp_path)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    assert "playlist" in str(caught.value)
+    assert "not a YouTube link" not in str(caught.value)
+    assert "watch?v=" not in str(caught.value)
+
+
+@pytest.mark.unit
+@ffmpeg_required
+@pytest.mark.parametrize(
+    "submission",
+    [
+        "https://www.youtube.com/watch?v=kdQJnqHGI8c",
+        "https://youtu.be/kdQJnqHGI8c",
+        "https://youtu.be/kdQJnqHGI8c?si=sharetracking",
+        "kdQJnqHGI8c",
+        # `?list=` with nothing after it names no playlist, so there is nothing
+        # to refuse.
+        "https://youtu.be/kdQJnqHGI8c?list=",
+    ],
+)
+def test_a_link_naming_one_video_is_still_fetched(
+    submission: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    yt_dlp = pytest.importorskip("yt_dlp")
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _FakeYoutubeDL)
+
+    fetched = resolve_audio_source(submission, tmp_path)
+
+    assert fetched.path.name == "music-kdQJnqHGI8c.m4a"
+    assert fetched.title == "A Track"
+
+
+@pytest.mark.unit
+def test_a_local_track_is_read_even_from_a_directory_whose_name_looks_like_a_list(
+    tmp_path: Path,
+) -> None:
+    """The file on disk is checked first, and stays first: a local track is not a
+    URL and must never be parsed as one."""
+    track = tmp_path / "bed list=RDabc.m4a"
+    track.write_bytes(b"\x00")
+
+    fetched = resolve_audio_source(str(track), tmp_path)
+
+    assert fetched.path == track
+
+
+@pytest.mark.unit
+def test_another_sites_list_parameter_is_not_a_youtube_playlist(tmp_path: Path) -> None:
+    """`?list=` means whatever that host says it means. Calling it a YouTube
+    playlist would send the user looking for a video that was never there."""
+    with pytest.raises(IngestError) as caught:
+        resolve_audio_source("https://example.com/track.mp3?list=PLabc", tmp_path)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    assert "playlist" not in str(caught.value)
