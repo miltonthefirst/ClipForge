@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, Injector, effect, inject } from '@angular/core';
 import type {
   AgentDesired,
   AgentReport,
@@ -40,6 +40,7 @@ import {
 } from 'firebase/firestore';
 
 import { fromDocument } from './documents';
+import { LiveQueries } from './live-queries';
 import { FirebaseService } from './firebase';
 
 // Firestore's own ceiling on a batched write. Paging at this size means one
@@ -70,6 +71,43 @@ export const JOB_PAGE = 25;
 @Injectable({ providedIn: 'root' })
 export class ClipForgeStore {
   private readonly firebase = inject(FirebaseService);
+  private readonly live = inject(LiveQueries);
+  private readonly injector = inject(Injector);
+
+  /**
+   * Run one shared listener behind the callback shape the pages already use.
+   *
+   * The saving is not the sharing — two pages rarely watch the same query at
+   * once. It is that the listener outlives the page: Review → Clip → Review
+   * used to pay for the whole queue twice, because a listener closed on the way
+   * out re-reads every document when it is attached again. Held open, the
+   * second visit costs nothing and renders from data already in hand.
+   *
+   * The bridge exists so this can be adopted one query at a time. A page that
+   * wants the signal can take it from `LiveQueries` directly; a page that has
+   * an `effect` and an `onCleanup` keeps working untouched.
+   */
+  private shared<T>(
+    key: string,
+    open: (emit: (value: T) => void, fail: (error: Error) => void) => Unsubscribe,
+    onData: (value: T) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    const held = this.live.watch<T>(key, open);
+    const bridge = effect(
+      () => {
+        const value = held.value();
+        if (value !== null) onData(value);
+        const failure = held.error();
+        if (failure) onError?.(failure);
+      },
+      { injector: this.injector },
+    );
+    return () => {
+      bridge.destroy();
+      held.release();
+    };
+  }
 
   /**
    * The queue, newest first — everyone's, because there is only one.
@@ -109,14 +147,25 @@ export class ClipForgeStore {
     statuses: readonly JobStatus[] | null = null,
     onError?: (error: Error) => void,
   ): Unsubscribe {
-    const jobs = collection(this.firebase.db, 'jobs');
-    const newest = [orderBy('createdAt', 'desc'), limit(JOB_PAGE)] as const;
-    return onSnapshot(
-      statuses === null
-        ? query(jobs, ...newest)
-        : query(jobs, where('status', 'in', [...statuses]), ...newest),
-      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
-      (error) => onError?.(error),
+    // The key is the query, not the collection. Two tabs sharing one entry
+    // would hand the second the first's rows, which is the one way a cache like
+    // this fails while still looking like working software.
+    const key = `jobs:${statuses === null ? 'all' : [...statuses].sort().join(',')}`;
+    return this.shared<Job[]>(
+      key,
+      (emit, fail) => {
+        const jobs = collection(this.firebase.db, 'jobs');
+        const newest = [orderBy('createdAt', 'desc'), limit(JOB_PAGE)] as const;
+        return onSnapshot(
+          statuses === null
+            ? query(jobs, ...newest)
+            : query(jobs, where('status', 'in', [...statuses]), ...newest),
+          (snapshot) => emit(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
+          fail,
+        );
+      },
+      onData,
+      onError,
     );
   }
 
@@ -337,15 +386,23 @@ export class ClipForgeStore {
     review: ReviewState = 'PENDING',
     onError?: (error: Error) => void,
   ): Unsubscribe {
-    return onSnapshot(
-      query(
-        collection(this.firebase.db, 'clips'),
-        where('review', '==', review),
-        orderBy('createdAt', 'desc'),
-        limit(50),
-      ),
-      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Clip>(d.data()))),
-      (error) => onError?.(error),
+    // The queue is the query most worth holding open: a reviewer works through
+    // it one clip at a time, and every return trip used to re-read all fifty.
+    return this.shared<Clip[]>(
+      `clips:${review}`,
+      (emit, fail) =>
+        onSnapshot(
+          query(
+            collection(this.firebase.db, 'clips'),
+            where('review', '==', review),
+            orderBy('createdAt', 'desc'),
+            limit(50),
+          ),
+          (snapshot) => emit(snapshot.docs.map((d) => fromDocument<Clip>(d.data()))),
+          fail,
+        ),
+      onData,
+      onError,
     );
   }
 
