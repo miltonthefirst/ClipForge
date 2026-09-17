@@ -1,10 +1,9 @@
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { Injectable, Injector, computed, effect, inject, signal } from '@angular/core';
 import type { UserProfile } from '@clipforge/contracts';
 import type { User } from 'firebase/auth';
-import { doc, onSnapshot, setDoc, type Unsubscribe } from 'firebase/firestore';
 
-import { fromDocument } from './documents';
 import { FirebaseService } from './firebase';
+import { FirestoreGateway, type Live } from './firestore/gateway';
 
 /**
  * Who is signed in, and — separately — whether they are allowed in.
@@ -18,7 +17,14 @@ import { FirebaseService } from './firebase';
 @Injectable({ providedIn: 'root' })
 export class SessionService {
   private readonly firebase = inject(FirebaseService);
-  private stopProfile: Unsubscribe | null = null;
+  private readonly db = inject(FirestoreGateway);
+  private readonly injector = inject(Injector);
+
+  /** The shared profile listener, and the effect mirroring it into `profile`. */
+  private held: Live<UserProfile> | null = null;
+  private mirror: { destroy: () => void } | null = null;
+  /** Guards the first-sign-in write: the effect re-runs, the row is made once. */
+  private seeded = false;
 
   /**
    * `undefined` means "not yet determined" and is distinct from `null`, which
@@ -46,15 +52,14 @@ export class SessionService {
   constructor() {
     this.firebase.onUserChanged((user) => {
       this.user.set(user);
-      this.stopProfile?.();
-      this.stopProfile = null;
+      this.forgetProfile();
 
       if (!user) {
         this.profile.set(null);
         return;
       }
       this.profile.set(undefined);
-      void this.watchProfile(user);
+      this.watchProfile(user);
     });
   }
 
@@ -69,35 +74,59 @@ export class SessionService {
    * while the person is looking at the waiting screen — which is exactly when
    * they are looking at it.
    */
-  private async watchProfile(user: User): Promise<void> {
-    const reference = doc(this.firebase.db, 'users', user.uid);
+  private watchProfile(user: User): void {
+    this.held?.release();
+    this.seeded = false;
+    const held = this.db.liveDoc<UserProfile>('users', user.uid);
+    this.held = held;
 
-    this.stopProfile = onSnapshot(
-      reference,
-      (snapshot) => {
-        if (snapshot.exists()) {
-          this.profile.set(fromDocument<UserProfile>(snapshot.data()));
+    this.mirror?.destroy();
+    this.mirror = effect(
+      () => {
+        const profile = held.data();
+        if (profile) {
+          this.profile.set(profile);
           return;
         }
-        // First sign-in. The client may write this row and only this shape:
-        // rules pin role and status, so an account cannot admit itself.
-        void setDoc(reference, {
-          uid: user.uid,
-          email: user.email ?? '',
-          displayName: user.displayName ?? null,
-          photoUrl: user.photoURL ?? null,
-          role: 'MEMBER',
-          status: 'PENDING',
-          createdAt: new Date().toISOString(),
-          decidedAt: null,
-          decidedBy: null,
-        }).catch(() => {
-          // Losing this race is harmless — the listener will deliver whichever
-          // write won. Anything else surfaces on the waiting screen.
+
+        // Absent is not the same as not-yet-arrived, and acting on the wrong
+        // one would write a profile row over the top of a read still in
+        // flight. The gate answers that question separately, which is the
+        // whole reason it does.
+        if (held.loading()) return;
+
+        if (held.error()) {
           this.profile.set(null);
-        });
+          return;
+        }
+
+        // Loaded, and there is nothing there: first sign-in. The client may
+        // write this row and only this shape — rules pin role and status, so
+        // an account cannot admit itself.
+        this.profile.set(null);
+        if (this.seeded) return;
+        this.seeded = true;
+        void this.db
+          .create(
+            'users',
+            {
+              uid: user.uid,
+              email: user.email ?? '',
+              displayName: user.displayName ?? null,
+              photoUrl: user.photoURL ?? null,
+              role: 'MEMBER',
+              status: 'PENDING',
+              createdAt: new Date().toISOString(),
+              decidedAt: null,
+              decidedBy: null,
+            },
+            user.uid,
+          )
+          // Losing this race is harmless — the listener delivers whichever
+          // write won. Anything else surfaces on the waiting screen.
+          .catch(() => this.profile.set(null));
       },
-      () => this.profile.set(null),
+      { injector: this.injector },
     );
   }
 
@@ -118,8 +147,22 @@ export class SessionService {
   }
 
   signOut(): Promise<void> {
-    this.stopProfile?.();
-    this.stopProfile = null;
+    this.forgetProfile();
     return this.firebase.signOut();
+  }
+
+  /**
+   * Let go of the profile listener.
+   *
+   * `release` rather than an unsubscribe: the gate may be holding this document
+   * for someone else, and it keeps it warm for a while either way — which is
+   * what makes signing back in immediate rather than another round trip.
+   */
+  private forgetProfile(): void {
+    this.mirror?.destroy();
+    this.mirror = null;
+    this.held?.release();
+    this.held = null;
+    this.seeded = false;
   }
 }
