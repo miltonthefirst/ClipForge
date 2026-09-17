@@ -7,14 +7,16 @@ import {
   inject,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import type { AgentDesired, AgentReport, WorkerHeartbeat } from '@clipforge/contracts';
 
+import { WorkersRepository } from '../../core/data/workers';
 import { CLIPFORGE_CONFIG } from '../../core/firebase';
+import type { Live } from '../../core/firestore/gateway';
 import { LocalApiService, type WorkerSelfReport } from '../../core/local-api';
 import { SessionService } from '../../core/session';
-import { ClipForgeStore } from '../../core/store';
 import { WorkerControlService } from '../../core/worker-control';
 
 /**
@@ -66,7 +68,7 @@ import { WorkerControlService } from '../../core/worker-control';
   templateUrl: './worker-panel.html',
 })
 export class WorkerPanel implements OnDestroy {
-  private readonly store = inject(ClipForgeStore);
+  private readonly data = inject(WorkersRepository);
   private readonly config = inject(CLIPFORGE_CONFIG);
   private readonly local = inject(LocalApiService);
   private readonly session = inject(SessionService);
@@ -76,7 +78,6 @@ export class WorkerPanel implements OnDestroy {
   readonly queued = input(0);
 
   private stopWatching: (() => void) | null = null;
-  private stopHeartbeat: (() => void) | null = null;
   private ticker: ReturnType<typeof setInterval> | null = null;
 
   /** What the worker on this machine says about itself, if one answers. */
@@ -103,9 +104,42 @@ export class WorkerPanel implements OnDestroy {
     };
   });
 
+  /**
+   * The heartbeats as delivered, freshest first. `null` until one arrives.
+   *
+   * Three states, not two: `null` is "nothing has been read yet", an empty
+   * array is "read, and no worker has ever reported in", and
+   * {@link heartbeatError} is "the read failed". The panel says a different
+   * thing for each, because saying "No worker running" over a query that never
+   * answered is the exact lie this panel exists to stop telling.
+   */
   protected readonly heartbeats = signal<WorkerHeartbeat[] | null>(null);
   protected readonly heartbeatError = signal<string | null>(null);
+
+  /** Same three states for the agents, freshest first. */
   protected readonly agents = signal<AgentReport[] | null>(null);
+
+  /**
+   * Why the machines are unknown, when they are never going to be known.
+   *
+   * A failed agent read used to be recorded as an empty list, which put "Nothing
+   * on the worker machine is listening for a start request. Install the agent
+   * there…" on screen for a machine that was very likely listening. The install
+   * instructions are for an answered query that came back empty; this is for one
+   * that did not come back.
+   */
+  protected readonly agentError = signal<string | null>(null);
+
+  /**
+   * Nothing has been read yet, so the panel has nothing to report.
+   *
+   * Distinct from offline: the headline renders this instead of the state,
+   * because an unread query and a worker that is genuinely not running look the
+   * same from {@link live} and mean opposite things.
+   */
+  protected readonly checking = computed(
+    () => this.heartbeats() === null && this.heartbeatError() === null,
+  );
 
   /** Set between the click and the agent document catching up with it. */
   protected readonly submitting = signal<AgentDesired | null>(null);
@@ -122,6 +156,7 @@ export class WorkerPanel implements OnDestroy {
    */
   private readonly now = signal(Date.now());
 
+  /** The freshest, which is the one to read: the repository sorts them. */
   protected readonly heartbeat = computed(() => this.heartbeats()?.[0] ?? null);
 
   /**
@@ -138,7 +173,13 @@ export class WorkerPanel implements OnDestroy {
     return this.now() - Date.parse(beat.lastSeenAt) > 90_000;
   });
 
-  /** What to show as the headline state, heartbeat and process reconciled. */
+  /**
+   * What to show as the headline state, heartbeat and process reconciled.
+   *
+   * "offline" is an answer about heartbeats that arrived, so the template
+   * settles "not read yet" and "could not be read" before it asks — see
+   * {@link checking} and {@link heartbeatError}.
+   */
   protected readonly live = computed<'busy' | 'online' | 'offline'>(() => {
     const beat = this.heartbeat();
     if (!beat || this.stale() || beat.status === 'OFFLINE') return 'offline';
@@ -152,12 +193,12 @@ export class WorkerPanel implements OnDestroy {
    * premise is one machine with a GPU, and picking the freshest is right for
    * the one case and harmless for the two-machine case a later phase will have
    * to give a picker.
+   *
+   * The first one, because the repository already delivers them freshest first
+   * — and sorts a timestamp that will not parse to the back, which a comparator
+   * written here did not.
    */
-  protected readonly machine = computed(() => {
-    const agents = this.agents();
-    if (!agents?.length) return null;
-    return [...agents].sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0];
-  });
+  protected readonly machine = computed(() => this.agents()?.[0] ?? null);
 
   /**
    * The agent has stopped reporting, so the machine is off or asleep.
@@ -222,8 +263,18 @@ export class WorkerPanel implements OnDestroy {
     return this.anyRunning() ? 'Stop' : 'Start worker';
   });
 
-  /** Jobs are waiting and there is nothing to run them. The actionable case. */
-  protected readonly stalled = computed(() => this.queued() > 0 && this.live() === 'offline');
+  /**
+   * Jobs are waiting and there is nothing to run them. The actionable case.
+   *
+   * Only once the heartbeats have actually been read. `live()` answers
+   * "offline" for a query that has not delivered and for one that failed, and
+   * raising a warning border and "N jobs waiting with nothing to run them" on
+   * the strength of either is an alarm about the worker raised by a page that
+   * has not managed to look at it.
+   */
+  protected readonly stalled = computed(
+    () => this.queued() > 0 && this.heartbeats() !== null && this.live() === 'offline',
+  );
 
   protected readonly running = computed(() => {
     const state = this.control.status()?.state;
@@ -236,38 +287,93 @@ export class WorkerPanel implements OnDestroy {
     return [...log].reverse();
   });
 
+  /**
+   * The two listeners held, released when the signed-in user changes or the
+   * panel goes.
+   *
+   * Signals rather than fields because the delivering effects below *read*
+   * them: a plain field is not tracked, so those effects would run once against
+   * no listener and never again, and the panel would sit at "Checking the
+   * worker" for ever.
+   */
+  private readonly heldWorkers = signal<Live<WorkerHeartbeat[]> | null>(null);
+  private readonly heldAgents = signal<Live<AgentReport[]> | null>(null);
+
   constructor() {
-    effect((onCleanup) => {
-      const stop = this.store.watchWorkers(
-        (workers) => {
-          // Newest first, so a machine that was replaced does not outrank the
-          // one actually beating.
-          this.heartbeats.set(
-            [...workers].sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt)),
-          );
-          this.heartbeatError.set(null);
-        },
-        (error) => this.heartbeatError.set(error.message),
-      );
-      this.stopHeartbeat = stop;
-      onCleanup(stop);
+    effect(() => {
+      // Reading the uid is what re-subscribes at sign-in. Both collections are
+      // readable only to a signed-in user, and a listener opened without one
+      // fails permanently — `onSnapshot` does not retry — which the gate would
+      // then keep warm and hand to the session that follows.
+      const uid = this.session.uid;
+      // Cleared first, and unconditionally: a failure belongs to the listener
+      // that produced it, and these two are about to be replaced — including
+      // with no listener at all, on the way out of the app.
+      this.heartbeatError.set(null);
+      this.agentError.set(null);
+
+      // `untracked`, or this effect depends on the signals it is about to write
+      // and re-runs itself for ever — releasing and re-opening both listeners
+      // on every pass, which is a hang rather than a leak. Releasing is not
+      // unsubscribing: the gate keeps each listener warm for fifteen minutes,
+      // so leaving the Jobs page and coming back costs nothing.
+      untracked(() => {
+        this.heldWorkers()?.release();
+        this.heldAgents()?.release();
+      });
+      this.heldWorkers.set(null);
+      this.heldAgents.set(null);
+      this.heartbeats.set(null);
+      this.agents.set(null);
+
+      if (!uid) return;
+      this.heldWorkers.set(this.data.heartbeats());
+      this.heldAgents.set(this.data.agents());
     });
 
-    effect((onCleanup) => {
-      const stop = this.store.watchAgents(
-        (agents) => {
-          this.agents.set(agents);
-          // The agent has taken the request on board; the button can stop
-          // saying "Starting…" on its own account and start reflecting what the
-          // machine actually reports.
-          const asked = this.submitting();
-          if (asked && agents.some((agent) => agent.desired === asked)) {
-            this.submitting.set(null);
-          }
-        },
-        () => this.agents.set([]),
-      );
-      onCleanup(stop);
+    // Separate from the subscription above so that a delivery does not re-open
+    // a listener: these read the held signals and nothing else, and reading
+    // `heldWorkers` inside the effect that assigns it would make every snapshot
+    // a reason to re-subscribe.
+    effect(() => {
+      const held = this.heldWorkers();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.heartbeatError.set(failure.message);
+        return;
+      }
+      const workers = held.data();
+      // Still loading is not the same as delivered-and-empty, and the panel
+      // says a different thing for each. Only the second means no worker has
+      // ever reported in.
+      if (workers === null) return;
+      this.heartbeats.set(workers);
+      this.heartbeatError.set(null);
+    });
+
+    effect(() => {
+      const held = this.heldAgents();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.agentError.set(failure.message);
+        return;
+      }
+      const agents = held.data();
+      if (agents === null) return;
+      this.agents.set(agents);
+      this.agentError.set(null);
+
+      // The agent has taken the request on board; the button can stop saying
+      // "Starting…" on its own account and start reflecting what the machine
+      // actually reports. `untracked` because this effect writes `submitting`
+      // as well as reading it, and only a fresh snapshot is news — a press of
+      // Start is not a reason to re-examine the agents already in hand.
+      const asked = untracked(() => this.submitting());
+      if (asked && agents.some((agent) => agent.desired === asked)) {
+        this.submitting.set(null);
+      }
     });
 
     this.stopWatching = this.control.watch();
@@ -280,7 +386,8 @@ export class WorkerPanel implements OnDestroy {
 
   ngOnDestroy(): void {
     this.stopWatching?.();
-    this.stopHeartbeat?.();
+    this.heldWorkers()?.release();
+    this.heldAgents()?.release();
     if (this.ticker) clearInterval(this.ticker);
   }
 
@@ -319,7 +426,7 @@ export class WorkerPanel implements OnDestroy {
 
     this.submitting.set(desired);
     try {
-      await this.store.wish(agent.agentId, uid, desired);
+      await this.data.wish(agent.agentId, uid, desired);
     } catch (error) {
       this.submitting.set(null);
       // Only worth surfacing when the wish was the whole action. In the desktop

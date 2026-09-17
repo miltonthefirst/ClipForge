@@ -12,6 +12,14 @@
   </p>
 }
 
+@if (!loaded() && !metricsFailure()) {
+  <!-- Said out loud, because the alternative is a page that is blank for the
+       same reason whether the measurements are on their way or the query died.
+       It disappears on the first delivery, empty or not, and a failure replaces
+       it with the banner above rather than leaving it on screen. -->
+  <p class="mt-6 text-sm text-ink-muted">Loading the measurements…</p>
+}
+
 @if (loaded() && publishedCount() === 0) {
   <!-- Not an error, and worth saying so plainly. Nothing published means
        nothing measured, which is the state this project is in until a real
@@ -40,7 +48,7 @@
     </div>
     <div class="rounded-xl border border-line bg-panel p-4">
       <p class="text-xs text-ink-subtle">Daily snapshots held</p>
-      <p class="mt-1 text-lg font-semibold text-ink">{{ snapshots().length | number }}</p>
+      <p class="mt-1 text-lg font-semibold text-ink">{{ snapshotCount() | number }}</p>
     </div>
   </section>
 
@@ -107,13 +115,28 @@
         </p>
       }
     </section>
-  } @else {
+  } @else if (reportFailure()) {
+    <!-- Not the same as no calibration having been run, and the page must not
+         say the second when it means the first. The reason is in the banner at
+         the top; this only says which section is missing because of it. -->
+    <section class="mt-8 rounded-xl border border-line bg-panel p-5">
+      <p class="text-sm text-ink">The calibration report could not be read.</p>
+      <p class="mt-2 text-sm text-ink-muted">
+        Whether one has been run is unknown — the query that would say failed. The reason is at the
+        top of this page.
+      </p>
+    </section>
+  } @else if (reportLoaded()) {
     <section class="mt-8 rounded-xl border border-line bg-panel p-5">
       <p class="text-sm text-ink">No calibration has been run yet.</p>
       <p class="mt-2 text-sm text-ink-muted">
         There are metrics, but nothing has asked what they mean. Run
         <code class="rounded bg-line px-1 py-0.5 text-xs">clipforge-worker calibrate</code>.
       </p>
+    </section>
+  } @else {
+    <section class="mt-8 rounded-xl border border-line bg-panel p-5">
+      <p class="text-sm text-ink-muted">Looking for the latest calibration report…</p>
     </section>
   }
 

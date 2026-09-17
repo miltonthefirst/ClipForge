@@ -17,7 +17,13 @@
   Publish queue
 </a>
 
-@if (clip() === undefined) {
+<!-- The failure comes first, and that is the fix for a page that used to say
+     "Loading…" for ever behind a read that had already failed: the error banner
+     is inside the clip branch below, so a clip that never arrived took its own
+     explanation down with it. -->
+@if (clipFailure(); as why) {
+  <p class="py-16 text-center text-sm text-danger-ink">{{ why }}</p>
+} @else if (clip() === undefined) {
   <p class="py-16 text-center text-ink-subtle">Loading…</p>
 } @else if (clip() === null) {
   <p class="py-16 text-center text-ink-subtle">No such clip.</p>
@@ -133,9 +139,11 @@
       }
 
       <!-- ── Where this has got to ─────────────────────────────────────────
-           The headline, and the only section that is always present. Its four
-           states call for four different things, so they are written out
-           rather than squeezed into one paragraph with conditional words. -->
+           The headline, and the only section that is always present. Each
+           state calls for something different, so they are written out rather
+           than squeezed into one paragraph with conditional words — and the
+           last two are the ones where the answer is not known yet, which is
+           its own state rather than a quiet "ready to publish". -->
       @if (state(); as now) {
         @switch (now.kind) {
           @case ('PUBLISHED') {
@@ -234,6 +242,22 @@
             </section>
           }
         }
+      } @else if (statusFailure(); as why) {
+        <section class="rounded-xl border border-danger-line bg-danger-bg p-4">
+          <h2 class="text-sm font-semibold text-danger-ink">
+            Could not read what has happened to this clip
+          </h2>
+          <p class="mt-1 text-sm text-danger-ink">{{ why }}</p>
+          <p class="mt-2 text-xs text-danger-ink">
+            Publishing is held back until this can be read. A clip whose history is unknown looks
+            exactly like one nothing has ever been done to, and that is how the same video goes out
+            twice.
+          </p>
+        </section>
+      } @else {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <p class="text-sm text-ink-muted">Checking what has already been published…</p>
+        </section>
       }
 
       <!-- ── What this upload will say ─────────────────────────────────────
@@ -242,7 +266,7 @@
            one tap is a screen nobody uses from a phone. The summary line keeps
            the defaults visible without opening it, because "unlisted" is a fact
            worth seeing before pressing Publish rather than after. -->
-      @if (state().kind !== 'PUBLISHED' && state().kind !== 'UPLOADING') {
+      @if (offerPublish()) {
         <section class="rounded-xl border border-line bg-panel p-4">
           <div class="flex items-baseline justify-between gap-3">
             <h2 class="text-sm font-semibold text-ink">What goes out</h2>
@@ -265,10 +289,19 @@
               · <span class="text-accent-ink">edited for this upload</span>
             }
           </p>
+          <!-- Said rather than left to look like a workspace with no channels
+               in it: without the list this line falls back to the built-in
+               defaults, which are not the ones the upload will actually use. -->
+          @if (channelsFailure(); as why) {
+            <p class="mt-1 text-xs text-danger-ink">
+              {{ why }} The line above shows the built-in defaults, not the channel's; the worker
+              resolves the real ones when the upload runs.
+            </p>
+          }
 
           @if (showOptions()) {
             <div class="mt-4 space-y-3 border-t border-line pt-4">
-              @if (channels().length > 1) {
+              @if (channelOptions().length > 1) {
                 <!-- `for`/`id` rather than a wrapping label, and that is not a
                      style choice. A label that WRAPS a select takes its text
                      content from every descendant, options included, so this
@@ -289,7 +322,7 @@
                     [ngModel]="channelId()"
                     (ngModelChange)="draftChannel.set($event)"
                   >
-                    @for (option of channels(); track option.id) {
+                    @for (option of channelOptions(); track option.id) {
                       <option [value]="option.id">{{ option.label }}</option>
                     }
                   </select>
@@ -416,7 +449,7 @@
             >
               {{ why }}
             </p>
-          } @else if (state().kind === 'SCHEDULED' || state().kind === 'QUEUED') {
+          } @else if (state()?.kind === 'SCHEDULED' || state()?.kind === 'QUEUED') {
             <p class="mt-4 text-xs text-ink-subtle">
               A publish is already queued for this clip. Call it off above before queueing another,
               or the same video goes out twice.

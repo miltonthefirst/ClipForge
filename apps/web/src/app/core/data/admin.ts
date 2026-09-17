@@ -30,23 +30,23 @@ const USERS = 'users';
 const ACCOUNT_LIMIT = 200;
 
 /** What an admin may change about somebody else's account. */
-export type AccountDecision = {
+export interface AccountDecision {
   readonly status?: UserStatus;
   readonly role?: UserRole;
-};
+}
 
 /** What anyone may change about their own. */
-export type OwnProfileEdit = {
+export interface OwnProfileEdit {
   readonly displayName?: string;
-};
+}
 
 /** The shape of a decision as it goes to Firestore. */
-type DecisionWrite = {
+interface DecisionWrite {
   status?: UserStatus;
   role?: UserRole;
   decidedAt: string;
   decidedBy: string;
-};
+}
 
 /**
  * Every account, newest first.

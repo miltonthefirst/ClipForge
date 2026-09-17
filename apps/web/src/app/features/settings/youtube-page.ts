@@ -6,14 +6,24 @@ import {
   effect,
   inject,
   signal,
+  untracked,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import type { Channel } from '@clipforge/contracts';
 
 import { LocalApiService, type YouTubeStatus } from '../../core/local-api';
 import { SessionService } from '../../core/session';
-import { ClipForgeStore } from '../../core/store';
+import { PublishingRepository } from '../../core/data/publishing';
+import type { Live } from '../../core/firestore/gateway';
 import { CATEGORIES } from '../../core/youtube';
+
+/**
+ * The one channel this app publishes to, by the id the worker writes it under.
+ *
+ * A constant rather than a literal in the effect, because the string is a
+ * contract with the worker rather than a choice this page makes.
+ */
+const CHANNEL_ID = 'youtube-primary';
 
 /**
  * Connecting a YouTube channel, and deciding what a publish does by default.
@@ -35,16 +45,34 @@ import { CATEGORIES } from '../../core/youtube';
 })
 export class YouTubePage implements OnDestroy {
   private readonly local = inject(LocalApiService);
-  private readonly store = inject(ClipForgeStore);
+  private readonly data = inject(PublishingRepository);
   private readonly session = inject(SessionService);
-  private stop: (() => void) | null = null;
 
   protected readonly categories = CATEGORIES;
 
   /** From the worker, over loopback. Null when this is a browser. */
   protected readonly status = signal<YouTubeStatus | null>(null);
-  /** From Firestore. Readable anywhere. */
+  /**
+   * From Firestore. Readable anywhere.
+   *
+   * Three states, and the page tells them apart: `undefined` is "the first
+   * snapshot has not arrived", `null` is "nobody has connected a channel", and
+   * a value is the channel. The listener this reads from reports the first two
+   * separately — it used to deliver `null` for both, and for a refused read as
+   * well, so a channel nobody had set up and one that could not be read looked
+   * exactly like one still loading.
+   */
   protected readonly channel = signal<Channel | null | undefined>(undefined);
+  /**
+   * Why the channel is not here, when it is never going to arrive.
+   *
+   * Separate from {@link error}, which is the banner for something the operator
+   * just pressed. This one is about the Connection section, and nothing else on
+   * the page would say a word: the badge and the details render from the
+   * channel document, so a read that was refused left the section blank and
+   * indistinguishable from one waiting on its first snapshot.
+   */
+  protected readonly channelFailure = signal<string | null>(null);
 
   protected readonly checkingLocal = signal(true);
   protected readonly localAvailable = signal(false);
@@ -120,23 +148,67 @@ export class YouTubePage implements OnDestroy {
     return age !== null && age !== undefined && age >= 6;
   });
 
+  /**
+   * The channel listener currently held, released when it is replaced or the
+   * page goes.
+   *
+   * A signal rather than a field because the effect below *reads* it: a plain
+   * field is not tracked, so that effect would run once against no listener and
+   * never again, and the Connection section would sit empty for ever.
+   */
+  private readonly held = signal<Live<Channel> | null>(null);
+
   constructor() {
     void this.refresh();
 
-    effect((onCleanup) => {
-      if (!this.session.uid) return;
-      const stop = this.store.watchChannel(
-        'youtube-primary',
-        (channel) => this.channel.set(channel),
-        () => this.channel.set(null),
-      );
-      this.stop = stop;
-      onCleanup(stop);
+    effect(() => {
+      const uid = this.session.uid;
+      // Cleared first, and unconditionally: a failure belongs to the listener
+      // that produced it, and this effect is about to replace that listener —
+      // including with no listener at all, on the way out of the app.
+      this.channelFailure.set(null);
+
+      // Let go of the previous listener before taking the next one. The gate
+      // keeps it warm for fifteen minutes, so leaving this page and coming back
+      // re-attaches to the same listener and costs nothing — which is the whole
+      // reason releasing is not the same as unsubscribing.
+      // `untracked`, or this effect depends on the signal it is about to write
+      // and re-runs itself for ever, releasing and re-opening a listener on
+      // every pass, which is a hang rather than a leak.
+      untracked(() => this.held())?.release();
+      this.held.set(null);
+
+      // Back to "not yet" in both cases below. Whatever the last session read
+      // is not an answer about this one.
+      this.channel.set(undefined);
+      if (!uid) return;
+
+      this.held.set(this.data.watchChannel(CHANNEL_ID));
+    });
+
+    // Separate from the subscription above so that a delivery does not re-open
+    // the listener: this one reads the held signals and nothing else, and
+    // reading `held` inside the effect that assigns it would make every
+    // snapshot a reason to re-subscribe.
+    effect(() => {
+      const held = this.held();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.channelFailure.set(failure.message || 'The read gave no reason.');
+        return;
+      }
+      // For one document `data()` is null both before the first snapshot and
+      // when the document does not exist, and `loading()` is what tells them
+      // apart. Waiting for it here is what keeps "nobody has connected a
+      // channel" from being announced a frame after the page opens.
+      if (held.loading()) return;
+      this.channel.set(held.data());
     });
   }
 
   ngOnDestroy(): void {
-    this.stop?.();
+    this.held()?.release();
   }
 
   protected async refresh(): Promise<void> {

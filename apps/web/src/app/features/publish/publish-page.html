@@ -19,7 +19,17 @@
   </p>
 }
 
-@if (rows() === null) {
+<!-- Three states, not two. A query that failed delivers nothing, so it used to
+     be indistinguishable from one that had not answered yet — and a listener
+     gives up after an error, so "Loading approved clips…" stayed on screen for
+     as long as the tab was open, with the reason confined to a banner above
+     it. This one replaces the queue, because it is about the queue. -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">The publish queue could not be loaded.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (rows() === null) {
   <p class="py-16 text-center text-ink-subtle">Loading approved clips…</p>
 } @else if (empty()) {
   <div class="py-16 text-center">

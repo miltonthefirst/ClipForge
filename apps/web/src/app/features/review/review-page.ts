@@ -6,14 +6,17 @@ import {
   effect,
   inject,
   signal,
+  untracked,
 } from '@angular/core';
 import { DecimalPipe, LowerCasePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import type { Candidate, Clip, ClipPreview, Preference } from '@clipforge/contracts';
 
+import { ClipsRepository } from '../../core/data/clips';
+import { PreferencesRepository } from '../../core/data/preferences';
+import type { Live } from '../../core/firestore/gateway';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { SessionService } from '../../core/session';
-import { ClipForgeStore } from '../../core/store';
 
 /** Everything one review card needs, assembled once. */
 export interface ReviewCard {
@@ -30,11 +33,10 @@ export interface ReviewCard {
   templateUrl: './review-page.html',
 })
 export class ReviewPage implements OnDestroy {
-  private readonly store = inject(ClipForgeStore);
+  private readonly clips = inject(ClipsRepository);
+  private readonly preferences = inject(PreferencesRepository);
   private readonly session = inject(SessionService);
   private readonly playback = inject(PlaybackService);
-
-  private stop: (() => void) | null = null;
 
   protected readonly cards = signal<ReviewCard[] | null>(null);
   /**
@@ -46,6 +48,19 @@ export class ReviewPage implements OnDestroy {
    */
   protected readonly proposals = signal<Preference[]>([]);
   protected readonly error = signal<string | null>(null);
+  /**
+   * Why the queue is not here, when it is never going to arrive.
+   *
+   * A third state, distinct from "still loading" and from "loaded and empty",
+   * because the page could previously only express two. A failed query delivers
+   * nothing at all, so `cards` stayed null and the page went on saying "Loading
+   * the queue…" for as long as anyone left it open — under an error banner that
+   * never explained why the list below it had not arrived.
+   *
+   * Separate from {@link error}, which is the banner for something the reviewer
+   * just pressed. This one replaces the queue, because it is about the queue.
+   */
+  protected readonly loadFailure = signal<string | null>(null);
   protected readonly busy = signal<string | null>(null);
   /**
    * Whether the worker's file server answered. Decides whether video plays at
@@ -81,39 +96,101 @@ export class ReviewPage implements OnDestroy {
     return null;
   });
 
+  /**
+   * The two listeners this page holds, released when it goes.
+   *
+   * Signals rather than plain fields because the effects below *read* them: a
+   * plain field is not tracked, so a delivering effect would run once against
+   * no listener and never again — the queue would render nothing for ever, and
+   * nothing on screen would say why.
+   */
+  private readonly heldQueue = signal<Live<Clip[]> | null>(null);
+  private readonly heldProposals = signal<Live<Preference[]> | null>(null);
+
   constructor() {
     void this.playback.probeLocalServer().then((ok) => {
       this.localAvailable.set(ok);
     });
 
-    effect((onCleanup) => {
+    effect(() => {
       const uid = this.session.uid;
-      if (!uid) {
-        this.cards.set(null);
-        return;
-      }
-      const stop = this.store.watchReviewQueue(
-        (clips) => void this.buildCards(clips),
-        'PENDING',
-        (err) => this.error.set(err.message),
-      );
-      this.stop = stop;
-      onCleanup(stop);
+      // Cleared first, and unconditionally: a failure belongs to the listener
+      // that produced it, and this effect is about to replace that listener —
+      // including with no listener at all, on the way out of the app.
+      this.loadFailure.set(null);
+
+      // Let go of the previous listener before taking the next. The gate keeps
+      // it warm for fifteen minutes past its last reader, so Review → Clip →
+      // Review re-attaches to the listener already open and pays for none of
+      // those fifty documents again — which is why releasing is not the same as
+      // unsubscribing.
+      // `untracked`, or this effect depends on the signal it is about to write,
+      // re-runs itself for ever, and releases and re-opens the queue on every
+      // pass — a hang rather than a leak.
+      untracked(() => this.heldQueue())?.release();
+      this.heldQueue.set(null);
+      this.cards.set(null);
+
+      if (!uid) return;
+      this.heldQueue.set(this.clips.watchReviewQueue('PENDING'));
     });
 
-    effect((onCleanup) => {
-      if (!this.session.uid) return;
-      const stop = this.store.watchPreferences(
-        (preferences) => this.proposals.set(preferences),
-        'PROPOSED',
-        () => this.proposals.set([]),
-      );
-      onCleanup(stop);
+    // Separate from the subscription above so that a delivery is not a reason
+    // to re-subscribe: this one reads the held signals and nothing else, and
+    // reading `heldQueue` inside the effect that assigns it would make every
+    // snapshot re-open the listener it had just been delivered from.
+    effect(() => {
+      const held = this.heldQueue();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        // The end of the road for this listener: `onSnapshot` does not retry
+        // after an error, so nothing further arrives until a navigation
+        // re-subscribes. Said out loud, because the alternative is `cards`
+        // staying null and the page going on claiming to be loading.
+        this.loadFailure.set(
+          failure.message || 'The review queue could not be loaded, and gave no reason.',
+        );
+        return;
+      }
+      const clips = held.data();
+      // Still loading is not the same as delivered-and-empty, and only the
+      // second one means "Nothing waiting for review".
+      if (clips === null) return;
+      void this.buildCards(clips);
+    });
+
+    effect(() => {
+      const uid = this.session.uid;
+      untracked(() => this.heldProposals())?.release();
+      this.heldProposals.set(null);
+      this.proposals.set([]);
+      if (!uid) return;
+      this.heldProposals.set(this.preferences.watch('PROPOSED'));
+    });
+
+    effect(() => {
+      const held = this.heldProposals();
+      if (!held) return;
+      // A failure here empties the panel and says nothing else, on purpose.
+      // These are suggestions nobody asked for; an error about them across the
+      // top of the queue would push the work the reviewer did come here to do
+      // down the page, over something they cannot act on anyway.
+      if (held.error()) {
+        this.proposals.set([]);
+        return;
+      }
+      const proposed = held.data();
+      // Not loaded yet, which is not the same as nothing proposed — both hide
+      // the panel, but only the second one is an answer.
+      if (proposed === null) return;
+      this.proposals.set(proposed);
     });
   }
 
   ngOnDestroy(): void {
-    this.stop?.();
+    this.heldQueue()?.release();
+    this.heldProposals()?.release();
   }
 
   /**
@@ -152,17 +229,10 @@ export class ReviewPage implements OnDestroy {
   /**
    * Keep this preference, or turn it down for good.
    *
-   * Accepting one that carries rectangles does a second write, onto the source,
-   * and that is where the difference between a note and a rule lives. The rest
-   * of what gets learned here is a sentence, and a sentence earns its keep by
-   * going into the next note-reading prompt. A rectangle cannot: it has to be
-   * somewhere RENDER reads *before* a clip exists, or the reviewer keeps being
-   * asked about a logo they have already decided about.
-   *
-   * Ordered so the rule lands first. If the source write is refused, the
-   * preference stays PROPOSED and can be accepted again — which is recoverable.
-   * Accepting first and failing second would leave a preference marked kept
-   * that does nothing, with nothing on screen to say so.
+   * One call, although accepting one that carries rectangles is two writes —
+   * the rule onto the source, and then the decision. Which order they go in,
+   * and why the source has to be first, is a property of the writes rather than
+   * of this button: see `PreferencesRepository.decide`.
    */
   protected async decidePreference(
     preference: Preference,
@@ -172,16 +242,7 @@ export class ReviewPage implements OnDestroy {
     if (!uid) return;
     this.busy.set(preference.id);
     try {
-      const regions = preference.defaults?.obscure?.regions ?? [];
-      if (status === 'ACCEPTED' && preference.sourceId && regions.length) {
-        await this.store.rememberObscure(preference.sourceId, {
-          auto: false,
-          regions,
-          method: null,
-          strength: null,
-        });
-      }
-      await this.store.decidePreference(preference.id, uid, status);
+      await this.preferences.decide(preference, uid, status);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
@@ -190,7 +251,11 @@ export class ReviewPage implements OnDestroy {
   }
 
   private async buildCards(clips: Clip[]): Promise<void> {
-    const local = this.localAvailable();
+    // Read untracked. This runs inside the delivering effect, and the probe in
+    // the constructor answers a moment after the page opens: a tracked read
+    // would make that answer re-run the effect and rebuild every card, paying
+    // for a poster and a candidate per row a second time.
+    const local = untracked(() => this.localAvailable());
     this.cards.set(
       await Promise.all(
         this.latestOfEachLineage(clips).map(async (clip) => ({
@@ -199,8 +264,8 @@ export class ReviewPage implements OnDestroy {
           // Fetched per card rather than with the list: the poster is ~50 KB of
           // base64, and the queue listener re-delivers its whole result set on
           // every reconnect.
-          preview: await this.store.loadPreview(clip.id).catch(() => null),
-          candidate: await this.store.loadCandidate(clip.candidateId).catch(() => null),
+          preview: await this.clips.loadPreview(clip.id).catch(() => null),
+          candidate: await this.clips.loadCandidate(clip.candidateId).catch(() => null),
         })),
       ),
     );
@@ -213,7 +278,7 @@ export class ReviewPage implements OnDestroy {
   protected async decide(clip: Clip, review: 'APPROVED' | 'REJECTED'): Promise<void> {
     this.busy.set(clip.id);
     try {
-      await this.store.review(clip.id, review, clip.storagePath);
+      await this.clips.review(clip.id, review, clip.storagePath);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {

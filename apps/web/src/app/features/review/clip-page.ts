@@ -8,6 +8,7 @@ import {
   inject,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
@@ -35,13 +36,17 @@ import type {
   VoiceCaptions,
 } from '@clipforge/contracts';
 
+import { ClipsRepository } from '../../core/data/clips';
+import { JobsRepository } from '../../core/data/jobs';
+import { PublishingRepository } from '../../core/data/publishing';
+import { SourcesRepository } from '../../core/data/sources';
+import type { Live } from '../../core/firestore/gateway';
 import { youtubePlaylist } from '../../core/music-source';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
-import { publishStateOf } from '../../core/publish-state';
+import { publishStateOf, type PublishState } from '../../core/publish-state';
 import { remakeMusicOutlook } from '../../core/remake-music';
 import { CATEGORIES, PRIVACY_OPTIONS, categoryLabel } from '../../core/youtube';
 import { SessionService } from '../../core/session';
-import { ClipForgeStore } from '../../core/store';
 
 /**
  * The framing choices, in the order a reviewer should consider them.
@@ -170,7 +175,17 @@ const SUB_SCORE_MAXIMA: readonly (readonly [keyof SubScores, string, number])[] 
   templateUrl: './clip-page.html',
 })
 export class ClipPage implements OnDestroy {
-  private readonly store = inject(ClipForgeStore);
+  /**
+   * Four repositories, because this screen is where four subjects meet: the
+   * clip and its candidate, the jobs run against it, the source it was cut
+   * from, and the channels and publications it goes out through. Deciding,
+   * describing and publishing on one screen is the whole point of the page, and
+   * it is what makes the reading list this long.
+   */
+  private readonly clips = inject(ClipsRepository);
+  private readonly jobs = inject(JobsRepository);
+  private readonly publishing = inject(PublishingRepository);
+  private readonly sources = inject(SourcesRepository);
   private readonly router = inject(Router);
   private readonly session = inject(SessionService);
   private readonly playback = inject(PlaybackService);
@@ -178,20 +193,52 @@ export class ClipPage implements OnDestroy {
   /** From the route: `review/:id`. */
   readonly id = input.required<string>();
 
-  private stopClip: (() => void) | null = null;
-  private stopChannels: (() => void) | null = null;
-  private stopDelivery: (() => void) | null = null;
+  // ── The listeners this page holds ──────────────────────────────────────────
+  //
+  // Four live queries, each with its own held signal and its own release. They
+  // are signals rather than plain fields because the delivering effects below
+  // *read* them: a plain field is not tracked, so an effect would run once
+  // against no listener and never again, and the page would sit empty for ever
+  // with nothing anywhere saying why.
+  //
+  // Releasing is not unsubscribing. The gate keeps a listener warm for fifteen
+  // minutes past its last reader, so Review → Clip → Review, or stepping back
+  // to the version this one was made from, re-attaches to what is already in
+  // hand and costs nothing.
+  private readonly heldClip = signal<Live<Clip> | null>(null);
+  private readonly heldChannels = signal<Live<Channel[]> | null>(null);
+  private readonly heldPublications = signal<Live<Publication[]> | null>(null);
+  private readonly heldPublishJobs = signal<Live<Job[]> | null>(null);
 
   protected readonly categories = CATEGORIES;
   protected readonly privacies = PRIVACY_OPTIONS;
   protected readonly categoryLabel = categoryLabel;
 
+  /**
+   * The clip: `undefined` until the listener has spoken, `null` once it has and
+   * there is no such document.
+   *
+   * Three states rather than two, and the template renders all three. A
+   * document listener says `null` twice over — "not here yet" and "there is no
+   * clip with that id" — and the page has to be able to tell a deleted clip
+   * from one still on its way.
+   */
   protected readonly clip = signal<Clip | null | undefined>(undefined);
   protected readonly preview = signal<ClipPreview | null>(null);
   protected readonly candidate = signal<Candidate | null>(null);
-  protected readonly publications = signal<Publication[]>([]);
   /**
-   * Outstanding publish jobs for this clip.
+   * This clip's publish attempts, or `null` while that is not yet known.
+   *
+   * Null rather than an empty array, because the two mean opposite things here
+   * and {@link publishState} reads them: no publications and no outstanding
+   * jobs is READY, which is what enables the Publish button. A list that had
+   * not arrived yet, counted as empty, is how a clip already queued for Friday
+   * gets offered — and taken up on — a second time.
+   */
+  protected readonly publications = signal<Publication[] | null>(null);
+  /**
+   * Outstanding publish jobs for this clip, or `null` while that is not yet
+   * known.
    *
    * Watched because a `Publication` does not exist until the worker picks the
    * job up, so without these a publish that has been *asked for* — scheduled
@@ -201,19 +248,24 @@ export class ClipPage implements OnDestroy {
    * twice. The publish queue reads the same two sources through the same
    * function (core/publish-state.ts), so the two screens cannot disagree.
    */
-  protected readonly publishJobs = signal<Job[]>([]);
+  protected readonly publishJobs = signal<Job[] | null>(null);
   /**
-   * Every version of this clip, oldest first.
+   * Every version of this clip, oldest first, or `null` before it is asked for.
    *
    * The queue shows one row per clip now, so this is where the rest of the
    * lineage lives: what was asked for at each step, what the machine made of
    * it, and what it refused. Loaded on demand rather than with the clip — most
    * clips have never been remade and would pay for a query that returns one
    * row.
+   *
+   * An empty array is a real answer: a clip written before lineages existed
+   * matches no `lineageId` at all. So the not-yet-asked state is null, and the
+   * history panel says "Loading…" for that and only that.
    */
-  protected readonly lineage = signal<Clip[]>([]);
+  protected readonly lineage = signal<Clip[] | null>(null);
   protected readonly showHistory = signal(false);
-  protected readonly channels = signal<Channel[]>([]);
+  /** The destinations, or `null` while the channel list is still on its way. */
+  protected readonly channels = signal<Channel[] | null>(null);
   protected readonly source = signal<PlaybackSource>({ kind: 'poster' });
   /**
    * An UPLOAD job has been asked for and the clip is still unplayable.
@@ -265,6 +317,44 @@ export class ClipPage implements OnDestroy {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly saved = signal<string | null>(null);
+
+  /**
+   * Why the clip is not here, when it is never going to arrive.
+   *
+   * A fourth state beside loading, missing and loaded, because the page could
+   * previously only express three. A failed listener delivers nothing at all,
+   * so `clip` stayed `undefined` and the screen went on saying "Loading…" for
+   * as long as anyone left it open — and the error it did set went into a
+   * banner that only renders *inside* the loaded-clip block, where nobody in
+   * that state could ever see it.
+   *
+   * Separate from {@link error}, which is the banner for something the reviewer
+   * just pressed. This one replaces the clip, because it is about the clip.
+   */
+  protected readonly loadFailure = signal<string | null>(null);
+
+  /**
+   * Why the publish state is unknown, when it is going to stay unknown.
+   *
+   * Without it the Publish panel would go on saying "Checking what has already
+   * happened to this clip…" for ever behind a query that had already failed —
+   * the same shape of lie the queue used to tell, one panel down. It
+   * deliberately does not fall through to READY: an unknown publish state must
+   * never turn into an offer to publish.
+   */
+  protected readonly deliveryFailure = signal<string | null>(null);
+
+  /**
+   * Why the destination list is empty, when it is not going to fill.
+   *
+   * The picker only appears when there is more than one channel, so a failed
+   * channel query looks exactly like a workspace that has one — and the upload
+   * silently goes to the default. Said out loud where the picker would be.
+   */
+  protected readonly channelsFailure = signal<string | null>(null);
+
+  /** Why the version history is not here. See {@link openHistory}. */
+  protected readonly lineageFailure = signal<string | null>(null);
 
   // ── Drafts ─────────────────────────────────────────────────────────────────
   //
@@ -456,82 +546,171 @@ export class ClipPage implements OnDestroy {
   /** Where the playhead is, so a pan point can be set against what is on screen. */
   protected readonly playhead = signal(0);
 
+  /**
+   * Subscribing and delivering are separate effects throughout, and that is not
+   * a style choice. An effect that both opened a listener and read what it
+   * delivered would make every snapshot a reason to re-subscribe: a heartbeat
+   * on a publish job would close and re-open three listeners, and the page
+   * would spend its life tearing itself down.
+   *
+   * The subscribing halves read {@link heldClip} and friends through
+   * `untracked` when releasing, because they both read and write those signals.
+   * Tracked, each would depend on the signal it is about to write and re-run
+   * itself for ever — releasing and re-opening a listener on every pass, which
+   * is a hang rather than a leak.
+   */
   constructor() {
     void this.playback.probeLocalServer().then((ok) => this.localAvailable.set(ok));
 
-    effect((onCleanup) => {
+    // ── The clip ─────────────────────────────────────────────────────────────
+    effect(() => {
       const id = this.id();
+      // Forgets the previous clip's everything, `loadFailure` included: a
+      // failure belongs to the listener that produced it, and this is about to
+      // replace that listener.
       this.resetForClip();
-      const stop = this.store.watchClip(
-        id,
-        (clip) => {
-          this.clip.set(clip);
-          if (clip?.storagePath) this.uploadRequested.set(false);
-          if (clip) void this.hydrate(clip);
-          void this.loadStandingMarks(clip?.sourceId);
-        },
-        (err) => this.error.set(err.message),
-      );
-      this.stopClip = stop;
-      onCleanup(stop);
+      untracked(() => this.heldClip())?.release();
+      this.heldClip.set(this.clips.watchClip(id));
     });
 
-    effect((onCleanup) => {
-      if (!this.session.uid) return;
-      const stop = this.store.watchChannels(
-        (channels) => this.channels.set(channels),
-        () => this.channels.set([]),
-      );
-      this.stopChannels = stop;
-      onCleanup(stop);
+    effect(() => {
+      const held = this.heldClip();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.loadFailure.set(failure.message);
+        return;
+      }
+      const clip = held.data();
+      // A document listener's `null` means two things, and `loading()` is the
+      // only thing that separates them: null while loading is "not here yet",
+      // null once loading is over is "there is no such clip". Only the second
+      // is news, and treating the first as news is what puts "No such clip" in
+      // front of somebody whose clip is on its way.
+      if (clip === null && held.loading()) return;
+      // Untracked because what follows is side effects, not dependencies:
+      // `hydrate` reads `localAvailable` and the drafts, and a delivering
+      // effect that took a dependency on those would re-run — and re-fetch the
+      // poster — every time the playback probe answered.
+      untracked(() => this.onClip(clip));
     });
 
-    /**
-     * What is happening to this clip on its way out, watched only once it is
-     * approved.
-     *
-     * Gated rather than always on, and gated on a *computed* rather than on
-     * `clip()` itself: a clip document changes whenever a review note is saved,
-     * and keying the effect on the whole document would tear both listeners
-     * down and build them again on every save. `approved()` flips once, which
-     * is the only time this needs to change.
-     *
-     * Publications are watched rather than loaded once for the reason the
-     * publish page watches them: the worker writes PENDING before it calls
-     * YouTube and stamps PUBLISHED after, so a page that read once sits on
-     * "uploading" until somebody reloads it.
-     */
-    effect((onCleanup) => {
+    // ── The destinations ─────────────────────────────────────────────────────
+    effect(() => {
+      const uid = this.session.uid;
+      this.channelsFailure.set(null);
+      untracked(() => this.heldChannels())?.release();
+      this.heldChannels.set(null);
+      if (!uid) {
+        this.channels.set(null);
+        return;
+      }
+      this.heldChannels.set(this.publishing.watchChannels());
+    });
+
+    effect(() => {
+      const held = this.heldChannels();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.channelsFailure.set(failure.message);
+        return;
+      }
+      const channels = held.data();
+      if (channels === null) return;
+      this.channels.set(channels);
+    });
+
+    // ── What is happening to it on the way out ───────────────────────────────
+    //
+    // Watched only once the clip is approved, and gated on a *computed* rather
+    // than on `clip()` itself: a clip document changes whenever a review note is
+    // saved, and keying this on the whole document would release both listeners
+    // and take them again on every save. `approved()` flips once, which is the
+    // only time this needs to change.
+    //
+    // Publications are watched rather than loaded once for the reason the
+    // publish page watches them: the worker writes PENDING before it calls
+    // YouTube and stamps PUBLISHED after, so a page that read once sits on
+    // "uploading" until somebody reloads it.
+    effect(() => {
       const id = this.id();
-      if (!this.approved()) {
+      const approved = this.approved();
+      this.deliveryFailure.set(null);
+      untracked(() => {
+        this.heldPublications()?.release();
+        this.heldPublishJobs()?.release();
+      });
+      this.heldPublications.set(null);
+      this.heldPublishJobs.set(null);
+
+      if (!approved) {
+        // Empty rather than null, and that is the one place on this page where
+        // empty is the honest answer to a question nobody asked: a clip that has
+        // not been approved cannot have been published or queued, so this is a
+        // result and not the absence of one.
         this.publications.set([]);
         this.publishJobs.set([]);
         return;
       }
 
-      const stopPublications = this.store.watchPublications(
-        id,
-        (publications) => this.publications.set(publications),
-        () => this.publications.set([]),
-      );
-      const stopJobs = this.store.watchPublishJobs(
-        (jobs) => this.publishJobs.set(jobs.filter((job) => job.clipId === id)),
-        () => this.publishJobs.set([]),
-      );
+      this.publications.set(null);
+      this.publishJobs.set(null);
+      this.heldPublications.set(this.publishing.watchPublications(id));
+      this.heldPublishJobs.set(this.jobs.watchPublishJobs());
+    });
 
-      this.stopDelivery = () => {
-        stopPublications();
-        stopJobs();
-      };
-      onCleanup(this.stopDelivery);
+    effect(() => {
+      const held = this.heldPublications();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.deliveryFailure.set(failure.message);
+        return;
+      }
+      const publications = held.data();
+      if (publications === null) return;
+      this.publications.set(publications);
+    });
+
+    effect(() => {
+      const held = this.heldPublishJobs();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.deliveryFailure.set(failure.message);
+        return;
+      }
+      const jobs = held.data();
+      if (jobs === null) return;
+      // One listener over every publish job, narrowed here. `watchPublishJobs`
+      // asks for the type and nothing else so that every screen showing publish
+      // state shares the one listener; a per-clip query would need a composite
+      // index and would be a listener each.
+      this.publishJobs.set(jobs.filter((job) => job.clipId === this.id()));
     });
   }
 
   ngOnDestroy(): void {
-    this.stopClip?.();
-    this.stopChannels?.();
-    this.stopDelivery?.();
+    this.heldClip()?.release();
+    this.heldChannels()?.release();
+    this.heldPublications()?.release();
+    this.heldPublishJobs()?.release();
     if (this.retryPlayback) clearInterval(this.retryPlayback);
+  }
+
+  /**
+   * A clip arrived, or the listener said there is none.
+   *
+   * A method rather than three lines in the effect, because it fans out into
+   * two fetches that read signals of their own and so has to be called
+   * untracked. See {@link hydrate} for what it declines to re-fetch and why.
+   */
+  private onClip(clip: Clip | null): void {
+    this.clip.set(clip);
+    if (clip?.storagePath) this.uploadRequested.set(false);
+    if (clip) void this.hydrate(clip);
+    void this.loadStandingMarks(clip?.sourceId);
   }
 
   /**
@@ -574,10 +753,10 @@ export class ClipPage implements OnDestroy {
     if (this.source().kind === 'poster') this.watchForPlayback();
 
     if (!this.preview()) {
-      this.preview.set(await this.store.loadPreview(clip.id).catch(() => null));
+      this.preview.set(await this.clips.loadPreview(clip.id).catch(() => null));
     }
     if (!this.candidate()) {
-      this.candidate.set(await this.store.loadCandidate(clip.candidateId).catch(() => null));
+      this.candidate.set(await this.clips.loadCandidate(clip.candidateId).catch(() => null));
     }
     // Publications are not fetched here. They have a listener of their own,
     // because the interesting moments — PENDING becoming PUBLISHED — happen
@@ -611,19 +790,29 @@ export class ClipPage implements OnDestroy {
   protected readonly approved = computed(() => this.clip()?.review === 'APPROVED');
 
   /**
-   * Where this clip has got to on its way to a platform.
+   * Where this clip has got to on its way to a platform, or `null` while that
+   * is still unknown.
+   *
+   * Null until both halves have arrived, because half an answer here is a wrong
+   * answer with a button attached: `publishStateOf([], [])` is READY, and READY
+   * is what offers Publish. Counting a list that has not loaded yet as empty
+   * would invite a second upload of a clip already queued for Friday, which is
+   * the exact mistake the two listeners exist to prevent.
    *
    * `new Date()` is read here rather than held in a ticking signal: the only
    * thing it decides is whether a scheduled publish is still in the future, and
    * this recomputes whenever a publication or a job changes — every occasion on
    * which that answer can change what to offer.
    */
-  protected readonly publishState = computed(() =>
-    publishStateOf(this.publications(), this.publishJobs(), new Date()),
-  );
+  protected readonly publishState = computed<PublishState | null>(() => {
+    const publications = this.publications();
+    const jobs = this.publishJobs();
+    if (publications === null || jobs === null) return null;
+    return publishStateOf(publications, jobs, new Date());
+  });
 
   protected readonly published = computed(
-    () => this.publications().find((p) => p.state === 'PUBLISHED') ?? null,
+    () => this.publications()?.find((p) => p.state === 'PUBLISHED') ?? null,
   );
 
   protected readonly title = computed(() => this.draftTitle() ?? this.clip()?.title ?? '');
@@ -661,18 +850,26 @@ export class ClipPage implements OnDestroy {
    * The clip→clip link this guards has existed since music remixes, but the
    * remake panel is what makes "← the version this was made from" an everyday
    * step rather than a rarity.
+   *
+   * Everything that can be unknown goes back to `null` rather than to empty.
+   * Empty is a claim — there are none — and making it about the clip we have
+   * not started loading yet is how the previous clip's answers get attributed
+   * to the next one for a frame.
    */
   private resetForClip(): void {
     this.clip.set(undefined);
     this.preview.set(null);
     this.candidate.set(null);
-    this.publications.set([]);
-    this.publishJobs.set([]);
-    this.lineage.set([]);
+    this.publications.set(null);
+    this.publishJobs.set(null);
+    this.lineage.set(null);
+    this.lineageFailure.set(null);
     this.showHistory.set(false);
     this.source.set({ kind: 'poster' });
     this.uploadRequested.set(false);
     this.error.set(null);
+    this.loadFailure.set(null);
+    this.deliveryFailure.set(null);
     this.saved.set(null);
 
     this.draftTitle.set(null);
@@ -703,16 +900,26 @@ export class ClipPage implements OnDestroy {
     this.playhead.set(0);
   }
 
-  /** The other versions of this clip, fetched when the reviewer asks for them. */
+  /**
+   * The other versions of this clip, fetched when the reviewer asks for them.
+   *
+   * A one-shot read, so there is nothing to release. The list stays null on
+   * failure so that pressing Show history again retries it, and
+   * {@link lineageFailure} is what stops the panel sitting on "Loading…" behind
+   * a query that has already given up.
+   */
   protected async openHistory(): Promise<void> {
     this.showHistory.set(true);
-    if (this.lineage().length) return;
+    if (this.lineage()?.length) return;
     const clip = this.clip();
     if (!clip) return;
+    this.lineageFailure.set(null);
     try {
-      this.lineage.set(await this.store.loadLineage(clip.lineageId ?? clip.id));
+      this.lineage.set(await this.clips.loadLineage(clip.lineageId ?? clip.id));
     } catch (err) {
-      this.error.set(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      this.lineageFailure.set(message);
+      this.error.set(message);
     }
   }
 
@@ -735,7 +942,7 @@ export class ClipPage implements OnDestroy {
     const clip = this.clip();
     if (!clip) return;
     await this.run('Saved', () =>
-      this.store.editClip(clip.id, {
+      this.clips.editClip(clip.id, {
         title: this.title().trim() || null,
         description: this.description().trim() || null,
         reviewNote: this.note().trim() || null,
@@ -754,7 +961,7 @@ export class ClipPage implements OnDestroy {
     const clip = this.clip();
     if (!clip) return;
     await this.run(review === 'APPROVED' ? 'Approved' : 'Rejected', () =>
-      this.store.review(clip.id, review, clip.storagePath, {
+      this.clips.review(clip.id, review, clip.storagePath, {
         title: this.title().trim() || null,
         description: this.description().trim() || null,
         reviewNote: this.note().trim() || null,
@@ -770,11 +977,16 @@ export class ClipPage implements OnDestroy {
     // button is a hint to a person and not a constraint on a program. Queueing
     // a second publish behind one that has not run yet is how the same video
     // reaches the same channel twice.
-    if (this.publishState().kind !== 'READY' && this.publishState().kind !== 'FAILED') return;
+    //
+    // A null state is refused too, and that is the point of it being nullable:
+    // "I do not know what has already happened to this clip" is the one answer
+    // that must never be read as "nothing has".
+    const state = this.publishState();
+    if (!state || (state.kind !== 'READY' && state.kind !== 'FAILED')) return;
 
     const when = this.draftSchedule() ? new Date(this.draftSchedule()) : null;
     await this.run('Queued for publishing', async () => {
-      await this.store.requestPublish(uid, clip.id, when, this.publishOptions());
+      await this.publishing.requestPublish(uid, clip.id, when, this.publishOptions());
     });
   }
 
@@ -787,9 +999,9 @@ export class ClipPage implements OnDestroy {
    * place it can be said, because there is no publication yet to withdraw.
    */
   protected async cancelScheduled(): Promise<void> {
-    const job = this.publishState().job;
+    const job = this.publishState()?.job;
     if (!job || job.status !== 'QUEUED') return;
-    await this.run('Publish called off', () => this.store.cancel(job.id));
+    await this.run('Publish called off', () => this.jobs.cancel(job.id));
   }
 
   /**
@@ -839,7 +1051,7 @@ export class ClipPage implements OnDestroy {
     if (!clip || !uid) return;
 
     await this.run('Upload queued — it will start playing here when it lands', async () => {
-      await this.store.requestUpload(uid, clip.id);
+      await this.publishing.requestUpload(uid, clip.id);
       this.uploadRequested.set(true);
     });
   }
@@ -865,7 +1077,7 @@ export class ClipPage implements OnDestroy {
     await this.run(
       'Music queued — the scored version will appear in the review queue',
       async () => {
-        await this.store.requestMusic(uid, clip.id, options);
+        await this.publishing.requestMusic(uid, clip.id, options);
         this.showMusic.set(false);
         this.musicSource.set('');
       },
@@ -937,7 +1149,7 @@ export class ClipPage implements OnDestroy {
       this.alwaysHidden.set([]);
       return;
     }
-    const source = await this.store.loadSource(sourceId);
+    const source = await this.sources.loadSource(sourceId);
     this.alwaysHidden.set(source?.obscure?.regions ?? []);
   }
 
@@ -953,7 +1165,7 @@ export class ClipPage implements OnDestroy {
     const regions = clip?.remake?.obscured ?? [];
     if (!clip?.sourceId || !regions.length) return;
     await this.run('This channel will have these hidden from now on', async () => {
-      await this.store.rememberObscure(clip.sourceId!, {
+      await this.sources.rememberObscure(clip.sourceId!, {
         auto: false,
         regions: upToSix(regions.map((region) => ({ ...region, found: 'REMEMBERED' }))),
         method: null,
@@ -968,7 +1180,7 @@ export class ClipPage implements OnDestroy {
     const sourceId = this.clip()?.sourceId;
     if (!sourceId) return;
     await this.run('Future clips from this channel will be left alone', async () => {
-      await this.store.rememberObscure(sourceId, null);
+      await this.sources.rememberObscure(sourceId, null);
       this.alwaysHidden.set([]);
     });
   }
@@ -1004,7 +1216,7 @@ export class ClipPage implements OnDestroy {
       return;
     }
     await this.run('Clip deleted', async () => {
-      await this.store.deleteClip(clip.id);
+      await this.clips.deleteClip(clip.id);
       await this.router.navigate(['/review']);
     });
   }
@@ -1077,7 +1289,7 @@ export class ClipPage implements OnDestroy {
     };
 
     await this.run('Remake queued — the new version will appear in the review queue', async () => {
-      await this.store.requestRemake(uid, clip.id, options);
+      await this.publishing.requestRemake(uid, clip.id, options);
       this.showRemake.set(false);
       this.remakeNotes.set('');
     });

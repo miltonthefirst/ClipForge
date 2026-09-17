@@ -7,6 +7,7 @@ import {
   inject,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -24,7 +25,8 @@ import {
   type StageProgress,
 } from '../../core/job-list';
 import { SessionService } from '../../core/session';
-import { ClipForgeStore, JOB_PAGE } from '../../core/store';
+import { JOB_PAGE, JobsRepository } from '../../core/data/jobs';
+import type { Live } from '../../core/firestore/gateway';
 import { WorkerPanel } from './worker-panel';
 
 /** One card, with everything the template needs already worked out. */
@@ -45,9 +47,8 @@ export interface JobRow {
   templateUrl: './jobs-page.html',
 })
 export class JobsPage implements OnDestroy {
-  private readonly store = inject(ClipForgeStore);
+  private readonly data = inject(JobsRepository);
   private readonly session = inject(SessionService);
-  private stop: (() => void) | null = null;
 
   /**
    * The selected tab, from `?tab=` — bound by `withComponentInputBinding`, the
@@ -117,34 +118,69 @@ export class JobsPage implements OnDestroy {
    */
   protected readonly queuedCount = signal(0);
 
+  /**
+   * The listener currently held, released when the tab changes or the page goes.
+   *
+   * A signal rather than a field because the effect below *reads* it: a plain
+   * field is not tracked, so that effect would run once against no listener and
+   * never again, and the tab counts would sit at zero for ever.
+   */
+  private readonly held = signal<Live<Job[]> | null>(null);
+
   constructor() {
-    effect((onCleanup) => {
+    effect(() => {
       const uid = this.session.uid;
       // Cleared first, and unconditionally: a failure belongs to the listener
       // that produced it, and this effect is about to replace that listener —
       // including with no listener at all, on the way out of the app.
       this.loadFailure.set(null);
+
+      // Let go of the previous tab's listener before taking the next one. The
+      // gate keeps it warm for fifteen minutes, so coming back to this tab
+      // re-attaches to the same listener and costs nothing — which is the whole
+      // reason releasing is not the same as unsubscribing.
+      // `untracked`, or this effect depends on the signal it is about to
+      // write and re-runs itself for ever — releasing and re-opening a listener
+      // on every pass, which is a hang rather than a leak.
+      untracked(() => this.held())?.release();
+      this.held.set(null);
+
       if (!uid) {
         this.jobs.set(null);
         return;
       }
-      // Reading the tab here is what re-subscribes: switching tabs tears this
-      // listener down and opens the next one's query.
+
+      // Reading the tab here is what re-subscribes: switching tabs releases
+      // this listener and takes the next one's query.
       const statuses = jobTabSpec(this.selected()).statuses;
       this.jobs.set(null);
       this.delivered = null;
-      const stop = this.store.watchJobs(
-        (jobs) => this.onJobs(jobs),
-        statuses,
-        (err) => this.onQueryFailed(err),
-      );
-      this.stop = stop;
-      onCleanup(stop);
+      this.held.set(this.data.watchJobs(statuses));
+    });
+
+    // Separate from the subscription above so that a delivery does not re-open
+    // a listener: this one reads the held signals and nothing else, and reading
+    // `held` inside the effect that assigns it would make every snapshot a
+    // reason to re-subscribe.
+    effect(() => {
+      const held = this.held();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.onQueryFailed(failure);
+        return;
+      }
+      const jobs = held.data();
+      // Still loading is not the same as delivered-and-empty, and only the
+      // second is news. Acting on the first is what put "Loading the queue…"
+      // on screen for ever behind a query that had already failed.
+      if (jobs === null) return;
+      this.onJobs(jobs);
     });
   }
 
   ngOnDestroy(): void {
-    this.stop?.();
+    this.held()?.release();
   }
 
   /**
@@ -205,9 +241,9 @@ export class JobsPage implements OnDestroy {
     try {
       const [totals, queued] = await Promise.all([
         Promise.all(
-          JOB_TABS.map(async (tab) => [tab.key, await this.store.countJobs(tab.statuses)] as const),
+          JOB_TABS.map(async (tab) => [tab.key, await this.data.countJobs(tab.statuses)] as const),
         ),
-        this.store.countJobs(['QUEUED']),
+        this.data.countJobs(['QUEUED']),
       ]);
       this.counts.set(Object.fromEntries(totals) as Record<JobTab, number>);
       this.queuedCount.set(queued);
@@ -279,7 +315,7 @@ export class JobsPage implements OnDestroy {
     this.submitting.set(true);
     this.error.set(null);
     try {
-      await this.store.submit(uid, value);
+      await this.data.submit(uid, value);
       this.submission.set('');
       void this.refreshCounts();
     } catch (err) {
@@ -293,7 +329,7 @@ export class JobsPage implements OnDestroy {
     this.busy.set(row.job.id);
     this.error.set(null);
     try {
-      await this.store.cancel(row.job.id);
+      await this.data.cancel(row.job.id);
       void this.refreshCounts();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
@@ -327,7 +363,7 @@ export class JobsPage implements OnDestroy {
     this.busy.set(row.job.id);
     this.error.set(null);
     try {
-      await this.store.deleteJob(row.job.id);
+      await this.data.deleteJob(row.job.id);
       void this.refreshCounts();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));

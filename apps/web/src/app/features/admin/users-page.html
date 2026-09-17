@@ -13,7 +13,16 @@
   </p>
 }
 
-@if (users() === null) {
+<!-- A refused listener used to leave the banner above and "Loading people…" below
+     it at the same time, saying both that something went wrong and that the list
+     was still on its way. A listener that has failed delivers nothing and does
+     not retry, so this replaces the list rather than sitting above it. -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">The list of accounts could not be loaded.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (users() === null) {
   <p class="py-16 text-center text-ink-subtle">Loading people…</p>
 } @else {
   @if (pending().length) {

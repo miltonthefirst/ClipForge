@@ -8,7 +8,6 @@ import {
   jobEventsSpec,
   jobsForClipSpec,
   jobsSpec,
-  newJob,
   newestFirst,
   publishJobsSpec,
 } from './jobs';

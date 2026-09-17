@@ -25,15 +25,25 @@
           aria-hidden="true"
         ></span>
         <h2 class="text-sm font-semibold">
-          @switch (live()) {
-            @case ('busy') {
-              Worker busy
-            }
-            @case ('online') {
-              Worker idle
-            }
-            @default {
-              No worker running
+          <!-- "No worker running" is a claim, and the panel is not entitled to
+               it until the heartbeats have actually been read. A query still in
+               flight and one that failed both look like "offline" from here,
+               and they mean something else. -->
+          @if (heartbeatError()) {
+            Worker status unknown
+          } @else if (checking()) {
+            Checking the worker
+          } @else {
+            @switch (live()) {
+              @case ('busy') {
+                Worker busy
+              }
+              @case ('online') {
+                Worker idle
+              }
+              @default {
+                No worker running
+              }
             }
           }
         </h2>
@@ -62,9 +72,11 @@
             Waiting for work · last seen {{ since(beat.lastSeenAt) }} ago
           }
         </p>
-      } @else if (heartbeats() === null) {
-        <p class="mt-1 text-xs text-ink-subtle">Checking…</p>
-      } @else {
+      } @else if (heartbeats()?.length === 0) {
+        <!-- Delivered, and there was nothing in it. Deliberately not shown for
+             a query that has yet to answer or that failed: the headline above
+             covers the first and the banner below the second, and this line
+             would state as fact what neither of them knows. -->
         <p class="mt-1 text-xs text-ink-subtle">No worker has ever reported in.</p>
       }
 
@@ -92,7 +104,14 @@
                failed, on the phone that asked for it. -->
           <p class="mt-1 text-xs text-warn-ink">{{ detail }}</p>
         }
+      } @else if (agentError(); as message) {
+        <p class="mt-1 text-xs text-warn-ink">
+          Cannot tell whether the worker machine is listening: {{ message }}
+        </p>
       } @else if (agents()?.length === 0 && !control.available) {
+        <!-- An answered query that came back empty, which is the only state
+             these instructions fit: a read that failed says nothing about
+             whether an agent is installed. -->
         <p class="mt-1 text-xs text-ink-subtle">
           Nothing on the worker machine is listening for a start request. Install the agent there
           with <code class="rounded bg-panel-soft px-1">tools/agent.ps1 -Install</code> and this

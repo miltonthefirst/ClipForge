@@ -33,6 +33,15 @@
     }
   </div>
 
+  <!-- A read that was refused is not a channel nobody has connected. Everything
+       below renders from the channel document, so a failed read had nowhere to
+       put itself and the section simply stayed blank. -->
+  @if (channelFailure(); as failure) {
+    <p class="mt-3 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink">
+      The channel could not be read. {{ failure }}
+    </p>
+  }
+
   @if (checkingLocal()) {
     <p class="mt-3 text-sm text-ink-subtle">Looking for the worker on this machine…</p>
   } @else if (!localAvailable()) {
@@ -54,6 +63,15 @@
           <dd class="text-ink-muted">{{ ch.uploadsRemainingToday }}</dd>
         }
       </dl>
+    } @else if (channel() === null) {
+      <!-- Null here means the document does not exist, which is a different
+           answer from "not yet" and now arrives as one. Worth saying out loud
+           on the web, where nothing else on the page explains an empty
+           Connection section. -->
+      <p class="mt-3 text-sm text-ink-subtle">
+        No channel has been connected yet. That is done in the desktop app, on the machine the
+        worker runs on.
+      </p>
     }
   } @else {
     @if (status(); as st) {

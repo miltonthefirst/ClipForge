@@ -1,8 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 
+import { AdminRepository } from '../../core/data/admin';
 import { CLIPFORGE_CONFIG } from '../../core/firebase';
 import { SessionService } from '../../core/session';
-import { ClipForgeStore } from '../../core/store';
 import { ThemeService } from '../../core/theme';
 import type { ThemeChoice } from '../../core/theme';
 
@@ -21,7 +21,14 @@ import type { ThemeChoice } from '../../core/theme';
 })
 export class SettingsPage {
   private readonly session = inject(SessionService);
-  private readonly store = inject(ClipForgeStore);
+  /**
+   * The accounts repository, for the one write on a `users` row its owner owns.
+   *
+   * Named for the People page it was built for, but `updateOwnProfile` is the
+   * half of it the rules grant to everyone — a display name is not an admin
+   * decision, and reaching it from here does not make this an admin page.
+   */
+  private readonly accounts = inject(AdminRepository);
   private readonly theme = inject(ThemeService);
   protected readonly config = inject(CLIPFORGE_CONFIG);
 
@@ -53,7 +60,7 @@ export class SettingsPage {
     this.error.set(null);
     this.saved.set(false);
     try {
-      await this.store.updateOwnProfile(uid, { displayName: this.name().trim() });
+      await this.accounts.updateOwnProfile(uid, { displayName: this.name().trim() });
       this.saved.set(true);
       this.draftName.set(null);
     } catch (err) {

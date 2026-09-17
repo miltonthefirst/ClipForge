@@ -17,7 +17,19 @@
   Review queue
 </a>
 
-@if (clip() === undefined) {
+<!-- Four states, not three. A listener that has failed delivers nothing at
+     all, so "still loading" and "this query is never going to answer" look
+     identical from the clip alone — which is how this page used to say
+     "Loading…" for ever while the only account of what went wrong sat in a
+     banner further down that renders only once a clip has arrived. -->
+@if (loadFailure(); as why) {
+  <div
+    class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    <p class="font-medium">This clip could not be loaded.</p>
+    <p class="mt-1">{{ why }}</p>
+  </div>
+} @else if (clip() === undefined) {
   <p class="py-16 text-center text-ink-subtle">Loading…</p>
 } @else if (clip() === null) {
   <p class="py-16 text-center text-ink-subtle">No such clip.</p>
@@ -474,11 +486,13 @@
           </div>
 
           @if (showHistory()) {
-            @if (!lineage().length) {
-              <p class="mt-2 text-xs text-ink-subtle">Loading…</p>
-            } @else {
+            @if (lineageFailure(); as why) {
+              <p class="mt-2 text-xs text-danger-ink">
+                The other versions could not be loaded: {{ why }}
+              </p>
+            } @else if (lineage(); as versions) {
               <ol class="mt-3 space-y-3">
-                @for (past of lineage(); track past.id) {
+                @for (past of versions; track past.id) {
                   <li
                     class="rounded-lg p-3 text-xs"
                     [class]="past.id === clip.id ? 'bg-accent-soft' : 'bg-panel-soft'"
@@ -520,8 +534,15 @@
                       >
                     }
                   </li>
+                } @empty {
+                  <!-- Loaded, and there is nothing — which is not an error. A
+                       clip cut before lineages existed carries no `lineageId`,
+                       so the query that finds its siblings matches none. -->
+                  <li class="text-xs text-ink-subtle">No other versions of this clip.</li>
                 }
               </ol>
+            } @else {
+              <p class="mt-2 text-xs text-ink-subtle">Loading…</p>
             }
           }
         </section>
@@ -1096,7 +1117,19 @@
                that was already queued: the worker writes a publication when it
                STARTS, so a job waiting for Friday leaves nothing behind for a
                page to notice. -->
-          @if (publishState(); as delivery) {
+          @if (deliveryFailure(); as why) {
+            <!-- Said out loud, and no Publish button under it. Unknown must not
+                 fall through to "ready": the point of watching the publications
+                 and the outstanding jobs is to refuse a second upload of a clip
+                 that already has one, and a page that offered Publish because
+                 its query failed would be worse than one that never watched. -->
+            <p
+              class="mt-2 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink"
+            >
+              What has already happened to this clip could not be read, so nothing is offered here:
+              {{ why }}
+            </p>
+          } @else if (publishState(); as delivery) {
             @switch (delivery.kind) {
               @case ('PUBLISHED') {
                 <p class="mt-2 text-sm text-ok-ink">
@@ -1142,10 +1175,21 @@
                 </button>
               }
             }
+          } @else {
+            <!-- Said rather than left blank. Nothing on screen reads as "there
+                 is nothing to say about this clip", which is the one thing the
+                 two listeners exist to disprove. -->
+            <p class="mt-2 text-sm text-ink-subtle">
+              Checking what has already happened to this clip…
+            </p>
           }
 
-          @if (publishState().kind === 'READY' || publishState().kind === 'FAILED') {
-            @if (publishState().publication?.error; as failure) {
+          <!-- Offered only once the state is actually known. `publishState()` is
+               null until both the publications and the outstanding jobs have
+               arrived, and `?.` is what keeps that from reading as READY — the
+               one value that puts a Publish button on the screen. -->
+          @if (publishState()?.kind === 'READY' || publishState()?.kind === 'FAILED') {
+            @if (publishState()?.publication?.error; as failure) {
               <p
                 class="mt-2 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink"
               >
@@ -1164,7 +1208,16 @@
 
             @if (showPublishOptions()) {
               <div class="mt-3 space-y-3 border-t border-line pt-3 text-sm">
-                @if (channels().length > 1) {
+                <!-- A missing picker and a picker that could not be built look
+                     identical — both are just an absent control, and the upload
+                     then goes wherever the default sends it. So the failure is
+                     said, rather than shown as a workspace with one channel. -->
+                @if (channelsFailure(); as why) {
+                  <p class="text-xs text-danger-ink">
+                    The channel list could not be read, so this upload will go to the default
+                    channel: {{ why }}
+                  </p>
+                } @else if ((channels()?.length ?? 0) > 1) {
                   <label class="block">
                     <span class="text-ink-muted">Channel</span>
                     <select
@@ -1174,7 +1227,7 @@
                       name="channel"
                     >
                       <option value="">Default channel</option>
-                      @for (channel of channels(); track channel.id) {
+                      @for (channel of channels() ?? []; track channel.id) {
                         <option [value]="channel.id">{{ channel.label }}</option>
                       }
                     </select>

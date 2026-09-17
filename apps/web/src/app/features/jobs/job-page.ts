@@ -7,12 +7,15 @@ import {
   inject,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import type { Clip, Job, JobEvent, Source, Stage, StageStatus } from '@clipforge/contracts';
 
+import { JobsRepository } from '../../core/data/jobs';
+import { SourcesRepository } from '../../core/data/sources';
+import type { Live } from '../../core/firestore/gateway';
 import { isTerminal, stageNote } from '../../core/job-list';
-import { ClipForgeStore } from '../../core/store';
 
 /**
  * One job, in enough detail to answer "why is it not moving?"
@@ -43,16 +46,41 @@ import { ClipForgeStore } from '../../core/store';
 })
 export class JobPage implements OnDestroy {
   private readonly router = inject(Router);
-  private readonly store = inject(ClipForgeStore);
+  private readonly jobs = inject(JobsRepository);
+  private readonly sources = inject(SourcesRepository);
 
   /** From the route: `jobs/:id`. */
   readonly id = input.required<string>();
 
-  private stopJob: (() => void) | null = null;
-  private stopEvents: (() => void) | null = null;
+  /**
+   * The two listeners this page holds, released when the route id changes and
+   * when the page goes.
+   *
+   * Signals rather than plain fields because the delivering effects below
+   * *read* them, and a plain field is not tracked: each of those effects would
+   * run once against no listener and never again, leaving the page on
+   * "Loading…" for ever with nothing anywhere saying why.
+   */
+  private readonly heldJob = signal<Live<Job> | null>(null);
+  private readonly heldEvents = signal<Live<JobEvent[]> | null>(null);
+
   private ticker: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * The job, in three states.
+   *
+   * `undefined` is "has not arrived"; `null` is "there is no such job", which
+   * is what a deleted job looks like to a page still open on it. The gateway
+   * draws the same line — `data()` null while `loading()` is true, against
+   * `data()` null once it is false — and collapsing the two here is what would
+   * leave a removed job reading "Loading…" for as long as the tab stayed open.
+   */
   protected readonly job = signal<Job | null | undefined>(undefined);
+  /**
+   * The event log: null until it arrives, and empty for a job with nothing
+   * recorded against it. Those are opposite conclusions about a stalled job,
+   * so the template renders them as separate sentences.
+   */
   protected readonly events = signal<JobEvent[] | null>(null);
   protected readonly source = signal<Source | null>(null);
   protected readonly results = signal<{ candidates: number; clips: Clip[] } | null>(null);
@@ -76,60 +104,117 @@ export class JobPage implements OnDestroy {
   private readonly now = signal(Date.now());
 
   constructor() {
-    effect((onCleanup) => {
+    effect(() => {
       const id = this.id();
+      // Cleared first, and unconditionally: a failure belongs to the listener
+      // that produced it, and this effect is about to replace both listeners.
       this.loadFailure.set(null);
       this.eventsFailure.set(null);
-      const stopJob = this.store.watchJob(
-        id,
-        (job) => {
-          this.job.set(job);
-          // Resolved lazily and only once: the source is written by DOWNLOAD,
-          // so it does not exist for a job that has not got that far, and it
-          // never changes once it does.
-          const sourceId = job?.sourceId;
-          if (sourceId && !this.source()) {
-            void this.store
-              .loadSource(sourceId)
-              .then((found) => this.source.set(found))
-              .catch(() => this.source.set(null));
-          }
 
-          // Only once nothing more can be produced. Polled on every job update
-          // it would run two queries per heartbeat for an answer that is still
-          // being written; a finished job's output does not change.
-          if (job && this.terminal(job) && !this.results()) {
-            void this.store
-              .loadJobResults(job.id)
-              .then((found) => this.results.set(found))
-              .catch((err: unknown) =>
-                this.error.set(err instanceof Error ? err.message : String(err)),
-              );
-          }
-        },
-        (err) => this.loadFailure.set(err.message),
-      );
-      const stopEvents = this.store.watchJobEvents(
-        id,
-        (events) => this.events.set(events),
-        (err) => this.eventsFailure.set(err.message),
-      );
-
-      this.stopJob = stopJob;
-      this.stopEvents = stopEvents;
-      onCleanup(() => {
-        stopJob();
-        stopEvents();
+      // Let go of the previous job's listeners before taking the next one's.
+      // The gate holds a listener warm for fifteen minutes after that, so
+      // stepping back to a job re-attaches to the same one and costs nothing —
+      // which is the whole reason releasing is not unsubscribing.
+      // `untracked`, or this effect depends on the signals it is about to write
+      // and re-runs itself for ever, releasing and re-opening a listener on
+      // every pass — a hang rather than a leak.
+      untracked(() => {
+        this.heldJob()?.release();
+        this.heldEvents()?.release();
       });
+      this.heldJob.set(null);
+      this.heldEvents.set(null);
+
+      // Everything on screen describes the job that was here a moment ago. The
+      // source and the results are each resolved once and only once, so left in
+      // place they would be inherited by the next job, which would then never
+      // ask for its own.
+      this.job.set(undefined);
+      this.events.set(null);
+      this.source.set(null);
+      this.results.set(null);
+
+      this.heldJob.set(this.jobs.watchJob(id));
+      this.heldEvents.set(this.jobs.watchJobEvents(id));
+    });
+
+    // Separate from the subscription above so that a delivery is not a reason
+    // to re-subscribe: these read the held signals and nothing else, and
+    // reading `heldJob` inside the effect that assigns it would make every
+    // snapshot re-open the listener it arrived on.
+    effect(() => {
+      const held = this.heldJob();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.loadFailure.set(failure.message);
+        return;
+      }
+      const job = held.data();
+      // Null while the listener is still loading means the answer has not come
+      // back; null once it has loaded means there is no such job. Only the
+      // second is news, and telling them apart is what this page exists to do.
+      if (job === null && held.loading()) return;
+      // `untracked` because settling the job reads the two signals it is about
+      // to fill, to ask each question exactly once. Tracked, this effect would
+      // depend on its own answers and re-run on each of them.
+      untracked(() => this.onJob(job));
+    });
+
+    effect(() => {
+      const held = this.heldEvents();
+      if (!held) return;
+      const failure = held.error();
+      if (failure) {
+        this.eventsFailure.set(failure.message);
+        return;
+      }
+      const events = held.data();
+      // Not yet delivered, which is not the same as delivered and empty. The
+      // log is read to find out why a job stopped, and "nothing recorded yet"
+      // is an answer where "still loading" is not.
+      if (events === null) return;
+      this.events.set(events);
     });
 
     this.ticker = setInterval(() => this.now.set(Date.now()), 5_000);
   }
 
   ngOnDestroy(): void {
-    this.stopJob?.();
-    this.stopEvents?.();
+    this.heldJob()?.release();
+    this.heldEvents()?.release();
     if (this.ticker) clearInterval(this.ticker);
+  }
+
+  /**
+   * One delivery of the job document, or null for a job that is not there.
+   *
+   * The source is resolved lazily and only once: it is written by DOWNLOAD, so
+   * it does not exist for a job that has not got that far, and it never changes
+   * once it does.
+   *
+   * The results are asked for only once nothing more can be produced. Polled on
+   * every job update they would run two queries per heartbeat for an answer
+   * that is still being written; a finished job's output does not change.
+   */
+  private onJob(job: Job | null): void {
+    this.job.set(job);
+    if (!job) return;
+
+    const sourceId = job.sourceId;
+    if (sourceId && !this.source()) {
+      void this.sources
+        .loadSource(sourceId)
+        .then((found) => this.source.set(found))
+        .catch(() => this.source.set(null));
+    }
+
+    if (this.terminal(job) && !this.results()) {
+      void this.jobs
+        .loadJobResults(job.id)
+        .then((found) => this.results.set(found))
+        .catch((err: unknown) => this.error.set(err instanceof Error ? err.message : String(err)));
+    }
   }
 
   // ── Diagnosis ──────────────────────────────────────────────────────────────
@@ -235,7 +320,7 @@ export class JobPage implements OnDestroy {
     this.cancelling.set(true);
     this.error.set(null);
     try {
-      await this.store.cancel(job.id);
+      await this.jobs.cancel(job.id);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
@@ -268,7 +353,7 @@ export class JobPage implements OnDestroy {
     this.busy.set(true);
     this.error.set(null);
     try {
-      await this.store.deleteJob(job.id);
+      await this.jobs.deleteJob(job.id);
       await this.router.navigate(['/jobs']);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
@@ -290,7 +375,7 @@ export class JobPage implements OnDestroy {
     this.busy.set(true);
     this.error.set(null);
     try {
-      const { clips, candidates } = await this.store.sourceFootprint(source.id);
+      const { clips, candidates } = await this.sources.sourceFootprint(source.id);
       const what = [
         `the source "${source.title ?? source.id}"`,
         clips ? `${clips} clip(s)` : '',
@@ -301,7 +386,7 @@ export class JobPage implements OnDestroy {
       if (!confirm(`Delete ${what}? The media stays on disk until you remove it in Storage.`)) {
         return;
       }
-      await this.store.deleteSource(source.id);
+      await this.sources.deleteSource(source.id);
       this.source.set(null);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));

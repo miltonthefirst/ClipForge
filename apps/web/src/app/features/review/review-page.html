@@ -87,7 +87,18 @@
   </p>
 }
 
-@if (cards() === null) {
+<!-- ── Failed, still loading, or genuinely empty ─────────────────────────────
+     Three answers, and until there was somewhere to put the first one the page
+     could only give two. A listener that fails delivers nothing at all, which
+     from here looks exactly like one that has not answered yet — and
+     `onSnapshot` does not retry after an error, so "Loading the queue…" stayed
+     on screen for as long as the tab was open. -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">The queue could not be loaded.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (cards() === null) {
   <p class="py-16 text-center text-ink-subtle">Loading the queue…</p>
 } @else if (cards()!.length === 0) {
   <div class="py-16 text-center">
