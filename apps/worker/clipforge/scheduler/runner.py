@@ -10,7 +10,10 @@ Three behaviours are worth stating because they are easy to get wrong:
 between stages must leave a document that describes what actually happened. This
 costs one write per stage — deliberately per *stage*, not per progress tick,
 because Firestore bills per write and a chatty progress loop is the single
-easiest way to burn the free daily quota (docs/PLAN.md §7).
+easiest way to burn the free daily quota (docs/PLAN.md §7). A running stage can
+still say what it is doing: its note goes to the :class:`StageProgress` held here
+and is carried out by the lease heartbeat's write, so saying it buys no writes at
+all — see :meth:`clipforge.store.firestore.JobStore.renew`.
 
 **The lease is renewed between stages, and a lost lease aborts immediately.**
 If the reaper reclaimed this job while a long stage ran, another worker now owns
@@ -45,8 +48,8 @@ from clipforge.models.broker import InsufficientVramError, ModelBroker
 from clipforge.observability import bind_job, get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.lease import Transition
-from clipforge.stages.base import StageContext, StageOutcome, StageRegistry
-from clipforge.store.firestore import JobStore
+from clipforge.stages.base import StageContext, StageOutcome, StageProgress, StageRegistry
+from clipforge.store.firestore import JobStore, clamp_progress
 
 log = get_logger(__name__)
 
@@ -96,12 +99,17 @@ class StageRunner:
         settings: Settings,
         broker: ModelBroker,
         clock: Clock = _now,
+        progress: StageProgress | None = None,
     ) -> None:
         self._store = store
         self._registry = registry
         self._settings = settings
         self._broker = broker
         self._clock = clock
+        # The worker passes the same object it hands its heartbeat thread; that
+        # shared reference is the whole mechanism. A runner used on its own gets
+        # one anyway, so a stage never has to ask whether anyone is listening.
+        self._progress = progress or StageProgress()
 
     def run(self, job: Job, should_stop: Event | None = None) -> Job:
         """Execute every outstanding stage. Returns the job in its final state."""
@@ -148,6 +156,12 @@ class StageRunner:
                     "started_at": started,
                     "attempts": (stage.attempts or 0) + 1,
                     "error": None,
+                    # Cleared here so a note left behind by a previous attempt is
+                    # never read as news about this one. The stage-end copy
+                    # inherits the None, which is what stops a finished stage
+                    # going on saying "Mixing"; the failure path below is the one
+                    # place that deliberately puts a note back.
+                    "progress": None,
                 }
             )
             job = _replace_stage(job, index, running).model_copy(update={"updated_at": started})
@@ -176,10 +190,21 @@ class StageRunner:
                         settings=self._settings,
                         broker=self._broker,
                         should_stop=should_stop,
+                        notes=self._progress,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - every stage failure is captured, not raised
-                return self._record_failure(job, index, running, exc)
+                # Read before the `finally` below clears it. Where a stage got to
+                # is the part an exception almost never carries: "Mixing the
+                # music into the clip" plus a ffmpeg error says which pass died,
+                # and the error alone does not.
+                return self._record_failure(job, index, running, exc, self._progress.current())
+            finally:
+                # Whatever the stage last said stopped being true the moment it
+                # returned. Left set, the next heartbeat would republish it
+                # against the stage that follows. The failed stage keeps its own
+                # copy, taken above.
+                self._progress.clear()
 
             return self._record_success(job, index, running, outcome, monotonic_start)
 
@@ -238,7 +263,9 @@ class StageRunner:
         log.info("stage.completed", duration_ms=duration_ms, peak_vram_mb=outcome.peak_vram_mb)
         return job
 
-    def _record_failure(self, job: Job, index: int, running: Stage, exc: Exception) -> Job:
+    def _record_failure(
+        self, job: Job, index: int, running: Stage, exc: Exception, note: str | None = None
+    ) -> Job:
         ended = self._clock()
 
         # A stage that classified its own failure wins: only it knows whether
@@ -266,8 +293,18 @@ class StageRunner:
             retryable=retryable,
         )
 
+        # The note is kept rather than cleared: on a failed stage it is a record
+        # of where the work had reached, not a claim about what is happening now.
+        # Truncated through the same helper the heartbeat writes through — the
+        # contract caps it at 120 characters, `model_copy` does not validate, and
+        # an over-long note here would land in a document nobody can read back.
         failed_stage = running.model_copy(
-            update={"status": StageStatus.FAILED, "ended_at": ended, "error": error}
+            update={
+                "status": StageStatus.FAILED,
+                "ended_at": ended,
+                "error": error,
+                "progress": clamp_progress(note),
+            }
         )
         job = _replace_stage(job, index, failed_stage)
 

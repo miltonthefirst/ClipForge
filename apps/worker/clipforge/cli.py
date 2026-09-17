@@ -43,6 +43,7 @@ def run(
     """
     from clipforge.localapi import LocalControlApi, read_or_create_token
     from clipforge.localserver import LocalFileServer
+    from clipforge.media.trash import Trash
     from clipforge.media.workspace import Workspace
     from clipforge.publish.channels import ChannelRoutes
     from clipforge.scheduler.control import WorkerRoutes
@@ -75,6 +76,11 @@ def run(
         settings=settings,
         jobs=JobStore(client, settings),
         workers=WorkerStore(client, settings),
+        # Housekeeping: collects the clips a review decision has already
+        # settled, on the reaper's cadence. Both stores rather than one, because
+        # the record and the file are removed separately and deliberately.
+        clips=ClipStore(client, settings),
+        trash=Trash(workspace.trash_dir),
         registry_factory=build_registry_factory(
             settings=settings,
             sources=SourceStore(client, settings),
@@ -579,9 +585,9 @@ def publish(
     ),
     at: str = typer.Option("", help="ISO-8601 time to publish at; immediate when omitted."),
 ) -> None:
-    """Queue an approved, attested clip for publishing.
+    """Queue an approved clip for publishing.
 
-    This only enqueues. The rights gate is checked by the worker when the job
+    This only enqueues. The publish gate is checked by the worker when the job
     runs, not here — a check in the CLI would be advisory, since the worker is
     what actually holds the credentials and performs the upload.
     """
@@ -601,7 +607,7 @@ def publish(
 
     # Reported early as a courtesy, so a refusal is visible now rather than in a
     # failed job later. The worker checks again regardless.
-    from clipforge.publish.rights import check_publishable
+    from clipforge.publish.gate import check_publishable
 
     refusal = check_publishable(clip, publishing_enabled=settings.publishing_enabled)
     if refusal is not None:

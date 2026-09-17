@@ -14,18 +14,23 @@ them fails instead of a user silently getting UNKNOWN.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
+from clipforge.media import sources
 from clipforge.media.sources import (
     IngestError,
     LocalFileAdapter,
     YouTubeAdapter,
     classify_youtube_error,
     content_hash,
+    parse_playlist_id,
     parse_youtube_id,
+    resolve_audio_source,
     select_adapter,
 )
+from clipforge.media.toolchain import Toolchain
 from clipforge_contracts import IngestErrorCode, SourceProvider
 
 FIXTURES = Path(__file__).resolve().parents[2] / "assets" / "fixtures"
@@ -89,6 +94,94 @@ def test_a_playlist_url_names_the_problem() -> None:
         YouTubeAdapter().identify("https://www.youtube.com/playlist?list=PLabc")
     assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
     assert "laylist" in str(caught.value)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Playlists are refused, and the refusal carries the fix
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("url", "playlist_id"),
+    [
+        ("https://youtu.be/dQw4w9WgXcQ?list=RDD2XUoPg3-KY", "RDD2XUoPg3-KY"),
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc", "PLabc"),
+        ("https://www.youtube.com/playlist?list=PLabc", "PLabc"),
+        ("https://m.youtube.com/watch?v=dQw4w9WgXcQ&list=WL", "WL"),
+        ("https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=LL", "LL"),
+        ("youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc", "PLabc"),
+    ],
+)
+def test_any_kind_of_list_is_read_as_a_playlist(url: str, playlist_id: str) -> None:
+    """A mix, a hand-made playlist, Watch Later, Liked — no prefix is special.
+    Each of them names more than the one video that was asked for."""
+    assert parse_playlist_id(url) == playlist_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ?si=sharetracking",
+        "dQw4w9WgXcQ",
+        # A `list=` with nothing in it names nothing, and refusing it would refuse
+        # a link that works.
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=%20",
+        # Another site's `list=` means whatever that site says it means.
+        "https://example.com/track.mp3?list=PLabc",
+        "https://vimeo.com/123456?list=PLabc",
+        "not a url at all",
+        "",
+    ],
+)
+def test_a_link_that_names_no_youtube_playlist_reports_none(url: str) -> None:
+    assert parse_playlist_id(url) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtu.be/dQw4w9WgXcQ?list=RDD2XUoPg3-KY",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc",
+        "https://m.youtube.com/watch?v=dQw4w9WgXcQ&list=WL",
+    ],
+)
+def test_a_video_inside_a_playlist_is_refused_and_the_video_url_handed_back(url: str) -> None:
+    """The message this file already promised — "Playlists are not supported" —
+    was not true of a `watch?v=X&list=Y` link: the id parsed, so the video was
+    ingested and the playlist silently dropped. Refusing is only better than
+    guessing if it says what to submit instead."""
+    with pytest.raises(IngestError) as caught:
+        YouTubeAdapter().identify(url)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    assert "playlist" in str(caught.value)
+    assert "https://www.youtube.com/watch?v=dQw4w9WgXcQ" in str(caught.value)
+
+
+@pytest.mark.unit
+def test_a_playlist_naming_no_video_is_refused_without_inventing_one() -> None:
+    with pytest.raises(IngestError) as caught:
+        YouTubeAdapter().identify("https://www.youtube.com/playlist?list=PLabc")
+
+    assert "playlist" in str(caught.value)
+    assert "watch?v=" not in str(caught.value)
+
+
+@pytest.mark.unit
+def test_a_playlist_url_is_routed_to_youtube_so_it_is_youtube_that_refuses_it() -> None:
+    """`youtube.com/playlist?list=...` holds no video id, so it used to miss the
+    YouTube branch entirely and be refused with "Only YouTube videos and local
+    files are supported" — which is true of an mp3 link and wrong about this."""
+    for url in (
+        "https://www.youtube.com/playlist?list=PLabc",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc",
+    ):
+        assert isinstance(select_adapter(url), YouTubeAdapter)
 
 
 @pytest.mark.unit
@@ -297,3 +390,156 @@ def test_an_arbitrary_http_url_is_refused_rather_than_attempted() -> None:
     with pytest.raises(IngestError) as caught:
         select_adapter("https://example.com/video.mp4")
     assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A link neither parser can read is an answer, not a crash
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "malformed",
+    ["https://[oops", "https://[", "http://[::1", "https://exam ple.com/watch?v=abc12345678"],
+)
+def test_a_url_too_malformed_to_parse_is_refused_rather_than_raised(malformed: str) -> None:
+    """`urlparse` throws on a few shapes, and both parsers promise an answer.
+
+    `https://[oops` is `ValueError: Invalid IPv6 URL`. Escaping from here, it
+    reaches the stage as an unclassified crash instead of the sentence the PWA
+    knows how to render — and the browser-side check, which swallows it,
+    would be telling the user something the worker then contradicts.
+    """
+    assert parse_youtube_id(malformed) is None
+    assert parse_playlist_id(malformed) is None
+
+
+@pytest.mark.unit
+def test_a_malformed_link_reaches_the_user_as_a_sentence(tmp_path: Path) -> None:
+    with pytest.raises(IngestError) as caught:
+        resolve_audio_source("https://[oops", tmp_path)
+
+    assert caught.value.code is IngestErrorCode.UNSUPPORTED_URL
+    # Not called a playlist: nothing here knows what it is.
+    assert "playlist" not in str(caught.value).lower()
+
+
+@pytest.mark.unit
+def test_a_refused_link_leaves_nothing_behind(tmp_path: Path) -> None:
+    """The destination is made when something is going to be downloaded into it.
+
+    Creating it first meant a refusal still left an empty directory in the
+    workspace, which the collector then walks and counts against the budget.
+    """
+    dest = tmp_path / "not-created-yet"
+
+    with pytest.raises(IngestError):
+        resolve_audio_source("https://youtu.be/kdQJnqHGI8c?list=RDabc", dest)
+
+    assert not dest.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The music cache — the fetch that must not happen twice
+# ─────────────────────────────────────────────────────────────────────────────
+
+# `None` in sys.modules is how CPython spells "this import must fail": the import
+# machinery finds the entry, sees it is not a module, and raises ImportError. It
+# is the only way to prove a code path never reached `import yt_dlp`, because
+# yt-dlp really is installed on this machine.
+_NO_YT_DLP = "yt_dlp"
+
+
+@pytest.mark.unit
+def test_a_track_already_fetched_is_returned_without_importing_yt_dlp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """yt-dlp has a skip of its own for a file it has already downloaded, and it
+    never fires here — it looks for the pre-postprocessing extension, and the
+    m4a extraction deletes exactly that file. So every re-mix of the same track
+    re-downloaded it, tens of seconds each time, which is most of the wait a
+    reviewer sits through when a remake carries its music forward.
+
+    Asserted through the import rather than by timing it: the check has to
+    happen before the toolchain lookup and the yt-dlp import, not merely before
+    the network call.
+    """
+    cached = tmp_path / "music-dQw4w9WgXcQ.m4a"
+    cached.write_bytes(b"not aac, but it is a file with bytes in it")
+    monkeypatch.setitem(sys.modules, _NO_YT_DLP, None)
+
+    found = resolve_audio_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+
+    assert found.path == cached
+
+
+@pytest.mark.unit
+def test_a_cached_track_reports_no_title_rather_than_inventing_one_from_the_filename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file is named after the video id, so its stem is `music-dQw4w9WgXcQ`
+    — which is not what anything called the track. `RemakeStage._score` falls
+    back to the title already on the clip only when this is None, so a stem here
+    overwrote a title the reviewer had approved as "Slow Burn" with the video id
+    on three screens, on the first remake that carried the music forward."""
+    (tmp_path / "music-dQw4w9WgXcQ.m4a").write_bytes(b"a track this machine already has")
+    monkeypatch.setitem(sys.modules, _NO_YT_DLP, None)
+
+    found = resolve_audio_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+
+    assert found.title is None
+
+
+@pytest.mark.unit
+def test_a_local_track_keeps_the_name_the_reviewer_gave_it(tmp_path: Path) -> None:
+    """The other half of the rule above. A path someone typed has a meaningful
+    stem, and it is the only name that track has anywhere."""
+    track = tmp_path / "Slow Burn.m4a"
+    track.write_bytes(b"a track on this machine")
+
+    assert resolve_audio_source(str(track), tmp_path).title == "Slow Burn"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("music-dQw4w9WgXcQ.m4a", b""),
+        ("music-dQw4w9WgXcQ.webm.part", b"the first half of a track"),
+        # The one the `.part` filter never covered. `FFmpegExtractAudioPP.run`
+        # transcodes straight into the output name when the downloaded extension
+        # differs, with no `.part` marker over that window — so a worker killed
+        # mid-transcode used to leave a truncated, non-empty, perfectly
+        # finished-looking track. It cannot any more, because yt-dlp is told to
+        # write under this prefix and the rename into `music-` is what says the
+        # file is whole.
+        ("fetching-dQw4w9WgXcQ.m4a", b"eight seconds of a three-minute track"),
+    ],
+)
+def test_the_wreckage_of_a_killed_download_is_not_a_cached_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, content: bytes
+) -> None:
+    """Every one of these is what a worker killed mid-fetch leaves behind, and
+    every one is the right shape to look finished. Handing one back would put an
+    empty or truncated file into the mix and then never fetch the real one
+    again, because the cache hit is what stops the fetch."""
+    (tmp_path / name).write_bytes(content)
+    monkeypatch.setattr(sources, "resolve_toolchain", _pretend_tools_are_installed)
+    monkeypatch.setitem(sys.modules, _NO_YT_DLP, None)
+
+    with pytest.raises(ImportError):
+        resolve_audio_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+
+
+def _pretend_tools_are_installed(ffmpeg: str, ffprobe: str) -> Toolchain:
+    """So the test above fails at the import it is about, on any machine.
+
+    Without it a runner with no ffmpeg raises ToolchainError first, and the test
+    would pass for the wrong reason on that machine and fail on this one.
+    """
+    return Toolchain(
+        ffmpeg=Path(ffmpeg),
+        ffprobe=Path(ffprobe),
+        requested_ffmpeg=ffmpeg,
+        requested_ffprobe=ffprobe,
+    )

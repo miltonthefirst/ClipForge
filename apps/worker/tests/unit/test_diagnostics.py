@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import wave
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,8 +16,10 @@ from clipforge.diagnostics import (
     _write_spoken_tone_wav,
     has_capability,
     probe_ffmpeg,
+    probe_ffprobe,
     run_all,
 )
+from clipforge.media.toolchain import Toolchain, resolve_toolchain
 
 
 @pytest.mark.unit
@@ -41,6 +44,60 @@ def test_missing_ffmpeg_fails_without_raising() -> None:
 
 
 @pytest.mark.unit
+def test_missing_ffprobe_fails_without_raising() -> None:
+    """A separate check from ffmpeg, because they are separate programs.
+
+    The doctor reported ffmpeg present on a machine where every MUSIC job then
+    died with "ffprobe and ffmpeg not found". One check for two programs is how
+    a diagnostic ends up disagreeing with reality.
+    """
+    result = probe_ffprobe(ffprobe="clipforge-definitely-not-a-real-binary")
+
+    assert result.ok is False
+    assert "not runnable" in result.detail
+    # Says what stops working, so the reader does not have to know.
+    assert "beat grid" in result.detail
+
+
+@pytest.mark.unit
+def test_a_real_ffprobe_is_reported_with_where_it_lives() -> None:
+    if shutil.which("ffprobe") is None:
+        pytest.skip("needs ffprobe on PATH")
+
+    result = probe_ffprobe()
+
+    assert result.ok is True
+    assert "ffprobe version" in result.detail
+
+
+@pytest.mark.unit
+def test_a_split_install_passes_but_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Everything still works; it is a configuration worth naming, not a failure."""
+    if shutil.which("ffprobe") is None:
+        pytest.skip("needs ffprobe on PATH")
+
+    real = resolve_toolchain("ffmpeg", "ffprobe")
+    if real.ffprobe is None:
+        pytest.skip("needs ffprobe on PATH")
+
+    monkeypatch.setattr(
+        diagnostics,
+        "resolve_toolchain",
+        lambda *_: Toolchain(
+            ffmpeg=Path("/opt/ff/ffmpeg"),
+            ffprobe=Path("/usr/bin/ffprobe"),
+            requested_ffmpeg="ffmpeg",
+            requested_ffprobe="ffprobe",
+        ),
+    )
+
+    result = probe_ffprobe()
+
+    assert result.ok is True
+    assert "installed apart from ffmpeg" in result.detail
+
+
+@pytest.mark.unit
 def test_check_result_is_immutable() -> None:
     result = CheckResult(name="x", ok=True, detail="d")
     with pytest.raises(AttributeError):
@@ -55,7 +112,14 @@ def test_run_all_can_skip_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
     subprocess (docs/PLAN.md §6).
     """
     stub = CheckResult(name="stub", ok=True, detail="")
-    probes = ("probe_ffmpeg", "probe_nvenc", "probe_ollama", "probe_gpu", "probe_publishing")
+    probes = (
+        "probe_ffmpeg",
+        "probe_ffprobe",
+        "probe_nvenc",
+        "probe_ollama",
+        "probe_gpu",
+        "probe_publishing",
+    )
     for probe in probes:
         monkeypatch.setattr(diagnostics, probe, lambda *_, **__: stub)
 

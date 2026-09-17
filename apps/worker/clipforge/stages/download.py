@@ -106,10 +106,19 @@ class DownloadStage:
                 metadata={"sourceId": existing.id},
             )
 
+        # Narration starts here. Everything above is local: a parse and one
+        # Firestore read. From here on the stage is waiting on somebody else's
+        # network, and this is the stage that takes twenty minutes.
+        context.progress("Looking up the video")
         metadata = adapter.fetch_metadata(identity)
         self._reject_if_too_long(context, metadata.duration_sec)
         self._make_room(context, metadata.estimated_bytes)
 
+        # Cut before it is interpolated: a title is whatever the platform says it
+        # is, sometimes a paragraph of one, and the note is capped at 120
+        # characters — a long title would push the word "Downloading" out of it.
+        title = (metadata.title or identity.external_id)[:80]
+        context.progress(f"Downloading {title}")
         fetched = adapter.fetch(identity, self._workspace.sources_dir)
 
         duplicate = self._sources.find_by_content_hash(content_hash=fetched.content_hash)
@@ -176,7 +185,13 @@ class DownloadStage:
                 path=Path(source.local_path),
                 size_bytes=source.size_bytes or 0,
                 last_accessed_at=source.last_accessed_at or source.created_at,
-                pinned=bool(source.pinned),
+                # Pinned by hand, or pinned by being worth coming back to. A
+                # source used more than once is one the reviewer returned to,
+                # and they will return again — while re-fetching it risks the
+                # one thing this project cannot buy back, a video that has since
+                # been taken down. A single-use source stays collectable, so the
+                # budget keeps its release valve.
+                pinned=bool(source.pinned) or (source.use_count or 0) > 1,
             )
             for source in self._sources.eviction_candidates()
             if source.provider is not SourceProvider.LOCAL and source.local_path

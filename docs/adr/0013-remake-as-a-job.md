@@ -114,9 +114,11 @@ re-voicing changes the soundtrack and nothing else. On third-party footage the
 picture is still the picture, and it is the picture a rights holder's matching
 runs against — football rights holders most of all. This helps with a claim on
 commentary or music, and it opens a clip to an audience that does not speak the
-original language. **It does not make footage safe to publish.** That is what
-the rights attestation from [Phase 8](../PLAN.md) is for, and the review screen
-says so where the option is offered.
+original language. **It does not make footage safe to publish.** Nothing here
+decides that — the operator does, and the review screen says so where the option
+is offered. (A recorded rights basis used to sit alongside this claim; see
+[ADR-0020](0020-removing-the-rights-attestation.md) for why it no longer does,
+and why removing it changed nothing about the sentence above.)
 
 ## Two rules that keep the note-reading honest
 

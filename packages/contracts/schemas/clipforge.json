@@ -97,7 +97,7 @@
         "retryable": {
           "type": "boolean",
           "default": true,
-          "description": "False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts."
+          "description": "False marks a failure that will never succeed on retry (bad input, a missing tool, an age-restricted video), so the scheduler fails the job immediately instead of burning its remaining attempts."
         }
       }
     },
@@ -127,6 +127,12 @@
           "default": null,
           "additionalProperties": true,
           "description": "Opaque, stage-owned resume state. The scheduler persists and returns it verbatim and never interprets it."
+        },
+        "progress": {
+          "type": ["string", "null"],
+          "maxLength": 120,
+          "default": null,
+          "description": "One sentence on what this stage is doing right now — 'Fetching the track', 'Analysing the beat grid', 'Mixing'. Null until the stage says something.\n\nIt exists because a long stage was indistinguishable from a hung one: a MUSIC job that ran for thirty minutes produced exactly two events, CLAIMED and STAGE_STARTED, and nothing after them until it finished. A sentence rather than an object with a percentage, because no stage here can honestly compute one — the work being waited on belongs to a remote server or a model, not to a loop with a countable denominator — and a bar stuck at 80 percent for nine minutes reads as broken in a way that a line of prose which keeps changing does not. It sits beside the checkpoint rather than inside it because a checkpoint is opaque to the scheduler by contract, and this is the one thing about a running stage that the scheduler and the PWA both have to read (docs/adr/0007-checkpointed-stage-pipeline.md). It is carried out by the lease heartbeat, which already rewrites the whole job document every 30 seconds, so it costs no Firestore write of its own — job-progress writes being throttled is a requirement rather than an optimisation (docs/adr/0004-dedicated-firebase-project.md).\n\nCapped at 120 characters, which is longer than any honest description of a step and short enough that whoever sets it has to write a sentence rather than paste a tool's output line. Callers truncate; the cap is a guard, not a formatter."
         },
         "error": {
           "anyOf": [{ "$ref": "#/definitions/StageError" }, { "type": "null" }],
@@ -163,9 +169,17 @@
           "default": null,
           "description": "Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat."
         },
-        "rights": {
-          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
-          "default": null
+        "gainDb": {
+          "type": ["number", "null"],
+          "minimum": -40,
+          "maximum": 12,
+          "default": null,
+          "description": "The trim the reviewer asked for, copied from MusicOptions. Null when they asked for none and the stage's own level stands. Recorded because the music is baked into the rendered file: a remake re-renders and has to mix the track again, and without this number it comes back at the default level, silently undoing a correction the reviewer had already made and approved."
+        },
+        "alignToBeat": {
+          "type": ["boolean", "null"],
+          "default": null,
+          "description": "Whether the excerpt was started on a beat, copied from MusicOptions. Null on clips scored before this was recorded, which is not the same as false. Kept for the same reason as gainDb: reproducing the mix the reviewer approved needs every input to it, not only the track and the start offset."
         }
       }
     },
@@ -189,7 +203,7 @@
       "description": "What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "mode", "captions", "rights"],
+      "required": ["source", "mode", "captions"],
       "properties": {
         "source": {
           "type": "string",
@@ -209,10 +223,6 @@
           "type": "boolean",
           "default": true,
           "description": "Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure."
-        },
-        "rights": {
-          "$ref": "#/definitions/RightsAttestation",
-          "description": "Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards."
         }
       }
     },
@@ -490,11 +500,18 @@
       "enum": ["NOT_MENTIONED", "REPLACE", "KEEP_UNDER"]
     },
 
+    "NoteCaptions": {
+      "title": "NoteCaptions",
+      "description": "What a note asked for the captions burned into the picture. REMOVE takes them off, which means re-cutting the segment without the subtitle filter. KEEP is for a note that mentions them and wants them left. NOT_MENTIONED means the note said nothing about them, which is most notes.\n\nThis exists because \"Remove caption\" had no field to land in. The model read it correctly and then had to put the answer somewhere, so it reported setting the language to NONE and the clip came back untouched — a confabulation caused by a missing option rather than by a misread.",
+      "type": "string",
+      "enum": ["NOT_MENTIONED", "REMOVE", "KEEP"]
+    },
+
     "NoteTopic": {
       "title": "NoteTopic",
       "description": "An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.",
       "type": "string",
-      "enum": ["FRAMING", "LANGUAGE", "AUDIO", "TIMING", "OBSCURE"]
+      "enum": ["FRAMING", "LANGUAGE", "AUDIO", "TIMING", "OBSCURE", "CAPTIONS"]
     },
 
     "LlmVisualContext": {
@@ -588,6 +605,7 @@
         "startDeltaSec",
         "endDeltaSec",
         "obscure",
+        "captions",
         "summary"
       ],
       "properties": {
@@ -618,6 +636,7 @@
           "description": "Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer."
         },
         "obscure": { "$ref": "#/definitions/NoteObscure" },
+        "captions": { "$ref": "#/definitions/NoteCaptions" },
         "unsupported": {
           "type": "array",
           "items": { "$ref": "#/definitions/UnsupportedAsk" },
@@ -745,7 +764,7 @@
 
     "VoiceOptions": {
       "title": "VoiceOptions",
-      "description": "A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make footage safe to publish \u2014 that is what the rights attestation is for.",
+      "description": "A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make third-party footage safe to publish \u2014 nothing here decides that, and the operator still does.",
       "type": "object",
       "additionalProperties": false,
       "required": ["mode", "voice", "language"],
@@ -851,6 +870,16 @@
           "type": ["string", "null"],
           "default": null,
           "description": "Render with a different named profile \u2014 caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces."
+        },
+        "keepMusic": {
+          "type": ["boolean", "null"],
+          "default": null,
+          "description": "Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one."
+        },
+        "captions": {
+          "$ref": "#/definitions/VoiceCaptions",
+          "default": null,
+          "description": "What to do with the captions RENDER burned into the picture, when the remake is not also replacing the voice. REMOVE re-cuts the segment without the subtitle filter; KEEP and null leave the picture alone. REBUILD belongs to a voice change and is ignored here, because with no new narration there is nothing to transcribe.\n\nIt sits beside `voice` rather than inside it because captions are a property of the picture, not of the soundtrack. A reviewer who writes \"remove caption\" is not asking for a different voice, and until this existed there was no way to say it at all: the note was read correctly, had nowhere to go, and the clip came back unchanged with a summary claiming the language had been set to NONE."
         }
       }
     },
@@ -1000,7 +1029,7 @@
         "clipId": {
           "type": ["string", "null"],
           "default": null,
-          "description": "The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all."
+          "description": "The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all."
         },
         "musicOptions": {
           "anyOf": [{ "$ref": "#/definitions/MusicOptions" }, { "type": "null" }],
@@ -1120,6 +1149,13 @@
       "enum": ["youtube", "local"]
     },
 
+    "SourceKind": {
+      "title": "SourceKind",
+      "description": "What a source is for, which is a different question from where it came from — `SourceProvider` answers that, and both a video and a music track can be either.\n\nMusic used to be neither: a track was fetched to `tmp`, mixed, and swept, on the reasoning that it is not clipped, not transcribed and not tracked. That held until the same track was wanted twice. Re-fetching a bed the reviewer has already chosen costs a download for bytes that were on the disk an hour ago, and nothing could answer \"which tracks do I actually use?\" because nothing was keeping score.\n\nDefaults to video, which is what every source written before this field was.",
+      "type": "string",
+      "enum": ["video", "music"]
+    },
+
     "Source": {
       "title": "Source",
       "description": "One ingested long-form video at sources/{sourceId}. The media itself never leaves the worker (docs/PLAN.md decision D3).",
@@ -1165,6 +1201,22 @@
           "format": "date-time",
           "default": null,
           "description": "Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read."
+        },
+        "kind": {
+          "$ref": "#/definitions/SourceKind",
+          "default": "video",
+          "description": "Whether this is footage to cut from or a track to score with. Null and absent both read as video, which is what every source written before this field was."
+        },
+        "useCount": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "How many jobs have used this source. The number the Sources list sorts by, and the one that decides what survives garbage collection: a source used more than once is kept, because a reviewer who came back to it will come back again, and re-downloading it costs the one thing this project cannot buy back — a video that has since been taken down.\n\nCounted per job rather than per read, so a CLIP pipeline reading the same file in DOWNLOAD, ANALYZE and RENDER scores one use and not three."
+        },
+        "posterPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "A frame from the video, or the track's cover art, on this machine. Local rather than uploaded: this is the Sources list's thumbnail and the list is only useful on the machine that holds the files, so paying Cloud Storage for a picture of a file the phone cannot open either way would buy nothing."
         },
         "createdAt": { "type": "string", "format": "date-time" }
       }
@@ -1282,19 +1334,6 @@
       "title": "ReviewState",
       "type": "string",
       "enum": ["PENDING", "APPROVED", "REJECTED"]
-    },
-
-    "RightsBasis": {
-      "title": "RightsBasis",
-      "description": "Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.",
-      "type": "string",
-      "enum": [
-        "OWN_CONTENT",
-        "LICENSED",
-        "PERMISSION_GRANTED",
-        "FAIR_USE_ASSERTED",
-        "PUBLIC_DOMAIN"
-      ]
     },
 
     "ChannelConnection": {
@@ -1445,19 +1484,6 @@
       }
     },
 
-    "RightsAttestation": {
-      "title": "RightsAttestation",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["basis"],
-      "properties": {
-        "basis": { "$ref": "#/definitions/RightsBasis" },
-        "attestedBy": { "type": ["string", "null"], "default": null },
-        "attestedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
-        "note": { "type": ["string", "null"], "default": null }
-      }
-    },
-
     "ClipLocation": {
       "title": "ClipLocation",
       "description": "Where the authoritative copy of a rendered clip lives. LOCAL is the free-tier default: Cloud Storage for Firebase requires the Blaze plan, so on Spark there is no bucket at all and clips stay on the worker. REMOTE means a copy exists that any browser can fetch. See docs/adr/0009-spark-tier-local-artefacts.md.",
@@ -1526,6 +1552,12 @@
         },
         "review": { "$ref": "#/definitions/ReviewState" },
         "reviewedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "supersededAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "When a later version of this clip was approved, making this one history.\n\nA decision is about the video, not about the attempt. Approving the fifth cut of a clip settles the first four as well, and before this they stayed PENDING for ever: `latestOfEachLineage` kept them out of the queue, so they were invisible rather than resolved, and the reviewer found them later as work to tidy up.\n\nA timestamp beside `review` rather than a sixth `ReviewState`, because the desktop app ships its own copy of the PWA and does not update when hosting does — an added enum member is a value an older build cannot parse, while an unknown field is one it already ignores. It is also the grace period's clock: a superseded clip is deleted some days after this, not at once, so a reviewer who changes their mind has somewhere to change it back from."
+        },
         "lineageId": {
           "type": ["string", "null"],
           "default": null,
@@ -1558,10 +1590,6 @@
           "maxLength": 2000,
           "default": null,
           "description": "What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh."
-        },
-        "rights": {
-          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
-          "default": null
         },
         "createdAt": { "type": "string", "format": "date-time" }
       }
@@ -1642,7 +1670,7 @@
 
     "Publication": {
       "title": "Publication",
-      "description": "One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.",
+      "description": "One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records what title, description and privacy actually went out, to which channel and when, so 'what did we post' is answerable for any published clip without reading worker logs.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "clipId", "uid", "platform", "state", "createdAt"],
@@ -1674,11 +1702,6 @@
           "type": ["string", "null"],
           "default": null,
           "description": "Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing."
-        },
-        "rights": {
-          "anyOf": [{ "$ref": "#/definitions/RightsAttestation" }, { "type": "null" }],
-          "default": null,
-          "description": "Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason."
         },
         "attempts": { "type": "integer", "minimum": 0, "default": 0 },
         "quotaUnits": {

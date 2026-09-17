@@ -130,7 +130,8 @@ class RenderStage:
         rendered: list[Clip] = []
         failures: list[dict[str, str]] = []
 
-        for candidate in sorted(proposals, key=lambda c: -c.total):
+        ordered = sorted(proposals, key=lambda c: -c.total)
+        for position, candidate in enumerate(ordered, start=1):
             if context.stopping():
                 # Checkpoint what exists rather than discarding it; the next
                 # attempt renders the remainder.
@@ -139,7 +140,18 @@ class RenderStage:
             try:
                 rendered.append(
                     self._render_one(
-                        context, candidate, media_path, media, profile, transcript, source.obscure
+                        context,
+                        candidate,
+                        media_path,
+                        media,
+                        profile,
+                        transcript,
+                        source.obscure,
+                        # A dozen candidates is an ordinary harvest, so "3 of 12"
+                        # is a real count rather than an invented percentage: it
+                        # says both that the stage is moving and how much of it
+                        # is left.
+                        position=f"{position} of {len(ordered)}",
                     )
                 )
             except (RenderError, PosterError) as exc:
@@ -167,6 +179,8 @@ class RenderStage:
         profile: RenderProfile,
         transcript: Transcript | None,
         obscure: ObscureOptions | None = None,
+        *,
+        position: str,
     ) -> Clip:
         """One candidate, cut and encoded.
 
@@ -186,6 +200,7 @@ class RenderStage:
         try:
             subtitles = self._write_subtitles(scratch, candidate, profile, transcript)
             staged = scratch / "clip.mp4"
+            context.progress(f"Rendering clip {position}")
             result = render_clip(
                 RenderRequest(
                     source=media_path,
@@ -201,6 +216,9 @@ class RenderStage:
                 ffmpeg_bin=settings.ffmpeg_bin,
             )
 
+            # A model call, and the broker's lease is behind it: this can sit
+            # waiting for whatever else wants the card.
+            context.progress(f"Naming clip {position}")
             written = self._name(context, candidate, transcript, result.duration_sec)
 
             images = extract_poster(
@@ -211,7 +229,9 @@ class RenderStage:
             )
 
             # Through the port, so the Blaze adapter is the only thing that ever
-            # needs to change here.
+            # needs to change here. Against a bucket it is a whole MP4 going up a
+            # home connection, which is the wait this note exists for.
+            context.progress(f"Uploading clip {position}")
             ref = self._blobs.put(
                 f"clips/{context.job.uid}/{clip_id}.mp4", staged, content_type="video/mp4"
             )
@@ -259,7 +279,6 @@ class RenderStage:
                 description=(written.description if written else candidate.reason),
                 tags=list(written.tags) if written else [],
                 review=ReviewState.PENDING,
-                rights=None,
                 created_at=now,
             )
             # A preview is worth a thumbnail in the review queue; it is not

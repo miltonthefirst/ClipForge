@@ -13,6 +13,7 @@ from clipforge.analysis.remake import apply_interpretation
 from clipforge_contracts import (
     LlmRemakeNote,
     NoteAudio,
+    NoteCaptions,
     NoteCrop,
     NoteFraming,
     NoteObscure,
@@ -20,7 +21,10 @@ from clipforge_contracts import (
     ObscureOptions,
     ObscureRegion,
     RemakeOptions,
+    SpeechMode,
     UnsupportedAsk,
+    VoiceCaptions,
+    VoiceOptions,
 )
 
 pytestmark = pytest.mark.unit
@@ -36,6 +40,7 @@ def reading(**overrides: object) -> LlmRemakeNote:
         "start_delta_sec": 0,
         "end_delta_sec": 0,
         "obscure": NoteObscure.NOT_MENTIONED,
+        "captions": NoteCaptions.NOT_MENTIONED,
         "summary": "",
     }
     return LlmRemakeNote(**{**base, **overrides})
@@ -226,3 +231,72 @@ def test_a_real_framing_mode_is_untouched_by_the_bare_as_rendered_rule() -> None
     )
     assert applied.options.framing is not None
     assert applied.options.framing.mode == "TRACK"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Captions: the note that was read correctly and then went nowhere
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_a_note_asking_for_the_captions_off_takes_them_off() -> None:
+    """The regression, and the reviewer's own words.
+
+    "Remove caption" was understood — the recorded reading said so in as many
+    words — and then reported that it had "set the language to NONE", because
+    there was no captions field to put the answer in and a required schema
+    leaves a model nowhere to say nothing. The clip came back with its captions.
+    """
+    applied = apply_interpretation(
+        RemakeOptions(notes="Remove caption"),
+        reading(topics=[NoteTopic.CAPTIONS], captions=NoteCaptions.REMOVE),
+    )
+
+    assert applied.options.captions is VoiceCaptions.REMOVE
+    assert applied.changes == ["removed the captions"]
+    # Emphatically not a voice change: the reviewer said nothing about the sound.
+    assert applied.options.voice is None
+
+
+def test_a_note_about_captions_is_ignored_when_it_was_not_the_topic() -> None:
+    """The same rule every other field here obeys: scope is declared first."""
+    applied = apply_interpretation(
+        RemakeOptions(notes="Make it wider"),
+        reading(topics=[NoteTopic.FRAMING], captions=NoteCaptions.REMOVE),
+    )
+
+    assert applied.options.captions is None
+
+
+def test_the_captions_follow_a_new_voice_rather_than_the_note() -> None:
+    """A language change has already decided what the captions must say.
+
+    REBUILD is the only answer that keeps them in sync with narration that does
+    not exist yet, so the note loses — but it is recorded as a conflict, because
+    being overruled silently is how a reviewer loses an argument they did not
+    know they were having.
+    """
+    applied = apply_interpretation(
+        RemakeOptions(
+            notes="Remove caption",
+            voice=VoiceOptions(
+                voice="af_heart",
+                language="es",
+                mode=SpeechMode.REPLACE,
+                captions=VoiceCaptions.REBUILD,
+            ),
+        ),
+        reading(topics=[NoteTopic.CAPTIONS], captions=NoteCaptions.REMOVE),
+    )
+
+    assert applied.options.voice is not None
+    assert applied.options.voice.captions is VoiceCaptions.REBUILD
+    assert any("captions" in c for c in applied.conflicts)
+
+
+def test_what_the_reviewer_set_is_never_reinterpreted() -> None:
+    applied = apply_interpretation(
+        RemakeOptions(notes="Remove caption", captions=VoiceCaptions.KEEP),
+        reading(topics=[NoteTopic.CAPTIONS], captions=NoteCaptions.REMOVE),
+    )
+
+    assert applied.options.captions is VoiceCaptions.KEEP

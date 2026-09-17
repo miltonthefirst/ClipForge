@@ -10,18 +10,46 @@ starts the music off-beat, and off-beat is more noticeable than unaligned.
 wrong one costs a full encode to discover. `build_audio_filter` is pure so the
 distinction that matters — REPLACE must not reference the clip's audio at all —
 can be asserted in microseconds.
+
+**Neither ffmpeg call can run forever.** One is the decode in the media layer
+and one is the mix in `clipforge.media.scoring`, which is how both came to be
+missed, and an unbounded ffmpeg is how a job becomes immortal: the reaper
+deliberately leaves alone any job its own worker is still running, so nothing
+else would ever cut it off.
+
+**And a mix that hung is not the same failure as a mix that refused.** What the
+two types cost a job is asserted here, from the scheduler's end; which type the
+mix raises is asserted in test_scoring.py, beside the mix itself.
 """
 
 from __future__ import annotations
 
 import subprocess
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from clipforge.media.beats import BeatAnalysis, analyse, pick_section
+from clipforge.config import Settings
+from clipforge.media import scoring
+from clipforge.media.beats import BeatAnalysis, analyse, decode_mono, pick_section
 from clipforge.media.music import build_audio_filter, build_ffmpeg_args, plan_music
-from clipforge_contracts import MusicMode
+from clipforge.models.broker import ModelBroker
+from clipforge.scheduler.lease import Transition
+from clipforge.scheduler.runner import StageRunner
+from clipforge.stages.base import StageContext, StageOutcome, StageRegistry
+from clipforge_contracts import (
+    Job,
+    JobStatus,
+    JobType,
+    Lane,
+    MusicMode,
+    Stage,
+    StageName,
+    StageStatus,
+)
 
 
 def click_track(path: Path, bpm: float, seconds: float = 20.0) -> Path:
@@ -208,6 +236,56 @@ def test_an_explicit_gain_overrides_the_stages_judgement() -> None:
 
 
 @pytest.mark.unit
+def test_a_bed_under_a_picture_with_no_audio_becomes_a_replacement() -> None:
+    """Not a cosmetic fallback. The BED graph names `[0:a]`, and against a
+    video-only input ffmpeg refuses the whole invocation — *"Stream specifier
+    ':a' ... matches no streams"*, exit -22, no file written. Measured against
+    assets/fixtures/video-only.mp4. A silent source is something the reviewer
+    could not have known about when they asked for a bed."""
+    plan = plan_music(
+        synthetic(120.0),
+        clip_duration_sec=8.0,
+        mode=MusicMode.BED,
+        has_original_audio=False,
+    )
+
+    assert plan.mode is MusicMode.REPLACE
+    # And at replacement level: the track is the whole soundtrack now, and a
+    # bed's -14 dB of it would be close to inaudible.
+    assert plan.gain_db == 0
+    assert "[0:a]" not in build_audio_filter(plan)
+
+
+@pytest.mark.unit
+def test_a_recorded_start_is_used_exactly_rather_than_re_picked() -> None:
+    """What lets a remake reproduce the soundtrack that was approved. The
+    recorded start came off a plan that was already beat-snapped, so snapping it
+    again — here, onto the 0.5s grid — would move it."""
+    plan = plan_music(
+        synthetic(120.0, duration=40.0),
+        clip_duration_sec=8.0,
+        mode=MusicMode.BED,
+        start_sec=3.27,
+    )
+
+    assert plan.music_start_sec == 3.27
+
+
+@pytest.mark.unit
+def test_a_recorded_start_is_still_clamped_to_the_end_of_the_track() -> None:
+    """A remake may lengthen the clip, and the excerpt then no longer fits where
+    it was. Overrunning the track would end the music early."""
+    plan = plan_music(
+        synthetic(120.0, duration=30.0),
+        clip_duration_sec=8.0,
+        mode=MusicMode.BED,
+        start_sec=100.0,
+    )
+
+    assert plan.music_start_sec == 22.0
+
+
+@pytest.mark.unit
 def test_a_short_track_is_marked_for_looping() -> None:
     short = plan_music(synthetic(120.0, duration=5.0), clip_duration_sec=20.0, mode=MusicMode.BED)
     long = plan_music(synthetic(120.0, duration=60.0), clip_duration_sec=20.0, mode=MusicMode.BED)
@@ -291,3 +369,109 @@ def test_the_loop_flag_precedes_the_music_input_it_applies_to() -> None:
     music_at = args.index("m.m4a")
     assert loop_at < music_at
     assert args[music_at - 1] == "-i"
+
+
+@pytest.mark.unit
+def test_the_output_is_cut_at_the_plans_duration_and_so_is_the_copied_picture() -> None:
+    """`-t` is not only a bound on the looping music — it bounds the video
+    stream too, `-c:v copy` and all. So the duration a plan is built from has to
+    be the length of the file being mixed, never a window computed somewhere
+    else. Measured: a 20.000 s picture with a 12 s plan came out at 12.067 s,
+    the rest of the footage gone, and it looked like a successful mix."""
+    plan = plan_music(synthetic(120.0, duration=60.0), clip_duration_sec=12.0, mode=MusicMode.BED)
+    args = build_ffmpeg_args(
+        plan, clip_path="c.mp4", music_path="m.m4a", output_path="o.mp4", reencode_video=False
+    )
+
+    assert args[args.index("-t") + 1] == str(plan.duration_sec) == "12.0"
+
+
+# ── Bounds ───────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_a_decode_that_never_returns_is_cut_off_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Provoked rather than waited for: what is under test is that a bound is
+    passed at all and that the operator gets a sentence instead of a traceback
+    from inside subprocess."""
+    seen: dict[str, Any] = {}
+
+    def _wedge(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(argv, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _wedge)
+
+    with pytest.raises(TimeoutError, match=r"timed out after 30\.0s"):
+        decode_mono(tmp_path / "track.mp3", timeout_s=30.0)
+
+    assert seen["timeout"] == 30.0
+
+
+class WedgedMixStage:
+    """A MUSIC stage that dies where a hung mix really dies: inside the seam.
+
+    The two halves of that distinction — a mix that hung against a mix that
+    refused — are asserted directly on `clipforge.media.scoring`, which is where
+    the mix now runs for both MUSIC and REMAKE. What is left here is the thing
+    only the scheduler can show: what a stage failing that way costs the job.
+    """
+
+    name = StageName.MUSIC
+    lane = Lane.CPU
+
+    def run(self, context: StageContext) -> StageOutcome:
+        scoring._run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            what="mixing the music",
+            timeout_s=0.5,
+        )
+        raise AssertionError("the mix was supposed to time out")
+
+
+class CapturingJobStore:
+    """The only method the runner touches on the way to recording a failure."""
+
+    def __init__(self) -> None:
+        self.job: Job | None = None
+
+    def apply(self, transition: Transition) -> None:
+        self.job = transition.job
+
+
+@pytest.mark.unit
+def test_a_mix_that_timed_out_is_retried_rather_than_spending_the_last_attempt() -> None:
+    """Asserted from the far end, because the cost is paid there. The runner
+    classifies a failure by the exception's type — `ScoringError` is a
+    `RuntimeError`, which it reads as terminal — and `lease.fail_stage` then
+    takes a terminal failure straight to FAILED with the remaining attempts
+    unspent. So the one failure in this stage that another attempt would fix was
+    the one failure that never got another attempt."""
+    job = Job(
+        id="job-1",
+        uid="user-1",
+        type=JobType.MUSIC,
+        status=JobStatus.RUNNING,
+        worker_id="worker-1",
+        lease_expires_at=datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+        stages=[Stage(name=StageName.MUSIC, lane=Lane.CPU, status=StageStatus.PENDING)],
+        attempts=1,
+        max_attempts=3,
+        created_at=datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 14, 12, 0, tzinfo=UTC),
+    )
+    registry = StageRegistry()
+    registry.register(WedgedMixStage())
+
+    final = StageRunner(
+        store=CapturingJobStore(),  # type: ignore[arg-type]
+        registry=registry,
+        settings=Settings(use_emulators=True),
+        broker=ModelBroker(reserve_mb=0),
+    ).run(job)
+
+    assert final.status is JobStatus.QUEUED, "a wedged ffmpeg is not a terminal failure"
+    assert final.attempts == 2, "one attempt spent of three, not all three"
+    assert final.error is not None and final.error.retryable

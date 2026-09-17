@@ -33,7 +33,7 @@ from clipforge_contracts import MusicMode
 
 from clipforge.media.beats import BeatAnalysis
 
-__all__ = ["MusicPlan", "build_audio_filter", "plan_music"]
+__all__ = ["MusicPlan", "build_audio_filter", "build_ffmpeg_args", "plan_music"]
 
 # Where a bed sits relative to speech. Measured in dB of attenuation applied
 # before the ducker, which then takes it further down whenever anyone talks.
@@ -72,30 +72,58 @@ def plan_music(
     mode: MusicMode,
     gain_db: float | None = None,
     align_to_beat: bool = True,
+    has_original_audio: bool = True,
+    start_sec: float | None = None,
 ) -> MusicPlan:
     """Choose the excerpt and the level.
 
     The start is the most energetic window of the right length — a track's
     opening bars are usually the least interesting part of it — moved back onto
-    a beat when there is a tempo to move it onto.
+    a beat when there is a tempo to move it onto. Unless ``start_sec`` says
+    where: a remake reproducing an already-approved soundtrack must land on the
+    same excerpt, and re-picking would not. A ten-second change in clip length
+    moves what :func:`pick_section` chooses by about nine seconds of track.
+
+    ``has_original_audio`` is the picture's, not the music's, and the fallback
+    it drives mirrors :func:`clipforge.media.narration.plan_narration`.
     """
-    from clipforge.media.beats import pick_section
+    effective_mode = mode
+    if mode is MusicMode.BED and not has_original_audio:
+        # Nothing to bed the music under. Not merely a quiet result: the BED
+        # graph names [0:a], and against a video-only input ffmpeg refuses the
+        # whole invocation with "Stream specifier ':a' ... matches no streams"
+        # and exits -22 without writing a file.
+        effective_mode = MusicMode.REPLACE
 
-    start = pick_section(analysis, clip_duration_sec)
+    # Never so late that the excerpt would overrun the track.
+    latest = max(0.0, analysis.duration_sec - clip_duration_sec)
 
-    if align_to_beat and analysis.beat_times:
-        # Onto the nearest beat, in either direction: the excerpt has already
-        # been chosen, and this is a sub-beat adjustment to its phase.
-        start = min(analysis.beat_times, key=lambda t: abs(t - start))
-        # Never past the point where the excerpt would overrun the track.
-        start = min(start, max(0.0, analysis.duration_sec - clip_duration_sec))
+    if start_sec is not None:
+        # Verbatim, and deliberately not beat-snapped: the recorded start came
+        # off a plan that was already snapped, and snapping it again against a
+        # freshly computed grid would move it.
+        start = min(max(0.0, float(start_sec)), latest)
+    else:
+        from clipforge.media.beats import pick_section
 
-    default_gain = DEFAULT_BED_GAIN_DB if mode is MusicMode.BED else DEFAULT_REPLACE_GAIN_DB
+        start = pick_section(analysis, clip_duration_sec)
+
+        if align_to_beat and analysis.beat_times:
+            # Onto the nearest beat, in either direction: the excerpt has already
+            # been chosen, and this is a sub-beat adjustment to its phase.
+            start = min(analysis.beat_times, key=lambda t: abs(t - start))
+            start = min(start, latest)
+
+    # Keyed on the mode that will actually run. A downgraded bed is now the
+    # whole soundtrack, and -14 dB of a whole soundtrack is barely audible.
+    default_gain = (
+        DEFAULT_BED_GAIN_DB if effective_mode is MusicMode.BED else DEFAULT_REPLACE_GAIN_DB
+    )
 
     return MusicPlan(
         music_start_sec=round(start, 3),
         duration_sec=round(clip_duration_sec, 3),
-        mode=mode,
+        mode=effective_mode,
         gain_db=default_gain if gain_db is None else float(gain_db),
         tempo_bpm=analysis.tempo_bpm,
         loop=analysis.duration_sec < clip_duration_sec,
@@ -185,6 +213,10 @@ def build_ffmpeg_args(
 
     args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
     # The looped music input is infinite; without this the output would be too.
+    # It bounds the *picture* as well, even under `-c:v copy`, so the plan's
+    # duration has to be the length of the file at `clip_path` and not some
+    # window that was planned earlier: a 20.000 s picture against a 12 s plan
+    # came out 12.067 s, with the rest of the footage simply gone.
     args += ["-t", str(plan.duration_sec)]
     args += ["-movflags", "+faststart", output_path]
     return args

@@ -38,8 +38,8 @@ export function fromDocument<T>(data: DocumentData): T {
 
 /**
  * Depth-first, because the dates are not all at the top level: `Job.stages[]`
- * carries `startedAt`/`endedAt` per stage, and `Clip.rights` carries
- * `attestedAt`.
+ * carries `startedAt`/`endedAt` per stage, and `Job.lease` carries
+ * `expiresAt`.
  */
 function normalise(value: unknown): unknown {
   if (value instanceof Timestamp) {

@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # two must agree; tools/storage-lifecycle.ps1 reads this one when it applies
     # the rule, so there is one number rather than two.
     clip_retention_days: int = Field(default=5, ge=1, le=365)
+    # How long a version that lost to a later one waits before it is collected.
+    # Longer than the clip retention window on purpose: that one expires a
+    # bucket cache, this one deletes a render nobody can get back.
+    superseded_grace_days: int = Field(default=7, ge=0, le=365)
 
     # Per-request timeout for a clip upload. Generous on purpose: clips are tens
     # of megabytes and the uplink is whatever the machine has. The library's
@@ -145,8 +149,8 @@ class Settings(BaseSettings):
     # ── Publishing ───────────────────────────────────────────────────────────
     # Off by default, and that default is the point rather than caution. Nothing
     # should reach a public platform because a config file was left at its
-    # factory setting; turning this on is meant to be a decision someone made
-    # after reading the rights guidance. See docs/PLAN.md Phase 8.
+    # factory setting; turning this on is meant to be a deliberate act. See
+    # docs/PLAN.md Phase 8.
     publishing_enabled: bool = False
 
     # The OAuth client downloaded from the Google Cloud console, and where the

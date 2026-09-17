@@ -33,9 +33,9 @@ The confirmation counts first. *"Delete this source"* and *"delete this source,
 eleven clips and forty candidates"* are different decisions, and only one of
 them was on the button.
 
-**Publications are never deleted.** They record what was actually posted and
-under what rights. An audit trail that disappears when somebody tidies their
-queue is not an audit trail.
+**Publications are never deleted.** They record what was actually posted, and
+where. An audit trail that disappears when somebody tidies their queue is not an
+audit trail.
 
 **Preferences are still never deleted**, unchanged from ADR-0014: a rejection is
 itself the thing worth remembering, and removing the row would let the same

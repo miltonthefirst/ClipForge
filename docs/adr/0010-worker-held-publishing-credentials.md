@@ -51,8 +51,10 @@ Concretely:
 - `clipforge/publish/credentials.py` reads and writes the token file. The key is
   derived from machine-local material (hostname, architecture, username), not
   from a passphrase, because the worker must run unattended.
-- `Publication` documents record the video id, the privacy setting, the quota
-  spent and the rights attestation. They carry no token, and no upload session
+- `Publication` documents record the video id, the privacy setting and the
+  quota spent. (They recorded the rights attestation too, until
+  [ADR-0020](0020-removing-the-rights-attestation.md) removed it.) They carry no
+  token, and no upload session
   URL — a session URL is a bearer capability for one upload, so it is
   checkpointed on the job document (owner-readable) rather than on the audit log.
 - Phase 8 exit criterion 4 is a test, not a promise:

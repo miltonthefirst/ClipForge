@@ -192,53 +192,31 @@ service cloud.firestore {
                     && request.resource.data.requestedAt is string;
     }
 
-    // ── The rights gate, client half ─────────────────────────────────────────
+    // ── The publish gate, client half ────────────────────────────────────────
     //
-    // The worker enforces this too, in clipforge/publish/rights.py. The
+    // The worker enforces this too, in clipforge/publish/gate.py. The
     // duplication is deliberate and neither copy is redundant: the worker uses
     // the Admin SDK, which bypasses these rules entirely, so rules alone would
     // protect nothing on the path that actually uploads. Conversely a rule is
     // the only thing that stops a client enqueueing publish work at all.
     // Phase 8 exit criterion 2 requires both, tested independently.
+    //
+    // A rights attestation used to be required here as well. It was removed at
+    // the operator's request; what it recorded was a judgement only they could
+    // make, and it was never a check this rule could actually perform. What is
+    // left is the condition that was always doing the work: somebody watched
+    // this clip and approved it.
+    //
+    // Note what is *not* checked: who owns the clip. In a shared workspace any
+    // approved member may publish anything the workspace has approved. The job
+    // still records who submitted it, which is the question a rule can answer.
 
     function clipOf(clipId) {
       return get(/databases/$(database)/documents/clips/$(clipId)).data;
     }
 
-    // An attestation must exist, name a basis, name who made it, and be dated.
-    // A block with a basis and nobody's name against it cannot answer the one
-    // question an audit log exists to answer.
-    function hasAttestation(clip) {
-      return clip.rights != null
-             && clip.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
-                                      'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
-             && clip.rights.attestedBy is string
-             && clip.rights.attestedBy.size() > 0
-             && clip.rights.attestedAt != null;
-    }
-
-    // Note what is *not* checked: who owns the clip. In a shared workspace any
-    // approved member may publish any clip that has been approved and attested.
-    // The attestation still names whoever made it, so "who said this was ours
-    // to publish" remains answerable — which is the question that matters here,
-    // and it is not the same question as "who submitted the job".
-    // A clip with music has two things in it that a claim could be made
-    // against, so it has to answer for both. The video's attestation covers the
-    // footage; the music's covers the track. Neither substitutes for the other,
-    // and a scored clip whose music nobody vouched for is exactly the upload
-    // this gate exists to stop.
-    function musicAttested(clip) {
-      return clip.get('music', null) == null
-             || (clip.music.get('rights', null) != null
-                 && clip.music.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
-                                                'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']);
-    }
-
     function publishable(clipId) {
-      let clip = clipOf(clipId);
-      return clip.review == 'APPROVED'
-             && hasAttestation(clip)
-             && musicAttested(clip);
+      return clipOf(clipId).review == 'APPROVED';
     }
 
     // What a MUSIC job may ask for. Validated because these values reach
@@ -248,7 +226,7 @@ service cloud.firestore {
       let options = request.resource.data.get('musicOptions', null);
       return options != null
              && options.keys().hasOnly(
-                  ['source', 'mode', 'captions', 'gainDb', 'alignToBeat', 'rights'])
+                  ['source', 'mode', 'captions', 'gainDb', 'alignToBeat'])
              && options.source is string
              && options.source.size() > 0
              && options.source.size() <= 2048
@@ -256,13 +234,7 @@ service cloud.firestore {
              && options.captions in ['KEEP', 'REMOVE']
              && (options.get('gainDb', null) == null
                  || (options.gainDb is number && options.gainDb >= -40 && options.gainDb <= 12))
-             && (options.get('alignToBeat', null) == null || options.alignToBeat is bool)
-             // The music's own rights, recorded at the moment the track is
-             // chosen — which is the only moment anyone knows why it is usable.
-             && options.get('rights', null) != null
-             && options.rights.basis in ['OWN_CONTENT', 'LICENSED', 'PERMISSION_GRANTED',
-                                         'FAIR_USE_ASSERTED', 'PUBLIC_DOMAIN']
-             && options.rights.get('attestedBy', null) == request.auth.uid;
+             && (options.get('alignToBeat', null) == null || options.alignToBeat is bool);
     }
 
     // What a REMAKE job may ask for. Validated for the same reason the music
@@ -389,7 +361,13 @@ service cloud.firestore {
       return options != null
              && options.keys().hasOnly(
                   ['notes', 'interpretNotes', 'framing', 'voice',
-                   'startDeltaSec', 'endDeltaSec', 'profile', 'obscure'])
+                   'startDeltaSec', 'endDeltaSec', 'profile', 'obscure',
+                   'keepMusic', 'captions'])
+             // Captions are a property of the picture, so this stands beside
+             // `voice` rather than inside it. REBUILD is meaningless without a
+             // new narration to transcribe, and the stage ignores it here.
+             && (options.get('captions', null) == null
+                 || options.captions in ['KEEP', 'REMOVE', 'REBUILD'])
              && (options.get('notes', null) == null
                  || (options.notes is string && options.notes.size() <= 2000))
              && (options.get('interpretNotes', null) == null || options.interpretNotes is bool)
@@ -409,6 +387,11 @@ service cloud.firestore {
              && (options.get('endDeltaSec', null) == null
                  || (options.endDeltaSec is number
                      && options.endDeltaSec >= -30 && options.endDeltaSec <= 30))
+             // Null and true both mean "carry the clip's soundtrack into the
+             // remake"; only false drops it. Type-checked here as well as listed
+             // in hasOnly because hasOnly alone would let a string through, and
+             // the worker reads this as a boolean.
+             && (options.get('keepMusic', null) == null || options.keepMusic is bool)
              && framingOk(options.get('framing', null))
              && voiceOk(options.get('voice', null))
              && obscureOk(options.get('obscure', null));
@@ -457,10 +440,10 @@ service cloud.firestore {
       // that means "not yet started". It may not create a job that is already
       // RUNNING, already has a worker, or already holds a lease.
       //
-      // A PUBLISH job additionally has to name a clip that is approved and
-      // attested. This costs one document read per publish request; publishing
-      // is rare — YouTube's quota allows about six a day — so that is the right
-      // place to spend one.
+      // A PUBLISH job additionally has to name a clip that is approved. This
+      // costs one document read per publish request; publishing is rare —
+      // YouTube's quota allows about six a day — so that is the right place to
+      // spend one.
       allow create: if ownsIncoming()
                     && request.resource.data.status == 'QUEUED'
                     && request.resource.data.workerId == null
@@ -669,16 +652,16 @@ service cloud.firestore {
       // what is on a particular disk.
       //
       // A publication is NOT deleted with its clip. It is the record of what
-      // was actually posted and under what rights, and an audit trail that
-      // disappears when somebody tidies their queue is not an audit trail.
+      // was actually posted and where, and an audit trail that disappears when
+      // somebody tidies their queue is not an audit trail.
       allow delete: if isApproved();
 
       // Review is the decision the people own; everything else about a clip
       // belongs to the render that produced it. Restricting the writable field
-      // set is what keeps that line: publishing is gated on `rights`, so a rule
+      // set is what keeps that line: publishing is gated on `review`, so a rule
       // that allowed a blanket update would let a client relabel storagePath or
-      // rewrite an attestation. It also pins `uid`, so reviewing a clip never
-      // reassigns who made it.
+      // rewrite the render's own record of itself. It also pins `uid`, so
+      // reviewing a clip never reassigns who made it.
       //
       // `storagePath` and `playbackExpiresAt` are writable, and only to null.
       // They describe a *cache* — a short-lived bucket copy that exists so a
@@ -687,11 +670,18 @@ service cloud.firestore {
       // same breath keeps the document honest about what is in the bucket. It
       // is not an exception to "the client may not write pipeline state": the
       // render itself is `localPath`, which stays untouchable.
+      // `supersededAt` is a decision, not pipeline state: it records that a
+      // later version of this clip was approved, which is something only the
+      // reviewer knows. It is write-once-ish by intent — a timestamp or null,
+      // never anything else — and the worker's tidy pass is what acts on it.
       allow update: if isApproved()
-                    && changed().hasOnly(['review', 'reviewedAt', 'reviewNote', 'rights',
+                    && changed().hasOnly(['review', 'reviewedAt', 'reviewNote',
                                           'title', 'description', 'storagePath',
-                                          'playbackExpiresAt'])
+                                          'playbackExpiresAt', 'supersededAt'])
                     && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED']
+                    && (!('supersededAt' in changed())
+                        || request.resource.data.supersededAt == null
+                        || request.resource.data.supersededAt is string)
                     && (!('storagePath' in changed())
                         || request.resource.data.storagePath == null)
                     && (!('playbackExpiresAt' in changed())

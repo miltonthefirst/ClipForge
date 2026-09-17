@@ -46,6 +46,7 @@ from clipforge_contracts import (
     FramingMode,
     LlmRemakeNote,
     NoteAudio,
+    NoteCaptions,
     NoteCrop,
     NoteFraming,
     NoteInterpretation,
@@ -143,8 +144,8 @@ def build_note_prompt(
         "",
         _FRAMING_GUIDE,
         "",
-        "First answer `topics`: which of FRAMING, LANGUAGE, AUDIO, TIMING and "
-        "OBSCURE this "
+        "First answer `topics`: which of FRAMING, LANGUAGE, AUDIO, TIMING, "
+        "OBSCURE and CAPTIONS this "
         "note actually raises. Usually one. Anything you say about a topic you "
         "did not list is discarded, so listing a topic the note did not raise "
         "changes something nobody asked to change.",
@@ -158,6 +159,10 @@ def build_note_prompt(
         "- startDeltaSec / endDeltaSec: seconds to move the cut's start or end, "
         "and 0 if the note does not say it begins or ends at the wrong moment. "
         "Negative starts earlier; positive ends later.",
+        "- captions: REMOVE if the note asks for the captions, subtitles or "
+        "on-screen words to come off, KEEP if it mentions them and wants them "
+        "left, NOT_MENTIONED if it says nothing about them. This is about the "
+        "text burnt into the picture, not about the spoken language.",
         "- obscure: whether something burnt into the picture should be hidden "
         "— a channel logo or bug, a broadcaster's watermark, a score bar, a "
         "clock, burnt-in text. Answer ANYWHERE when the note asks for something "
@@ -399,6 +404,29 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
     # not noticed the new field will keep saying it — the reviewer's three real
     # notes all came back as REMOVE_WATERMARK. Absorbing that rather than
     # refusing it is what makes the feature work on a note written the old way.
+    # Captions. Read before `obscure`, because a model with no captions field
+    # used to file "remove the caption" under whatever was nearest — the
+    # reviewer's own note came back as "set the language to NONE" — and a note
+    # about burnt-in words is still one a tired model may reach for
+    # REMOVE_OVERLAY_TEXT to describe.
+    if NoteTopic.CAPTIONS in topics and answer.captions is not NoteCaptions.NOT_MENTIONED:
+        wanted = (
+            VoiceCaptions.REMOVE if answer.captions is NoteCaptions.REMOVE else VoiceCaptions.KEEP
+        )
+        if updated.voice is not None:
+            # A voice change has already decided what the captions must say, and
+            # REBUILD is the only answer that keeps them in sync with it. The
+            # note is recorded as a conflict rather than silently losing.
+            if updated.voice.captions is not wanted:
+                conflicts.append(
+                    f"the captions follow the new voice, so they were not {wanted.value.lower()}d"
+                )
+        elif updated.captions is None:
+            updated.captions = wanted
+            changes.append(
+                "removed the captions" if wanted is VoiceCaptions.REMOVE else "kept the captions"
+            )
+
     unsupported = set(answer.unsupported or ())
     misfiled = unsupported & {UnsupportedAsk.REMOVE_WATERMARK, UnsupportedAsk.REMOVE_OVERLAY_TEXT}
     asked_to_hide = NoteTopic.OBSCURE in topics or _asks_to_hide(options.notes)

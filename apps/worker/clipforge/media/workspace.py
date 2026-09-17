@@ -74,7 +74,7 @@ class Workspace:
     def __init__(self, root: Path, *, max_gb: int) -> None:
         self._root = root.expanduser().resolve()
         self._max_bytes = max_gb * BYTES_PER_GB
-        for child in ("sources", "clips", "transcripts", "tmp", "trash"):
+        for child in ("sources", "clips", "transcripts", "music", "tmp", "trash"):
             (self._root / child).mkdir(parents=True, exist_ok=True)
 
     @property
@@ -92,6 +92,19 @@ class Workspace:
     @property
     def transcripts_dir(self) -> Path:
         return self._root / "transcripts"
+
+    @property
+    def music_dir(self) -> Path:
+        """Tracks fetched to score clips with.
+
+        Its own directory rather than `tmp`, which `clear_tmp` empties at every
+        worker start — so a bed the reviewer chose yesterday was downloaded
+        again today, and the cache that was supposed to make a remake cheap
+        never survived a restart. Beside `sources` rather than inside it because
+        the GC walks that one by source id, and a track is a source of a
+        different kind.
+        """
+        return self._root / "music"
 
     @property
     def tmp_dir(self) -> Path:

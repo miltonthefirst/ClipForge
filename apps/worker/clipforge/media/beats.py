@@ -74,35 +74,55 @@ class BeatAnalysis:
 
 
 def decode_mono(
-    path: Path, ffmpeg: str = "ffmpeg", *, sample_rate: int = SAMPLE_RATE
+    path: Path,
+    ffmpeg: str = "ffmpeg",
+    *,
+    sample_rate: int = SAMPLE_RATE,
+    timeout_s: float = 600.0,
 ) -> np.ndarray:
     """Decode any audio ffmpeg understands into mono float32.
 
     Raises on a non-zero exit rather than returning silence: an empty array is
     indistinguishable from a quiet track, and analysing silence produces a
     confident answer about nothing.
+
+    The timeout is deliberately loose. Decoding runs at something like a hundred
+    times realtime — a twenty-minute track takes about two seconds here — so ten
+    minutes accommodates an hours-long mix on a slow disk and still catches the
+    thing it is for: a decode that never ends. Nothing else would catch it. The
+    reaper skips jobs their own worker is still running (JobStore.reap), so an
+    ffmpeg that wedges on a pipe here holds the lease until the worker dies.
     """
-    proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [
-            ffmpeg,
-            "-nostdin",
-            "-v",
-            "error",
-            "-i",
-            str(path),
-            "-map",
-            "a:0",
-            "-ac",
-            "1",
-            "-ar",
-            str(sample_rate),
-            "-f",
-            "f32le",
-            "-",
-        ],
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [
+                ffmpeg,
+                "-nostdin",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-map",
+                "a:0",
+                "-ac",
+                "1",
+                "-ar",
+                str(sample_rate),
+                "-f",
+                "f32le",
+                "-",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Deliberately not the RuntimeError every other failure here raises. A
+        # RuntimeError is classified as terminal by StageRunner._record_failure
+        # and would spend one of the job's attempts on a process that only
+        # needed killing; TimeoutError is in the set that gets another go.
+        raise TimeoutError(f"decoding {path.name} timed out after {timeout_s}s") from exc
+
     if proc.returncode != 0:
         raise RuntimeError(
             f"could not decode audio from {path.name}: {proc.stderr.decode(errors='replace')[:400]}"

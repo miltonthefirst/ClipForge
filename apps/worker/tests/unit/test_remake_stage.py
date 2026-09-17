@@ -13,18 +13,24 @@ is the difference between a next step and a dead end.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from clipforge.config import Settings
+from clipforge.media.ffprobe import probe
+from clipforge.media.scoring import apply_music
 from clipforge.media.speech import Utterance
 from clipforge.models.broker import ModelBroker
+from clipforge.stages import remake as remake_module
 from clipforge.stages.base import StageContext
 from clipforge.stages.remake import RemakeStage, RemakeStageError
 from clipforge.store.blobs import BlobRef
 from clipforge_contracts import (
+    AppliedMusic,
     AppliedRemake,
     AppliedVoice,
     Candidate,
@@ -38,7 +44,10 @@ from clipforge_contracts import (
     JobType,
     Lane,
     LlmRemakeNote,
+    MusicCaptions,
+    MusicMode,
     NoteAudio,
+    NoteCaptions,
     NoteCrop,
     NoteFraming,
     NoteObscure,
@@ -95,13 +104,27 @@ class FakeSourceStore:
 
 
 class FakeBlobStore:
-    def __init__(self) -> None:
+    """Records what was uploaded, and keeps a copy of it.
+
+    The copy is not incidental. The stage deletes its scratch directory in a
+    `finally`, so by the time a test can look at the clip it saved, the file
+    that clip describes is gone — and the assertion that matters for the music
+    is on the file itself. `music` was the field that lied.
+    """
+
+    def __init__(self, keep_in: Path) -> None:
         self.puts: list[tuple[str, Path]] = []
+        self.kept: list[Path] = []
+        self._keep_in = keep_in
 
     def put(
         self, key: str, source: Path, *, content_type: str | None = None, required: bool = False
     ) -> BlobRef:
         self.puts.append((key, source))
+        self._keep_in.mkdir(parents=True, exist_ok=True)
+        copy = self._keep_in / f"{len(self.kept)}-{source.name}"
+        shutil.copy2(source, copy)
+        self.kept.append(copy)
         return BlobRef(key=key, local_path=source, size_bytes=source.stat().st_size)
 
 
@@ -164,6 +187,9 @@ class FakeWorkspace:
     def __init__(self, root: Path) -> None:
         self.tmp_dir = root / "tmp"
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        # Tracks live outside tmp so they survive a worker restart.
+        self.music_dir = root / "music"
+        self.music_dir.mkdir(parents=True, exist_ok=True)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -208,6 +234,66 @@ def clip(tmp_path: Path, **overrides: object) -> Clip:
         "created_at": NOW,
     }
     return Clip(**{**defaults, **overrides})
+
+
+def make_track(path: Path, *, seconds: float = 30.0) -> Path:
+    """A track on this machine, which `resolve_audio_source` takes as a source.
+
+    A local file rather than a URL, so nothing in this file touches the network
+    — and that is a claim about the seam too, not a test affordance: a path is a
+    first-class music source.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-ar",
+            "44100",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def soundtrack(source: Path | str, **overrides: object) -> AppliedMusic:
+    """A soundtrack record as MUSIC writes one, with every input it recorded."""
+    defaults: dict[str, object] = {
+        "mode": MusicMode.REPLACE,
+        "captions": MusicCaptions.KEEP,
+        "source": str(source),
+        "track_title": "bed",
+        "tempo_bpm": 120.0,
+        "music_start_sec": 2.0,
+        "gain_db": -6.0,
+        "align_to_beat": True,
+    }
+    return AppliedMusic(**{**defaults, **overrides})
+
+
+def mixes(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every call the stage makes to the music seam, in order.
+
+    The field is what lied, so "the music was re-applied" cannot be asserted
+    from the record alone — and its opposite, "nothing re-applied it", leaves no
+    trace on the record at all.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def recording(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return apply_music(**kwargs)
+
+    monkeypatch.setattr(remake_module, "apply_music", recording)
+    return calls
 
 
 def candidate() -> Candidate:
@@ -274,7 +360,7 @@ def build(
     synth: object | None = None,
 ) -> tuple[RemakeStage, FakeClipStore, FakeBlobStore]:
     clips = FakeClipStore(the_clip)
-    blobs = FakeBlobStore()
+    blobs = FakeBlobStore(tmp_path / "uploaded")
     stage = RemakeStage(
         settings=Settings(_env_file=None, video_encoder="libx264"),
         clips=clips,  # type: ignore[arg-type]
@@ -497,14 +583,26 @@ def test_a_tracked_remake_records_the_path_it_followed(tmp_path: Path) -> None:
     assert all(0 <= k.x_pct <= 100 for k in remake.keyframes)
 
 
-def test_rights_carry_over_because_it_is_the_same_footage(tmp_path: Path) -> None:
+def test_provenance_carries_over_because_it_is_the_same_footage(tmp_path: Path) -> None:
+    """A correction is a new cut of the same material, not a new piece of it.
+
+    Everything that describes where the footage came from has to survive, or
+    the corrected clip looks like an orphan: the source it was cut from and the
+    candidate that selected it. The soundtrack is a harder question and has a
+    section of its own.
+    """
     media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
     original = clip(tmp_path)
     stage, clips, _ = build(
         tmp_path, the_clip=original, the_source=source(media), the_candidate=candidate()
     )
+
     stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
-    assert clips.saved[0].rights == original.rights
+
+    remade = clips.saved[0]
+    assert remade.source_id == original.source_id
+    assert remade.candidate_id == original.candidate_id
+    assert remade.derived_from_clip_id == original.id
 
 
 # ── The voice path ───────────────────────────────────────────────────────────
@@ -730,6 +828,7 @@ def test_a_refusal_from_the_note_reaches_the_clip(tmp_path: Path) -> None:
                 start_delta_sec=0,
                 end_delta_sec=0,
                 obscure=NoteObscure.NOT_MENTIONED,
+                captions=NoteCaptions.NOT_MENTIONED,
                 unsupported=[UnsupportedAsk.SLOW_MOTION],
                 summary="fit the whole frame",
             )
@@ -1037,3 +1136,305 @@ def test_asking_for_the_language_it_already_speaks_is_not_a_failure(tmp_path: Pa
     assert remade is not None
     assert remade.voice is not None
     assert any("already speaks" in str(w.root) for w in remade.warnings or [])
+
+
+# ── A remake must not lose the soundtrack ────────────────────────────────────
+#
+# Music is mixed into the rendered audio and nothing keeps a separate track, so
+# a remake that rebuilds the audio destroys it — and the clip was still saved
+# with `music=original.music`, claiming a soundtrack the file did not contain.
+# Which is the reviewer's own report: "adding music is overriding the current
+# remade music". Every test here uses a local file as the track, so nothing
+# reaches the network.
+
+
+def scored(
+    tmp_path: Path, track: Path, *, local_path: str | None = None, **overrides: object
+) -> Clip:
+    """A clip that has already had music added, as a correction finds it."""
+    clip_overrides: dict[str, object] = {"local_path": local_path} if local_path else {}
+    return clip(tmp_path, music=soundtrack(track), **clip_overrides, **overrides)
+
+
+def speaks(mode: SpeechMode) -> VoiceOptions:
+    """A voice change that does not touch the picture: the cheap path."""
+    return VoiceOptions(
+        mode=mode,
+        voice="af_heart",
+        language="en",
+        translate=False,
+        script="Bayern are in behind.",
+        captions=VoiceCaptions.KEEP,
+    )
+
+
+def test_a_remake_that_touches_neither_picture_nor_audio_leaves_the_music_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one branch where the track is provably still in the file.
+
+    The picture is the reviewed file handed straight on and nothing rebuilt its
+    audio, so the music is exactly where it was. Mixing it again here would put
+    two copies of the track on the clip.
+    """
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    original = scored(tmp_path, track, local_path=str(existing))
+    calls = mixes(monkeypatch)
+    stage, clips, _ = build(
+        tmp_path, the_clip=original, the_source=source(None), the_candidate=candidate()
+    )
+
+    stage.run(context(job(RemakeOptions(notes="nothing to change", interpret_notes=False))))
+
+    assert clips.saved[0].music == original.music
+    assert calls == [], "the track was already in the file; mixing it again doubles it"
+
+
+def test_a_reframe_puts_the_soundtrack_back_onto_the_new_picture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug, in the direction the reviewer hit it.
+
+    A reframe re-cuts from the source, and the source's audio is the original
+    commentary — the music is not in it and never was. Asserted on the file as
+    well as on the record, because the record is the half that lied.
+    """
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    calls = mixes(monkeypatch)
+    stage, clips, blobs = build(
+        tmp_path,
+        the_clip=scored(tmp_path, track),
+        the_source=source(media),
+        the_candidate=candidate(),
+    )
+
+    stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
+
+    remade = clips.saved[0]
+    assert remade.music is not None
+    assert remade.music.source == str(track)
+    assert remade.music.music_start_sec is not None
+    # The level and the alignment the reviewer approved, fed back in rather than
+    # left to the stage's defaults — which is why they are recorded at all.
+    assert calls[0]["gain_db"] == -6.0
+    assert calls[0]["align_to_beat"] is True
+
+    uploaded = probe(blobs.kept[0])
+    assert uploaded.has_audio, "the clip claims a soundtrack, so it has to have one"
+    # `-t` bounds the copied video stream too, so a plan built from anything but
+    # the picture's own length takes the end of the footage with it.
+    assert uploaded.duration_sec == pytest.approx(8.0, abs=0.3)
+
+
+def test_a_re_cut_that_changes_the_length_moves_the_excerpt_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`pick_section` reads the energy envelope over a window of the clip's own
+    length, so a duration that moved chooses a different part of the track. The
+    reviewer approved a soundtrack, not a track, and is told which one they got."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    calls = mixes(monkeypatch)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=scored(tmp_path, track),
+        the_source=source(media),
+        the_candidate=candidate(),
+    )
+
+    stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT), end_delta_sec=2.0))))
+
+    assert calls[0]["forced_start_sec"] is None, "a two-second longer clip is a fresh pick"
+    remade = clips.saved[0]
+    assert remade.music is not None
+    assert remade.music.music_start_sec != pytest.approx(2.0)
+    assert remade.remake is not None
+    assert any("different point in the track" in str(w.root) for w in remade.remake.warnings or [])
+
+
+def test_a_track_that_cannot_be_fetched_costs_the_music_and_not_the_clip(
+    tmp_path: Path,
+) -> None:
+    """The picture correction is what was asked for, and it is already encoded
+    by the time the music pass runs. So the remake still returns a clip — one
+    that says it has no soundtrack, which is the truth, and says why."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    collected = tmp_path / "music" / "collected.m4a"
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=scored(tmp_path, collected),
+        the_source=source(media),
+        the_candidate=candidate(),
+    )
+
+    outcome = stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT)))))
+
+    assert outcome.metadata["clipId"] == clips.saved[0].id
+    remade = clips.saved[0]
+    assert remade.music is None, "a clip must never claim a soundtrack it does not contain"
+    assert remade.remake is not None
+    assert any("soundtrack" in str(r.root) for r in remade.remake.refusals or [])
+
+
+def test_a_replaced_voice_takes_the_music_with_it_so_it_is_mixed_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The common case, not an edge one: the clip page sends REPLACE by default.
+
+    The picture is untouched, which reads like the safe branch and is not —
+    `SpeechMode.REPLACE` drops `[0:a]` from the graph entirely, and `[0:a]` is
+    where the music lives. A carried REPLACE is downgraded to a bed on the way
+    back, because otherwise the music would throw away the narration this job
+    was asked to produce.
+    """
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    calls = mixes(monkeypatch)
+    stage, clips, blobs = build(
+        tmp_path,
+        the_clip=scored(
+            tmp_path,
+            track,
+            local_path=str(existing),
+            duration_sec=probe(existing).duration_sec,
+        ),
+        the_source=source(None),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(context(job(RemakeOptions(voice=speaks(SpeechMode.REPLACE)))))
+
+    assert len(calls) == 1, "the narration replaced the audio the music was in"
+    assert calls[0]["mode"] is MusicMode.BED
+    # Same length, so the same excerpt: the soundtrack that was approved, rather
+    # than a new one chosen over the same track.
+    assert calls[0]["forced_start_sec"] == 2.0
+    remade = clips.saved[0]
+    assert remade.music is not None
+    assert remade.music.mode is MusicMode.BED
+    assert remade.music.music_start_sec == pytest.approx(2.0)
+    assert probe(blobs.kept[0]).has_audio
+    assert remade.remake is not None
+    assert any("underneath the voice" in str(w.root) for w in remade.remake.warnings or [])
+
+
+def test_a_bedded_voice_keeps_the_music_that_is_already_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BED keeps `[0:a]`, and the music is in `[0:a]`. Mixing the track in again
+    would leave the clip playing two copies of it, a few seconds apart."""
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    original = scored(tmp_path, track, local_path=str(existing))
+    calls = mixes(monkeypatch)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=original,
+        the_source=source(None),
+        the_candidate=candidate(),
+        synth=StubSynth(),
+    )
+
+    stage.run(context(job(RemakeOptions(voice=speaks(SpeechMode.BED)))))
+
+    assert calls == []
+    assert clips.saved[0].music == original.music
+
+
+def test_dropping_the_music_is_an_explicit_opt_out_and_is_recorded(tmp_path: Path) -> None:
+    """Keeping is the default, because the reviewer approved the soundtrack. An
+    explicit false is the one way to be rid of it, and it is said out loud so a
+    clip that comes back without music is not read as the bug it used to be."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=scored(tmp_path, track),
+        the_source=source(media),
+        the_candidate=candidate(),
+    )
+
+    stage.run(context(job(RemakeOptions(framing=Framing(mode=FramingMode.FIT), keep_music=False))))
+
+    remade = clips.saved[0]
+    assert remade.music is None
+    assert remade.remake is not None
+    assert any("dropped, as asked" in str(w.root) for w in remade.remake.warnings or [])
+
+
+def test_dropping_the_music_is_refused_when_nothing_rebuilt_the_audio(
+    tmp_path: Path,
+) -> None:
+    """The branch where the request cannot be carried out, and used to be
+    recorded as though it had been.
+
+    Nothing re-cut the picture, so the reviewed file is handed straight on and
+    the track is still mixed into its audio — a mix cannot be un-mixed, and
+    there is no re-encode here for it to be left out of. Writing `music=None`
+    over that was worse than inaccurate: the clip page gates the Add-a-track
+    panel on `music` being null, so the null re-opened the door to mixing a
+    second track over the first. The file is asserted byte for byte, because the
+    record agreeing with it is the whole point.
+    """
+    existing = make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    original = scored(tmp_path, track, local_path=str(existing))
+    stage, clips, blobs = build(
+        tmp_path, the_clip=original, the_source=source(None), the_candidate=candidate()
+    )
+
+    stage.run(
+        context(job(RemakeOptions(notes="drop the music", interpret_notes=False, keep_music=False)))
+    )
+
+    remade = clips.saved[0]
+    assert blobs.kept[0].read_bytes() == existing.read_bytes(), "the track is still in the file"
+    assert remade.music == original.music, "so the record has to say so"
+    assert remade.remake is not None
+    assert any("could not be dropped" in str(r.root) for r in remade.remake.refusals or [])
+
+
+def test_a_remake_sent_before_the_field_existed_still_keeps_the_music(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`keepMusic` is an opt-OUT, so None has to read as true. Read as false it
+    would drop the soundtrack off every remake the PWA sent before it learned to
+    set the field — which is the original bug, wearing a flag."""
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    track = make_track(tmp_path / "music" / "bed.wav")
+    calls = mixes(monkeypatch)
+    stage, clips, _ = build(
+        tmp_path,
+        the_clip=scored(tmp_path, track),
+        the_source=source(media),
+        the_candidate=candidate(),
+    )
+
+    options = RemakeOptions(framing=Framing(mode=FramingMode.FIT))
+    assert options.keep_music is None
+    stage.run(context(job(options)))
+
+    assert len(calls) == 1
+    assert clips.saved[0].music is not None
+
+
+def test_a_long_explanation_is_cut_to_what_the_record_will_hold(tmp_path: Path) -> None:
+    """`Warning` and `Refusal` are 300 characters, and they are validated where
+    `AppliedRemake` is built — after the render, after the blob upload and after
+    the poster. A yt-dlp failure interpolated into a sentence runs past 300
+    routinely, so the cost of exceeding it is not a truncated sentence but the
+    loss of a clip that was already made."""
+    stage, _, _ = build(tmp_path)
+    stage._note("the soundtrack could not be put back on this clip: " + "x" * 400)
+    stage._refuse("the footage could not be searched for fixed marks: " + "y" * 400)
+
+    AppliedRemake(
+        framing_mode=FramingMode.AS_RENDERED,
+        start_sec=100.0,
+        end_sec=108.0,
+        warnings=stage._notes,
+        refusals=stage._refusals,
+    )

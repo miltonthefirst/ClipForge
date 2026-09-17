@@ -41,8 +41,11 @@ from clipforge_contracts import (
     PreferenceStatus,
     Publication,
     PublicationState,
+    ReviewState,
     Source,
+    SourceKind,
     SourceProvider,
+    StageStatus,
     TranscriptRef,
     WorkerHeartbeat,
 )
@@ -195,16 +198,24 @@ def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
     The log line is the part that matters operationally. It names the fields,
     which is enough to tell an operator their worker is behind the schema and
     wants restarting.
+
+    **Unknown fields are stripped at the depth they occur.** An earlier version
+    read only the first path segment, so an unrecognised field *inside* a nested
+    object — ``musicOptions.rights``, say — stripped the whole of
+    ``musicOptions``. The document then failed for a different reason, or worse
+    validated with a required block silently missing, which is the one outcome
+    tolerance must never produce. Removing a nested field from the schema is
+    exactly the case that hits this, and it is not rare.
     """
     try:
         return model.model_validate(data)
     except ValidationError as first:
-        unknown = {
-            str(error["loc"][0])
+        paths = [
+            tuple(str(part) for part in error["loc"])
             for error in first.errors()
             if error["type"] == "extra_forbidden" and error["loc"]
-        }
-        if not unknown or len(unknown) != len(first.errors()):
+        ]
+        if not paths or len(paths) != len(first.errors()):
             # Something other than an unrecognised field is wrong. Raise the
             # original error rather than a second one from a stripped retry,
             # which would describe the symptom and not the cause.
@@ -212,10 +223,71 @@ def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
         log.warning(
             "store.unknown_fields",
             model=model.__name__,
-            fields=sorted(unknown),
+            fields=sorted(".".join(path) for path in paths),
             detail="written by a newer version of the contracts; restart the worker to use them",
         )
-        return model.model_validate({k: v for k, v in data.items() if k not in unknown})
+        return model.model_validate(_without(data, paths))
+
+
+def _without(data: dict[str, Any], paths: list[tuple[str, ...]]) -> dict[str, Any]:
+    """A copy of ``data`` with each dotted path removed, and nothing else changed.
+
+    Copy-on-descend rather than ``deepcopy``: a document holds a poster as
+    base64 and a transcript as a list of segments, and duplicating megabytes to
+    delete one key is a cost paid on every read of every skewed document.
+    A path through anything that is not a dict is left alone — an index into a
+    list means the shape changed, not that a field was added, and that is a
+    genuine error the retry should still raise.
+    """
+    pruned = dict(data)
+    for path in paths:
+        cursor: dict[str, Any] = pruned
+        for segment in path[:-1]:
+            branch = cursor.get(segment)
+            if not isinstance(branch, dict):
+                cursor = {}
+                break
+            cursor[segment] = branch = dict(branch)
+            cursor = branch
+        cursor.pop(path[-1], None)
+    return pruned
+
+
+# The cap on `Stage.progress` in packages/contracts/schemas/clipforge.json.
+# Enforced on the way in rather than trusted: `model_copy` does not validate, so
+# an over-long note would be written happily and then fail validation on every
+# subsequent read — turning a cosmetic field into a job document nobody can load.
+PROGRESS_MAX_CHARS = 120
+
+
+def clamp_progress(note: str | None) -> str | None:
+    """A note cut to the length the contract allows, or ``None`` for silence.
+
+    Shared with :meth:`clipforge.scheduler.runner.StageRunner._record_failure`,
+    which is the other place a note is put on a stage. Two copies of this rule
+    could drift, and the one that drifted would write a document that no
+    subsequent read can load.
+    """
+    if not note:
+        return None
+    return note[:PROGRESS_MAX_CHARS]
+
+
+def _with_progress(job: Job, note: str | None) -> Job:
+    """The running stage's note, on the copy of the job about to be written.
+
+    Applied even when the note is ``None``: this says what the stage is saying
+    *now*, and a stage that has gone quiet must stop appearing to talk. Only a
+    RUNNING stage can carry one — a note on a finished stage would be a claim
+    about work that is already over.
+    """
+    for index, stage in enumerate(job.stages):
+        if stage.status is not StageStatus.RUNNING:
+            continue
+        stages = list(job.stages)
+        stages[index] = stage.model_copy(update={"progress": clamp_progress(note)})
+        return job.model_copy(update={"stages": stages})
+    return job
 
 
 class JobStore:
@@ -393,10 +465,22 @@ class JobStore:
 
         return None
 
-    def renew(self, job_id: str, *, now: datetime | None = None) -> Job | None:
+    def renew(
+        self, job_id: str, *, now: datetime | None = None, progress: str | None = None
+    ) -> Job | None:
         """Extend this worker's lease. Returns ``None`` if the lease was lost —
         reaped and reclaimed by someone else — which the caller must treat as a
-        signal to abandon the job rather than keep working on it."""
+        signal to abandon the job rather than keep working on it.
+
+        ``progress`` is what the running stage is saying about itself right now,
+        and this is the only place it can be applied. Two reasons, both firm.
+        This transaction re-reads the stored document and writes it whole, so a
+        note the caller set on its own copy of the job would be read straight
+        back over. And the heartbeat is the only write that happens *while* a
+        stage runs — every other write is a stage boundary — so it is the only
+        one that can report a ten-minute stage before it is over. Riding it is
+        what makes the note free.
+        """
         now = now or datetime.now(UTC)
         worker_id = self._settings.worker_id
         lease_seconds = self._settings.lease_seconds
@@ -413,8 +497,9 @@ class JobStore:
             transition = lease.renew(
                 current, worker_id=worker_id, now=now, lease_seconds=lease_seconds
             )
-            transaction.set(job_ref, _to_document(transition.job))
-            return transition.job
+            renewed = _with_progress(transition.job, progress)
+            transaction.set(job_ref, _to_document(renewed))
+            return renewed
 
         try:
             return _renew(self._db.transaction())  # type: ignore[no-any-return]
@@ -541,6 +626,41 @@ class SourceStore:
         self._db.collection(SOURCES).document(source_id).update(
             {"lastAccessedAt": now or datetime.now(UTC)}
         )
+
+    def record_use(self, source_id: str, *, now: datetime | None = None) -> None:
+        """Count one job against this source, and touch it while we are here.
+
+        `Increment` rather than read-modify-write: two jobs can start on the same
+        source in the same second — the CPU lane runs three deep — and the count
+        this decides eviction by is not worth losing a race over.
+
+        Counted per job rather than per read. A CLIP pipeline opens the same
+        file in DOWNLOAD, ANALYZE and RENDER; scoring that as three uses would
+        make a source look popular for having a long pipeline.
+        """
+        self._db.collection(SOURCES).document(source_id).update(
+            {
+                "useCount": firestore.Increment(1),
+                "lastAccessedAt": now or datetime.now(UTC),
+            }
+        )
+
+    def of_kind(self, kind: SourceKind, *, uid: str | None = None) -> list[Source]:
+        """Every source of one kind, for the Sources list.
+
+        `kind` is absent on everything written before the field existed, and a
+        Firestore equality filter does not match a missing field — so video is
+        read as "not music" rather than as "kind == video", which is the only
+        form that finds the sources already on disk.
+        """
+        collection = self._db.collection(SOURCES)
+        query: firestore.Query | firestore.CollectionReference = (
+            collection.where(filter=firestore.FieldFilter("uid", "==", uid))
+            if uid is not None
+            else collection
+        )
+        found = [_read(Source, doc.to_dict() or {}) for doc in query.stream()]
+        return [source for source in found if source.kind is kind]
 
     def eviction_candidates(self, *, uid: str | None = None) -> list[Source]:
         """Downloaded sources the GC may consider.
@@ -676,6 +796,55 @@ class ClipStore:
         )
         return [_read(Clip, doc.to_dict() or {}) for doc in query.stream()]
 
+    def settled(self) -> list[Clip]:
+        """Every clip a review decision has finished with.
+
+        Two reads rather than one: Firestore has no OR across fields, and the
+        alternative is streaming the whole collection to filter it here. The
+        union is deduplicated because a rejected clip can also carry a
+        `supersededAt` from an approval that happened first.
+        """
+        found: dict[str, Clip] = {}
+        for field_filter in (
+            firestore.FieldFilter("review", "==", ReviewState.REJECTED.value),
+            firestore.FieldFilter("supersededAt", "!=", None),
+        ):
+            for doc in self._db.collection(CLIPS).where(filter=field_filter).stream():
+                clip = _read(Clip, doc.to_dict() or {})
+                found[clip.id] = clip
+        return list(found.values())
+
+    def lineage_peers(self, clips: list[Clip]) -> list[Clip]:
+        """The rest of the versions belonging to the lineages in `clips`.
+
+        The tidy pass has to know which clip is the newest of its lineage before
+        it collects any of them, and `settled()` only returns the ones with a
+        decision on them — the survivor usually has none.
+        """
+        wanted = {clip.lineage_id or clip.id for clip in clips}
+        if not wanted:
+            return []
+        found: dict[str, Clip] = {}
+        for lineage_id in sorted(wanted):
+            query = self._db.collection(CLIPS).where(
+                filter=firestore.FieldFilter("lineageId", "==", lineage_id)
+            )
+            for doc in query.stream():
+                clip = _read(Clip, doc.to_dict() or {})
+                found[clip.id] = clip
+            # A clip written before lineages existed is its own root, and no
+            # document carries its id in `lineageId`.
+            if lineage_id not in found:
+                snapshot = self._db.collection(CLIPS).document(lineage_id).get()
+                if snapshot.exists:
+                    clip = _read(Clip, snapshot.to_dict() or {})
+                    found[clip.id] = clip
+        return list(found.values())
+
+    def forget(self, clip_id: str) -> None:
+        """Remove a clip's record. The file is the caller's business."""
+        self._db.collection(CLIPS).document(clip_id).delete()
+
     def preview(self, clip_id: str) -> ClipPreview | None:
         snapshot = (
             self._db.collection(CLIPS)
@@ -777,8 +946,8 @@ class PublicationStore:
     question it exists to answer, and a query is not needed to answer it.
 
     Nothing here ever holds a credential. The document records *what was
-    published, by whose attestation, and when* — the token that performed the
-    upload stays in a file on the worker (D7, and Phase 8 exit criterion 4).
+    published, where, and when* — the token that performed the upload stays in
+    a file on the worker (D7, and Phase 8 exit criterion 4).
     """
 
     def __init__(self, client: firestore.Client, settings: Settings) -> None:

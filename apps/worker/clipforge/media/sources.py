@@ -22,11 +22,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urlparse
 
 from clipforge_contracts import IngestErrorCode, SourceProvider
 
 from clipforge.media.ffprobe import MediaInfo, ProbeError, probe
+from clipforge.media.toolchain import resolve_toolchain, yt_dlp_location
 from clipforge.observability import get_logger
 
 log = get_logger(__name__)
@@ -40,6 +41,7 @@ __all__ = [
     "YouTubeAdapter",
     "classify_youtube_error",
     "content_hash",
+    "resolve_audio_source",
     "select_adapter",
 ]
 
@@ -226,6 +228,23 @@ _YOUTUBE_HOSTS = {
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
+def _parse_url(candidate: str) -> ParseResult | None:
+    """`urlparse`, with a malformed URL answered rather than raised.
+
+    `urlparse` throws on a few shapes — `https://[oops` is `ValueError: Invalid
+    IPv6 URL` — and both parsers here are documented as pure functions that
+    answer a question about a string. A ValueError escaping one of them reaches
+    the stage as an unclassified crash instead of the "that is not a link"
+    sentence the PWA knows how to show, and the browser-side check disagrees
+    because it swallows the same input. Nothing parseable is lost: a string
+    urlparse cannot read names no YouTube video and no playlist.
+    """
+    try:
+        return urlparse(candidate if "//" in candidate else f"https://{candidate}")
+    except ValueError:
+        return None
+
+
 def parse_youtube_id(submission: str) -> str | None:
     """Extract a video id, or ``None`` if this is not a single-video URL.
 
@@ -237,7 +256,9 @@ def parse_youtube_id(submission: str) -> str | None:
     if _VIDEO_ID.match(candidate):
         return candidate
 
-    parsed = urlparse(candidate if "//" in candidate else f"https://{candidate}")
+    parsed = _parse_url(candidate)
+    if parsed is None:
+        return None
     host = (parsed.hostname or "").lower()
     if host not in _YOUTUBE_HOSTS:
         return None
@@ -256,6 +277,54 @@ def parse_youtube_id(submission: str) -> str | None:
             return video_id if _VIDEO_ID.match(video_id) else None
 
     return None
+
+
+def parse_playlist_id(submission: str) -> str | None:
+    """Extract the playlist or mix id a link names, or ``None`` for none.
+
+    Pure and offline, exactly like :func:`parse_youtube_id`: a link that cannot
+    be used should be refused in microseconds rather than halfway through a
+    download. Nothing looked at `list=` before, and a MUSIC job walked an
+    autoplay mix for half an hour — 190 tracks, 905 MB — to fetch one bed.
+
+    Any `list=` counts, whether it names a mix (`RD...`), an ordinary playlist
+    (`PL...`), Watch Later or Liked: they are all "more than the one video you
+    asked for". Only on a YouTube host, though — some other site's `list=`
+    parameter is its own business and must not be reported as a playlist here.
+    """
+    parsed = _parse_url(submission.strip())
+    if parsed is None or (parsed.hostname or "").lower() not in _YOUTUBE_HOSTS:
+        return None
+
+    # parse_qs drops a blank value, so `?list=` alone arrives as no value at all;
+    # the strip() catches `?list=%20`, which is just as empty.
+    for value in parse_qs(parsed.query).get("list", []):
+        if value.strip():
+            return value.strip()
+    return None
+
+
+def _playlist_refusal(submission: str) -> IngestError:
+    """Refuse a playlist link, and say which single-video URL to use instead.
+
+    Refusing on its own would turn one paste into five steps: open the link,
+    find the video, copy its URL, come back, paste again. The video id is
+    already in the link that was submitted, so the fix can just be handed over.
+    A `/playlist?list=...` URL names no video, so there it cannot be.
+    """
+    video_id = parse_youtube_id(submission)
+    if video_id is None:
+        return IngestError(
+            IngestErrorCode.UNSUPPORTED_URL,
+            f"that is a playlist, not a single video: {submission!r}. "
+            "Submit the link to the one video you want.",
+        )
+    return IngestError(
+        IngestErrorCode.UNSUPPORTED_URL,
+        f"that is a playlist, not a single video: {submission!r}. "
+        "To use only the video it names, submit "
+        f"https://www.youtube.com/watch?v={video_id}",
+    )
 
 
 # yt-dlp reports nearly everything as one DownloadError carrying a sentence, so
@@ -329,6 +398,12 @@ class YouTubeAdapter:
         self._ffprobe_bin = ffprobe_bin
 
     def identify(self, submission: str) -> SourceIdentity:
+        # Before parsing, because `watch?v=X&list=Y` yields a perfectly good
+        # video id and would otherwise be ingested as one video — making the
+        # refusal below a promise this code did not keep.
+        if parse_playlist_id(submission) is not None:
+            raise _playlist_refusal(submission)
+
         video_id = parse_youtube_id(submission)
         if video_id is None:
             raise IngestError(
@@ -502,7 +577,12 @@ def select_adapter(
     ffprobe_bin: str = "ffprobe",
 ) -> SourceAdapter:
     """Pick an adapter for a submission, without touching the network."""
-    if parse_youtube_id(submission) is not None:
+    # A playlist link is routed here too, so `identify` is what refuses it and
+    # names the video to use instead. `youtube.com/playlist?list=...` has no
+    # video id, so without this it reached the http branch below and was told
+    # "Only YouTube videos and local files are supported" — true of a random
+    # mp3, wrong and unhelpful about a YouTube URL.
+    if parse_youtube_id(submission) is not None or parse_playlist_id(submission) is not None:
         return YouTubeAdapter(max_duration_sec=max_duration_sec, ffprobe_bin=ffprobe_bin)
 
     stripped = submission.removeprefix("file://")
@@ -534,8 +614,87 @@ class FetchedAudio:
     title: str | None
 
 
+class _YtDlpLog:
+    """Send yt-dlp's own diagnostics to the worker log.
+
+    Not decoration. The bug this replaces announced itself in a yt-dlp warning
+    — *"ffmpeg-location ffmpeg does not exist! Continuing without ffmpeg"* —
+    and `no_warnings: True` threw it away, so what reached the operator was
+    `ffprobe and ffmpeg not found` with nothing to say why. Warnings and errors
+    from a dependency this fragile are exactly the ones worth keeping.
+
+    `debug` is where yt-dlp sends everything it would otherwise print, so it is
+    forwarded rather than dropped — with the per-chunk `[download]` chatter
+    filtered out, which is the only part that was ever actually noise. Dropping
+    the lot cost us the sentence *"Downloading playlist RDD2XUoPg3-KY — add
+    --no-playlist to download just the video"*, which yt-dlp emitted once a
+    minute for half an hour while a MUSIC job quietly fetched 190 tracks.
+    """
+
+    def debug(self, message: str) -> None:
+        text = message.strip()
+        if not text or text.startswith(("[download]", "[debug]")):
+            return None
+        log.debug("ytdlp.debug", message=text)
+        return None
+
+    def info(self, message: str) -> None:
+        return None
+
+    def warning(self, message: str) -> None:
+        log.warning("ytdlp.warning", message=message.strip())
+
+    def error(self, message: str) -> None:
+        log.error("ytdlp.error", message=message.strip())
+
+
+# What a finished track is called once it is this machine's to keep, and what
+# yt-dlp is told to write while it is still working. Two names rather than one:
+# see :func:`_cached_audio`.
+_CACHED = "music-"
+_FETCHING = "fetching-"
+
+
+def _cached_audio(dest_dir: Path, video_id: str, *, prefix: str = _CACHED) -> Path | None:
+    """A track this machine already fetched, or ``None`` to go and get it.
+
+    yt-dlp has a skip of its own for a file it has already downloaded and it
+    never fires here, because of how the m4a extraction is put together.
+    `YoutubeDL.existing_video_file` looks for the output under the extension of
+    the *downloaded format* — `<id>.webm`, usually — since `final_ext` is only
+    ever set by yt-dlp's command-line front end and not by the library API this
+    module calls. But `FFmpegExtractAudioPP.run` returns that pre-conversion
+    file in its files-to-delete list, and `YoutubeDL.run_pp` deletes everything
+    in that list unless `keepvideo` is set. So the only file left after a
+    successful fetch is the `.m4a`, and the skip is looking for a name nothing
+    will ever have. (Read against yt-dlp 2026.08.19.)
+
+    That cost tens of seconds per re-mix, which is the whole of the wait a
+    reviewer sits through when a remake carries its music forward.
+
+    **The cache only ever looks at a name this module finished writing.**
+    Filtering `.part` and `.ytdl` does not cover the window that matters:
+    `FFmpegExtractAudioPP.run` transcodes straight into the output name whenever
+    the downloaded extension differs, with no `.part` marker over that stretch,
+    so a worker killed mid-transcode left a truncated but non-empty file under
+    exactly the name a cache hit looks for — and that hit is what stops the
+    fetch that would replace it, so the machine was wedged on half a track
+    forever. yt-dlp therefore downloads under `_FETCHING` and the finished file
+    is renamed into `_CACHED`, which makes "finished" a fact this module
+    establishes rather than one it infers afterwards. Probing the candidate
+    instead would only ask whether the bytes decode, and would put ffprobe back
+    on the one path that deliberately runs before the toolchain lookup.
+    """
+    for match in sorted(dest_dir.glob(f"{prefix}{video_id}.*")):
+        if match.suffix in {".part", ".ytdl"} or not match.is_file():
+            continue
+        if match.stat().st_size > 0:
+            return match
+    return None
+
+
 def resolve_audio_source(
-    submission: str, dest_dir: Path, *, ffmpeg: str = "ffmpeg"
+    submission: str, dest_dir: Path, *, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe"
 ) -> FetchedAudio:
     """Get the audio for a music submission — a YouTube URL, or a file here.
 
@@ -548,53 +707,116 @@ def resolve_audio_source(
     identify, deduplicate and garbage-collect *source video*. A music track is
     not a Source: it is not clipped, not transcribed, and not tracked — it is
     fetched, used, and left in tmp for the workspace to sweep.
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
 
+    The extraction runs through ffmpeg, so the tools are located **before** the
+    download rather than discovered missing by a postprocessor afterwards. A
+    machine with no ffprobe should learn that in a second, not after pulling
+    forty megabytes of an hour-long mix.
+
+    A track already in ``dest_dir`` is returned without going near the network
+    or yt-dlp at all — see :func:`_cached_audio` for why yt-dlp's own skip does
+    not cover this.
+    """
     local = Path(submission).expanduser()
     if local.is_file():
         return FetchedAudio(path=local, title=local.stem)
 
-    if parse_youtube_id(submission) is None:
+    # Ahead of the refusal below, which would otherwise catch a
+    # `youtube.com/playlist?list=...` URL — parse_youtube_id rightly finds no
+    # video id in one — and tell the user it is not a YouTube link, which it is.
+    if parse_playlist_id(submission) is not None:
+        raise _playlist_refusal(submission)
+
+    video_id = parse_youtube_id(submission)
+    if video_id is None:
         raise IngestError(
             IngestErrorCode.UNSUPPORTED_URL,
             f"not a YouTube link or a file on this machine: {submission!r}",
         )
 
+    # Before the toolchain check and the yt-dlp import, both of which are only
+    # needed to *fetch*: a re-mix of a track that is already here should not
+    # depend on either.
+    cached = _cached_audio(dest_dir, video_id)
+    if cached is not None:
+        log.info("music.track_cached", track=cached.name)
+        # **No title, rather than the stem.** The file is named after the video
+        # id, so the stem is `music-dQw4w9WgXcQ` — which is not what anything
+        # called the track. `RemakeStage._score` falls back to the title already
+        # on the clip only when this is None, so returning the stem overwrote a
+        # title the reviewer had seen as "Slow Burn" with the video id on three
+        # screens, on the first remake that carried the music. None is already
+        # what `trackTitle` means for "the source did not say". The local-file
+        # branch above keeps its stem for the opposite reason: that name is one
+        # the reviewer typed.
+        return FetchedAudio(path=cached, title=None)
+
+    tools = resolve_toolchain(ffmpeg, ffprobe)
+    tools.require("Fetching audio for a music track")
+
+    # Last, so that a link refused above leaves nothing behind. A submission
+    # that is never downloaded should not create the directory it would have
+    # been downloaded into.
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
     # Imported here: yt-dlp is the `media` extra, and the worker must import
     # this module without it.
     import yt_dlp
 
-    template = str(dest_dir / "music-%(id)s.%(ext)s")
-    options = {
+    template = str(dest_dir / f"{_FETCHING}%(id)s.%(ext)s")
+    options: dict[str, Any] = {
         "format": "bestaudio/best",
         "outtmpl": template,
         "quiet": True,
-        "no_warnings": True,
         "noprogress": True,
+        # Belt and braces behind the guard above: a `list=` submission never
+        # reaches this call any more, but yt-dlp's default on one is to download
+        # every entry, and that default cost 190 tracks once. The ingest adapter
+        # has always set it; the music path is the one that went without.
+        "noplaylist": True,
+        "logger": _YtDlpLog(),
         # m4a rather than mp3: no transcode when YouTube already serves AAC,
         # which it usually does, and ffmpeg reads it just as happily.
         "postprocessors": [
             {"key": "FFmpegExtractAudio", "preferredcodec": "m4a", "preferredquality": "192"}
         ],
-        "ffmpeg_location": ffmpeg,
     }
+    # Set only when it says something PATH does not already say. yt-dlp
+    # path-checks this value and, on a miss, abandons ffmpeg *and* ffprobe
+    # rather than falling back — so the absent key is the safe one.
+    location = yt_dlp_location(tools)
+    if location is not None:
+        options["ffmpeg_location"] = location
 
+    # The canonical single-video URL, not the submission: a submission may be a
+    # bare id or carry tracking parameters, and the glob below looks for a file
+    # named by the video id, so the URL handed over has to be the one yt-dlp
+    # will name the output after.
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(submission, download=True)
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
     except Exception as exc:  # yt-dlp raises many shapes; all mean 'no track'
         raise IngestError(
             classify_youtube_error(str(exc)),
             f"could not fetch audio: {exc}",
         ) from exc
 
-    video_id = info.get("id")
-    matches = sorted(dest_dir.glob(f"music-{video_id}.*"))
-    if not matches:
+    # The same rule the cache check uses, so "a finished track" means one thing
+    # here and not two: a `.part` left by an earlier killed download must not be
+    # picked up as this one's output either. Under the staging prefix, so
+    # nothing that reaches this line can already have been served as a cached
+    # track. The postprocessor's `.m4a` sorts ahead of every container YouTube
+    # serves audio in, so a pre-conversion leftover cannot be preferred to it.
+    fetched = _cached_audio(dest_dir, video_id, prefix=_FETCHING)
+    if fetched is None:
         raise IngestError(
             IngestErrorCode.NO_SUITABLE_FORMAT,
             "the download reported success but produced no audio file",
         )
 
-    return FetchedAudio(path=matches[0], title=info.get("title"))
+    # The rename is the commit, and it is the whole of the fix: same directory,
+    # so it is atomic, and the name it lands under is the only one a later job
+    # will look for.
+    finished = dest_dir / f"{_CACHED}{video_id}{fetched.suffix}"
+    fetched.replace(finished)
+    return FetchedAudio(path=finished, title=info.get("title"))

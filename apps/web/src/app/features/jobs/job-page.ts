@@ -11,6 +11,7 @@ import {
 import { Router, RouterLink } from '@angular/router';
 import type { Clip, Job, JobEvent, Source, Stage, StageStatus } from '@clipforge/contracts';
 
+import { isTerminal, stageNote } from '../../core/job-list';
 import { ClipForgeStore } from '../../core/store';
 
 /**
@@ -56,6 +57,17 @@ export class JobPage implements OnDestroy {
   protected readonly source = signal<Source | null>(null);
   protected readonly results = signal<{ candidates: number; clips: Clip[] } | null>(null);
   protected readonly error = signal<string | null>(null);
+  /**
+   * Why the job is not on screen, when it is not coming.
+   *
+   * {@link error} is a banner *inside* the loaded page, so a listener that fails
+   * before its first delivery had nowhere to put itself: `job()` stayed
+   * `undefined` and the page read "Loading…" for as long as it was open, with
+   * nothing anywhere saying the read had been refused.
+   */
+  protected readonly loadFailure = signal<string | null>(null);
+  /** The same, for the log — which loads separately and can fail on its own. */
+  protected readonly eventsFailure = signal<string | null>(null);
   protected readonly cancelling = signal(false);
   protected readonly busy = signal(false);
   protected readonly showLog = signal(true);
@@ -66,6 +78,8 @@ export class JobPage implements OnDestroy {
   constructor() {
     effect((onCleanup) => {
       const id = this.id();
+      this.loadFailure.set(null);
+      this.eventsFailure.set(null);
       const stopJob = this.store.watchJob(
         id,
         (job) => {
@@ -93,12 +107,12 @@ export class JobPage implements OnDestroy {
               );
           }
         },
-        (err) => this.error.set(err.message),
+        (err) => this.loadFailure.set(err.message),
       );
       const stopEvents = this.store.watchJobEvents(
         id,
         (events) => this.events.set(events),
-        (err) => this.error.set(err.message),
+        (err) => this.eventsFailure.set(err.message),
       );
 
       this.stopJob = stopJob;
@@ -192,8 +206,14 @@ export class JobPage implements OnDestroy {
     return job.status === 'QUEUED' || job.status === 'RUNNING';
   }
 
+  /** Shared with the queue card, which gates Delete on the same answer. */
   protected terminal(job: Job): boolean {
-    return job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED';
+    return isTerminal(job);
+  }
+
+  /** What a stage says it is doing, when that is still true of it. */
+  protected note(stage: Stage): string | null {
+    return stageNote(stage);
   }
 
   /**
@@ -224,16 +244,27 @@ export class JobPage implements OnDestroy {
   }
 
   /**
-   * Forget this job and its event log.
+   * Forget this job. Its event log is left behind.
    *
-   * Records only. Whatever the job downloaded or rendered stays on the machine
-   * that holds it — see Settings ▸ Storage, which is the only surface that can
-   * reach a particular disk.
+   * Records only, and not even all of the records: `events` is a subcollection,
+   * which a document delete does not touch and the rules will not let a client
+   * clear. Whatever the job downloaded or rendered stays on the machine that
+   * holds it — see Settings ▸ Storage, which is the only surface that can reach
+   * a particular disk.
+   *
+   * Offered only on a job that has stopped. See `isTerminal`.
    */
   protected async removeJob(): Promise<void> {
     const job = this.job();
-    if (!job) return;
-    if (!confirm(`Delete job ${job.id} and its log? The files it produced stay on disk.`)) return;
+    if (!job || !this.terminal(job)) return;
+    if (
+      !confirm(
+        `Delete job ${job.id}? Its event log is left behind in the database, and the files ` +
+          `it produced stay on disk.`,
+      )
+    ) {
+      return;
+    }
     this.busy.set(true);
     this.error.set(null);
     try {

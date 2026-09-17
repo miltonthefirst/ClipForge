@@ -1,0 +1,684 @@
+<a
+  routerLink="/publish"
+  class="inline-flex items-center gap-1 text-sm text-ink-subtle hover:text-ink"
+>
+  <svg
+    class="h-4 w-4"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path d="m15 18-6-6 6-6" />
+  </svg>
+  Publish queue
+</a>
+
+@if (clip() === undefined) {
+  <p class="py-16 text-center text-ink-subtle">Loading…</p>
+} @else if (clip() === null) {
+  <p class="py-16 text-center text-ink-subtle">No such clip.</p>
+} @else if (clip(); as clip) {
+  <div class="mt-3 grid gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+    <!-- ── The clip itself ─────────────────────────────────────────────────
+         A vertical clip is 1080×1920, so left to fill its column it renders
+         about 1800px tall and runs off the screen. Capped against the viewport
+         and centred, so the whole frame is visible without scrolling whatever
+         the window is. -->
+    <div class="lg:sticky lg:top-20 lg:self-start">
+      <div class="overflow-hidden rounded-xl border border-line bg-black">
+        @if (playable()) {
+          <video
+            class="mx-auto block max-h-[70vh] w-auto max-w-full"
+            [src]="$any(source()).url"
+            [poster]="posterSrc() ?? ''"
+            controls
+            playsinline
+            preload="metadata"
+          ></video>
+        } @else if (posterSrc(); as poster) {
+          <img
+            class="mx-auto block max-h-[70vh] w-auto max-w-full"
+            [src]="poster"
+            [alt]="'Poster frame for ' + (clip.title ?? 'clip')"
+          />
+        }
+      </div>
+
+      @if (source().kind === 'local') {
+        <p class="mt-2 text-xs text-ink-subtle">Playing from the worker on this machine.</p>
+      }
+
+      <!-- The clip IS in the bucket and this device was refused it. Deliberately
+           not offering the upload button here: the worker would find the file
+           already uploaded and skip, which is how this looked like an upload
+           that never happened. -->
+      @if (blockedReason(); as reason) {
+        <div
+          class="mt-2 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+        >
+          <p class="font-medium">This clip is uploaded, but this device cannot fetch it.</p>
+          <p class="mt-1 leading-relaxed">{{ reason }}</p>
+        </div>
+      } @else if (needsCloudCopy()) {
+        <div
+          class="mt-2 rounded-lg border border-line bg-panel/60 px-3 py-2 text-xs text-ink-muted"
+        >
+          @if (uploadRequested()) {
+            <p>
+              Upload queued. The worker has to be running to pick it up; this becomes playable
+              everywhere the moment the clip lands.
+            </p>
+          } @else {
+            <p>
+              No cloud copy of this one. Watching it before it goes out means being at the machine
+              that rendered it — a phone cannot reach that file.
+            </p>
+            <button
+              type="button"
+              class="mt-2 rounded-lg border border-line-strong px-3 py-1.5 text-xs font-medium text-ink hover:bg-line disabled:opacity-50"
+              [disabled]="busy()"
+              (click)="askForUpload()"
+            >
+              Ask the worker to upload it
+            </button>
+          }
+        </div>
+      }
+
+      @if (filmstripSrc(); as strip) {
+        <img
+          class="mt-3 w-full rounded-lg border border-line bg-black"
+          [src]="strip"
+          alt="Four frames from across the clip"
+        />
+      }
+
+      <p class="mt-3 text-xs text-ink-subtle">
+        {{ clip.durationSec | number: '1.0-0' }}s · {{ clip.widthPx }}×{{ clip.heightPx }} ·
+        {{ clip.renderProfile }}
+      </p>
+      <p class="mt-1 text-xs text-ink-subtle">
+        <a [routerLink]="['/review', clip.id]" class="text-accent-ink hover:underline"
+          >Edit, remake or reject this clip →</a
+        >
+      </p>
+    </div>
+
+    <!-- ── Everything about the delivery ───────────────────────────────────── -->
+    <div class="space-y-4">
+      <div>
+        <h1 class="text-lg font-semibold text-ink">{{ clip.title ?? 'Untitled clip' }}</h1>
+        @if (clip.description) {
+          <p class="mt-1 text-sm text-ink-muted">{{ clip.description }}</p>
+        }
+      </div>
+
+      @if (error(); as message) {
+        <p
+          class="rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+        >
+          {{ message }}
+        </p>
+      }
+      @if (saved(); as what) {
+        <p
+          class="rounded-lg border border-line-strong bg-panel-soft px-4 py-3 text-sm text-ink-muted"
+        >
+          {{ what }}
+        </p>
+      }
+
+      <!-- ── Where this has got to ─────────────────────────────────────────
+           The headline, and the only section that is always present. Its four
+           states call for four different things, so they are written out
+           rather than squeezed into one paragraph with conditional words. -->
+      @if (state(); as now) {
+        @switch (now.kind) {
+          @case ('PUBLISHED') {
+            <section class="rounded-xl border border-ok-line bg-ok-bg p-4">
+              <h2 class="text-sm font-semibold text-ok-ink">On YouTube</h2>
+              <p class="mt-1 text-sm text-ok-ink-soft">
+                {{ destination(now.publication) }}
+                @if (now.at) {
+                  · {{ now.at | date: 'd MMM y, HH:mm' }}
+                }
+              </p>
+              @if (now.publication?.externalUrl; as url) {
+                <a
+                  class="mt-3 inline-block rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700"
+                  [href]="url"
+                  target="_blank"
+                  rel="noopener"
+                  >Watch it on YouTube</a
+                >
+                <p class="mt-2 break-all text-xs text-ok-ink-soft">{{ url }}</p>
+              }
+            </section>
+          }
+          @case ('UPLOADING') {
+            <section class="rounded-xl border border-line bg-panel p-4">
+              <h2 class="text-sm font-semibold text-ink">Uploading</h2>
+              <p class="mt-1 text-sm text-ink-muted">
+                The worker has this one. It will appear on the channel when the platform accepts it;
+                this page updates by itself.
+              </p>
+              @if (now.job; as job) {
+                <a
+                  [routerLink]="['/jobs', job.id]"
+                  class="mt-2 inline-block text-xs text-accent-ink hover:underline"
+                  >Follow the job →</a
+                >
+              }
+            </section>
+          }
+          @case ('SCHEDULED') {
+            <section class="rounded-xl border border-line bg-panel p-4">
+              <h2 class="text-sm font-semibold text-ink">
+                Scheduled for {{ now.at | date: 'EEEE d MMM, HH:mm' }}
+              </h2>
+              <p class="mt-1 text-sm text-ink-muted">
+                The job is queued and no worker may claim it before then. Nothing else needs to be
+                running in the meantime.
+              </p>
+              <!-- Cancelling the job is the only way to withdraw a scheduled
+                   publish: there is no publication yet to take back. -->
+              <button
+                type="button"
+                class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+                [disabled]="busy()"
+                (click)="cancelScheduled()"
+              >
+                Call it off
+              </button>
+            </section>
+          }
+          @case ('QUEUED') {
+            <section class="rounded-xl border border-line bg-panel p-4">
+              <h2 class="text-sm font-semibold text-ink">Waiting for the worker</h2>
+              <p class="mt-1 text-sm text-ink-muted">
+                The job exists and nothing server-side will pick it up on its own — a queued job
+                means the worker is not running.
+              </p>
+              <p class="mt-2 text-xs text-ink-subtle">
+                <a routerLink="/settings/worker" class="text-accent-ink hover:underline"
+                  >Start the worker →</a
+                >
+              </p>
+              <button
+                type="button"
+                class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+                [disabled]="busy()"
+                (click)="cancelScheduled()"
+              >
+                Call it off
+              </button>
+            </section>
+          }
+          @case ('FAILED') {
+            <section class="rounded-xl border border-danger-line bg-danger-bg p-4">
+              <h2 class="text-sm font-semibold text-danger-ink">The last attempt failed</h2>
+              @if (now.publication?.error; as failure) {
+                <p class="mt-1 text-sm text-danger-ink">{{ failure.message }}</p>
+                <p class="mt-1 text-xs text-danger-ink">
+                  {{ failure.type }}
+                  @if (failure.code) {
+                    · {{ failure.code }}
+                  }
+                  · {{ failure.retryable ? 'worth retrying' : 'retrying will not help on its own' }}
+                </p>
+              }
+            </section>
+          }
+        }
+      }
+
+      <!-- ── What this upload will say ─────────────────────────────────────
+           Collapsed by default: the common case is publishing with the
+           channel's settings, and a screen that demands six decisions before
+           one tap is a screen nobody uses from a phone. The summary line keeps
+           the defaults visible without opening it, because "unlisted" is a fact
+           worth seeing before pressing Publish rather than after. -->
+      @if (state().kind !== 'PUBLISHED' && state().kind !== 'UPLOADING') {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <div class="flex items-baseline justify-between gap-3">
+            <h2 class="text-sm font-semibold text-ink">What goes out</h2>
+            <button
+              type="button"
+              class="text-sm text-ink-subtle hover:text-ink"
+              [attr.aria-expanded]="showOptions()"
+              (click)="showOptions.set(!showOptions())"
+            >
+              {{ showOptions() ? 'Hide' : 'Change' }}
+            </button>
+          </div>
+
+          <p class="mt-1 text-sm text-ink-muted">
+            {{ privacy() }} · {{ categoryLabel(category()) }}
+            @if (channel(); as picked) {
+              · {{ picked.label }}
+            }
+            @if (overridden()) {
+              · <span class="text-accent-ink">edited for this upload</span>
+            }
+          </p>
+
+          @if (showOptions()) {
+            <div class="mt-4 space-y-3 border-t border-line pt-4">
+              @if (channels().length > 1) {
+                <!-- `for`/`id` rather than a wrapping label, and that is not a
+                     style choice. A label that WRAPS a select takes its text
+                     content from every descendant, options included, so this
+                     field's accessible name would be "Channel YouTube Cooking
+                     …" — announced in full by a screen reader, and unmatchable
+                     by name in a test. -->
+                <div class="text-sm">
+                  <label class="block text-ink-muted" for="publish-channel">Channel</label>
+                  <!-- `ngModel` rather than `[value]`, and that is a bug fix
+                       rather than a preference: a `value` bound on a <select>
+                       is applied before the @for has rendered its <option>s, so
+                       the control fell back to its first option and showed a
+                       destination nobody had chosen. -->
+                  <select
+                    id="publish-channel"
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                    name="channel"
+                    [ngModel]="channelId()"
+                    (ngModelChange)="draftChannel.set($event)"
+                  >
+                    @for (option of channels(); track option.id) {
+                      <option [value]="option.id">{{ option.label }}</option>
+                    }
+                  </select>
+                </div>
+              }
+
+              <!-- Hint text sits OUTSIDE the label and is attached with
+                   aria-describedby. Inside it, the hint becomes part of the
+                   field's accessible name, and a screen reader announces twenty
+                   words where it should announce two. -->
+              <div class="text-sm">
+                <label class="block">
+                  <span class="text-ink-muted">
+                    Title <span class="text-ink-subtle">(optional)</span>
+                  </span>
+                  <input
+                    type="text"
+                    maxlength="100"
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                    [placeholder]="clip.title ?? 'Clip'"
+                    [value]="title()"
+                    aria-describedby="publish-title-hint"
+                    (input)="draftTitle.set($any($event.target).value)"
+                  />
+                </label>
+                <p id="publish-title-hint" class="mt-1 text-xs text-ink-subtle">
+                  Leave it empty to use the clip's own title. YouTube allows 100 characters.
+                </p>
+              </div>
+
+              <label class="block text-sm">
+                <span class="text-ink-muted">
+                  Description <span class="text-ink-subtle">(optional)</span>
+                </span>
+                <textarea
+                  rows="3"
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                  [placeholder]="clip.description ?? 'Leave empty to use the channel default'"
+                  [value]="description()"
+                  (input)="draftDescription.set($any($event.target).value)"
+                ></textarea>
+              </label>
+
+              <fieldset class="space-y-2">
+                <legend class="text-sm text-ink-muted">Who can watch it</legend>
+                @for (choice of privacies; track choice.value) {
+                  <label
+                    class="flex cursor-pointer gap-3 rounded-lg border border-line p-2.5 hover:border-line-strong"
+                    [class.border-forge-500]="privacy() === choice.value"
+                  >
+                    <input
+                      type="radio"
+                      class="mt-1"
+                      name="publish-privacy"
+                      [value]="choice.value"
+                      [checked]="privacy() === choice.value"
+                      (change)="draftPrivacy.set(choice.value)"
+                    />
+                    <span class="min-w-0">
+                      <span class="block text-sm text-ink">{{ choice.label }}</span>
+                      <span class="block text-xs text-ink-subtle">{{ choice.hint }}</span>
+                    </span>
+                  </label>
+                }
+              </fieldset>
+
+              <div class="text-sm">
+                <label class="block text-ink-muted" for="publish-category">Category</label>
+                <select
+                  id="publish-category"
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                  name="category"
+                  [ngModel]="category()"
+                  (ngModelChange)="draftCategory.set($event)"
+                >
+                  @for (option of categories; track option.id) {
+                    <option [value]="option.id">{{ option.label }}</option>
+                  }
+                </select>
+              </div>
+
+              <div class="text-sm">
+                <label class="block">
+                  <span class="text-ink-muted">Tags</span>
+                  <input
+                    type="text"
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                    placeholder="comma, separated"
+                    [value]="tags()"
+                    aria-describedby="publish-tags-hint"
+                    (input)="draftTags.set($any($event.target).value)"
+                  />
+                </label>
+                <p id="publish-tags-hint" class="mt-1 text-xs text-ink-subtle">
+                  Prefilled from the channel. Clear it to publish this one with no tags. YouTube
+                  uses the first 20.
+                </p>
+              </div>
+
+              <div class="text-sm">
+                <label class="block">
+                  <span class="text-ink-muted">
+                    Publish at <span class="text-ink-subtle">(optional)</span>
+                  </span>
+                  <input
+                    type="datetime-local"
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                    [value]="draftSchedule()"
+                    aria-describedby="publish-when-hint"
+                    (input)="draftSchedule.set($any($event.target).value)"
+                  />
+                </label>
+                <p id="publish-when-hint" class="mt-1 text-xs text-ink-subtle">
+                  Becomes the job's <code>notBefore</code>, which the scheduler already consults —
+                  no second timer anywhere.
+                </p>
+              </div>
+            </div>
+          }
+
+          @if (refusal(); as why) {
+            <p
+              class="mt-4 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink"
+            >
+              {{ why }}
+            </p>
+          } @else if (state().kind === 'SCHEDULED' || state().kind === 'QUEUED') {
+            <p class="mt-4 text-xs text-ink-subtle">
+              A publish is already queued for this clip. Call it off above before queueing another,
+              or the same video goes out twice.
+            </p>
+          } @else {
+            <button
+              type="button"
+              class="mt-4 w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+              [disabled]="busy()"
+              (click)="publish()"
+            >
+              <!-- The privacy is named on the button, not only in the summary
+                   above. 'public' is the one choice that cannot be undone, so
+                   it belongs on the control that performs it. -->
+              {{ draftSchedule() ? 'Schedule upload' : 'Publish to YouTube' }} ({{ privacy() }})
+            </button>
+            <p class="mt-2 text-xs text-ink-subtle">
+              Queues a job. The credentials live on the worker and never reach this app, so the
+              upload happens there.
+            </p>
+          }
+        </section>
+      }
+
+      <!-- ── How it did ───────────────────────────────────────────────────
+           Only once there is something measured. An empty chart is a promise
+           the platform has not kept: YouTube withholds figures below a privacy
+           threshold, and drawing zeros would report that as a failure. -->
+      @if (rollup(); as measured) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="text-sm font-semibold text-ink">How it did</h2>
+            @if (measuredTo(); as day) {
+              <span class="text-xs text-ink-subtle"
+                >{{ measured.days }} days measured, to {{ day }}</span
+              >
+            }
+          </div>
+
+          <div class="mt-3 grid grid-cols-3 gap-3">
+            <div>
+              <p class="text-xs text-ink-subtle">Views</p>
+              <p class="mt-0.5 text-lg font-semibold text-ink">{{ measured.views | number }}</p>
+            </div>
+            <div>
+              <p class="text-xs text-ink-subtle">Likes</p>
+              <p class="mt-0.5 text-lg font-semibold text-ink">{{ measured.likes | number }}</p>
+            </div>
+            <div>
+              <p class="text-xs text-ink-subtle">Watched</p>
+              <p class="mt-0.5 text-lg font-semibold text-ink">
+                @if (measured.viewPercentage !== null) {
+                  {{ measured.viewPercentage | number: '1.0-0' }}%
+                } @else {
+                  —
+                }
+              </p>
+            </div>
+          </div>
+
+          @if (curve(); as drawn) {
+            <!-- One shared vertical scale, ceiling never below 1, so this reads
+                 the same way as the same curve on the Insights page. -->
+            <figure class="mt-4">
+              <svg
+                class="w-full"
+                [attr.viewBox]="'0 0 ' + curveWidth + ' ' + curveHeight"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="Audience retention across the clip"
+              >
+                <polyline
+                  [attr.points]="drawn.points"
+                  fill="none"
+                  stroke="currentColor"
+                  class="text-accent-ink"
+                  stroke-width="2"
+                  vector-effect="non-scaling-stroke"
+                />
+              </svg>
+              <figcaption class="mt-1 text-xs text-ink-subtle">
+                Audience retention, start to end.
+                @if (drawn.midpoint !== null) {
+                  {{ drawn.midpoint * 100 | number: '1.0-0' }}% still watching halfway.
+                }
+              </figcaption>
+            </figure>
+          } @else {
+            <p class="mt-3 text-xs text-ink-subtle">
+              No retention curve yet. YouTube withholds it until a video clears a privacy threshold
+              of a few hundred views — that is a normal state, not a fault.
+            </p>
+          }
+        </section>
+      }
+
+      <!-- ── Every attempt ────────────────────────────────────────────────
+           The audit trail, in the one place the person who authorised it will
+           actually look: who sent it, where, with what words, and what it
+           cost. Publications outlive the clip document on purpose, so this is
+           the permanent record. -->
+      @if (attempts().length) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold text-ink">
+            Publish history
+            <span class="font-normal text-ink-subtle">({{ attempts().length }})</span>
+          </h2>
+
+          <ol class="mt-3 space-y-3">
+            @for (attempt of attempts(); track attempt.id) {
+              <li class="rounded-lg bg-panel-soft p-3 text-xs">
+                <div class="flex flex-wrap items-baseline justify-between gap-2">
+                  <span
+                    class="font-medium"
+                    [class]="
+                      attempt.state === 'PUBLISHED'
+                        ? 'text-ok-ink'
+                        : attempt.state === 'FAILED'
+                          ? 'text-danger-ink'
+                          : 'text-ink'
+                    "
+                    >{{ attempt.state }}</span
+                  >
+                  <span class="text-ink-subtle">
+                    {{ attempt.publishedAt ?? attempt.createdAt | date: 'd MMM y, HH:mm' }}
+                  </span>
+                </div>
+
+                <!-- Only what the worker actually recorded. Filling a blank
+                     with the channel's current default would make this record
+                     say something about the upload that nobody checked — and
+                     an audit trail that guesses is worse than one with gaps. -->
+                <p class="mt-1 text-ink-muted">{{ recorded(attempt) }}</p>
+
+                @if (attempt.title) {
+                  <p class="mt-1 text-ink">“{{ attempt.title }}”</p>
+                }
+                @if (attempt.tags?.length) {
+                  <p class="mt-1 text-ink-subtle">{{ attempt.tags!.join(', ') }}</p>
+                }
+                @if (attempt.publishAt) {
+                  <p class="mt-1 text-ink-subtle">
+                    was scheduled for {{ attempt.publishAt | date: 'd MMM y, HH:mm' }}
+                  </p>
+                }
+                @if (attempt.error; as failure) {
+                  <p class="mt-1 text-danger-ink">{{ failure.message }}</p>
+                }
+
+                <p class="mt-1 text-ink-subtle">
+                  attempt {{ attempt.attempts ?? 1 }}
+                  @if (attempt.quotaUnits) {
+                    <!-- A YouTube upload is 1,600 of a 10,000 daily allowance —
+                         about six a day — so what it cost is worth showing
+                         before the seventh one fails. -->
+                    · {{ attempt.quotaUnits | number }} quota units
+                  }
+                  @if (attempt.externalId) {
+                    · {{ attempt.externalId }}
+                  }
+                </p>
+
+                @if (attempt.externalUrl; as url) {
+                  <a
+                    class="mt-1 inline-block text-accent-ink hover:underline"
+                    [href]="url"
+                    target="_blank"
+                    rel="noopener"
+                    >open it →</a
+                  >
+                }
+              </li>
+            }
+          </ol>
+        </section>
+      }
+
+      <!-- ── Where this version came from ──────────────────────────────────
+           A clip that has been corrected three times is one row in both
+           queues. This is the rest of the chain: what was asked for at each
+           step, and what came back. -->
+      @if (lineage().length > 1) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold text-ink">
+            Version {{ clip.version ?? 1 }}
+            <span class="font-normal text-ink-subtle">of {{ lineage().length }}</span>
+          </h2>
+
+          <ol class="mt-3 space-y-2">
+            @for (past of lineage(); track past.id) {
+              <li
+                class="rounded-lg p-3 text-xs"
+                [class]="past.id === clip.id ? 'bg-accent-soft' : 'bg-panel-soft'"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-medium text-ink">
+                    v{{ past.version ?? 1 }}
+                    @if (past.id === clip.id) {
+                      · you are here
+                    }
+                  </span>
+                  <span class="text-ink-subtle">{{ past.review }}</span>
+                </div>
+
+                @if (past.remake; as step) {
+                  @if (step.notes) {
+                    <p class="mt-1 text-ink">“{{ step.notes }}”</p>
+                  }
+                  <p class="mt-1 text-ink-muted">
+                    {{ step.framingMode }}
+                    @if (step.voice; as voice) {
+                      · {{ voice.voice }} in {{ voice.language }}
+                    }
+                  </p>
+                } @else if (past.music; as added) {
+                  <p class="mt-1 text-ink-muted">
+                    music added
+                    @if (added.trackTitle) {
+                      · {{ added.trackTitle }}
+                    }
+                  </p>
+                } @else {
+                  <p class="mt-1 text-ink-muted">the original render</p>
+                }
+
+                @if (past.id !== clip.id) {
+                  <a
+                    [routerLink]="['/publish', past.id]"
+                    class="mt-1 inline-block text-accent-ink hover:underline"
+                    >open this version</a
+                  >
+                }
+              </li>
+            }
+          </ol>
+        </section>
+      }
+
+      <!-- ── What the worker was asked to do ───────────────────────────────
+           The operational half of the history: uploads, music, remakes and
+           publishes, which are otherwise only legible by scrolling the Jobs
+           page and matching ids by eye. -->
+      @if (history().length) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold text-ink">Jobs for this clip</h2>
+          <ul class="mt-3 space-y-2">
+            @for (job of history(); track job.id) {
+              <li class="flex items-baseline justify-between gap-3 text-xs">
+                <a
+                  [routerLink]="['/jobs', job.id]"
+                  class="truncate text-accent-ink hover:underline"
+                >
+                  {{ job.type }}
+                </a>
+                <span class="shrink-0 text-ink-subtle">
+                  {{ job.status }} · {{ job.createdAt | date: 'd MMM, HH:mm' }}
+                </span>
+              </li>
+            }
+          </ul>
+        </section>
+      }
+    </div>
+  </div>
+}

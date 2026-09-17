@@ -15,18 +15,13 @@ import { clip, listDocs, plain, preview, signIn, wipe, write } from './helpers';
  * What the worker then does with the block is asserted where it can be asserted
  * properly, against the resolver itself:
  * apps/worker/tests/unit/test_publish_metadata.py.
+ *
+ * The panel lives on the clip's own publish page now. The queue kept exactly
+ * one thing — publishing with the channel's settings, in one tap — which is the
+ * first test below and the reason the button is still on the row at all.
  */
 
 const NOW = '2026-09-08T12:00:00.000Z';
-
-function attestation(uid: string) {
-  return {
-    basis: 'OWN_CONTENT',
-    attestedBy: uid,
-    attestedAt: NOW,
-    note: null,
-  };
-}
 
 function channel(uid: string, defaults: Record<string, unknown> = {}) {
   return {
@@ -70,11 +65,11 @@ test.beforeEach(async () => {
 });
 
 async function seedApprovedClip(uid: string): Promise<void> {
-  await write('clips/clip-1', clip(uid, { review: 'APPROVED', rights: attestation(uid) }));
+  await write('clips/clip-1', clip(uid, { review: 'APPROVED' }));
   await write('clips/clip-1/preview/poster', preview());
 }
 
-test('publishing without opening the panel sends no overrides at all', async ({ page }) => {
+test('publishing from the queue sends no overrides at all', async ({ page }) => {
   // The common case, and the one that must stay one tap. A block full of nulls
   // would behave identically today and would pin this upload to the channel's
   // *current* defaults, so "nothing chosen" is written as nothing.
@@ -82,24 +77,34 @@ test('publishing without opening the panel sends no overrides at all', async ({ 
   await seedApprovedClip(uid);
 
   await page.goto('/publish');
-  await page.getByRole('button', { name: /Publish to YouTube/ }).click();
-  await expect(page.getByText('nothing goes public by default')).toBeVisible();
+  await page.getByRole('button', { name: /^Publish \(/ }).click();
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
 
   await expect.poll(async () => (await publishedOptions()) !== undefined).toBe(true);
   expect(await publishedOptions()).toBeNull();
 });
 
-test('the defaults are visible before the panel is opened', async ({ page }) => {
+test('the defaults are visible before anything is opened', async ({ page }) => {
   // Exactly the point of the summary line: an operator must not have to open
   // anything to learn that this is about to go out unlisted.
   const uid = await signIn(page);
   await seedApprovedClip(uid);
   await write('channels/youtube-primary', channel(uid, { categoryId: '27' }));
 
+  // On the row, where the one-tap button is.
   await page.goto('/publish');
+  await expect(page.getByText('· unlisted · YouTube')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Publish (unlisted)' })).toBeVisible();
 
+  // And on the clip's page, with the category the row has no room for.
+  await page.goto('/publish/clip-1');
   await expect(page.getByText('unlisted · Education · YouTube')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Publish to YouTube (unlisted)' })).toBeVisible();
+
+  // And the category picker opens on it, rather than on whatever option
+  // happened to be first — a `[value]` binding on a <select> is applied before
+  // the options exist, which is a silent way to send the wrong category.
+  await page.getByRole('button', { name: 'Change' }).click();
+  await expect(page.getByLabel('Category', { exact: true })).toHaveValue('27');
 });
 
 test('overrides chosen in the panel reach the job the worker will read', async ({ page }) => {
@@ -107,8 +112,8 @@ test('overrides chosen in the panel reach the job the worker will read', async (
   await seedApprovedClip(uid);
   await write('channels/youtube-primary', channel(uid));
 
-  await page.goto('/publish');
-  await page.getByRole('button', { name: /Options/ }).click();
+  await page.goto('/publish/clip-1');
+  await page.getByRole('button', { name: 'Change' }).click();
 
   await page.getByLabel('Title (optional)').fill('A different hook for this one');
   await page.getByLabel('Description (optional)').fill('and different words');
@@ -118,7 +123,7 @@ test('overrides chosen in the panel reach the job the worker will read', async (
 
   // The button names the privacy, because 'public' is the irreversible one.
   await page.getByRole('button', { name: 'Publish to YouTube (public)' }).click();
-  await expect(page.getByText('nothing goes public by default')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Waiting for the worker' })).toBeVisible();
 
   await expect.poll(async () => (await publishedOptions()) !== null).toBe(true);
 
@@ -141,8 +146,8 @@ test('the tag field is prefilled from the channel and can be emptied', async ({ 
   await seedApprovedClip(uid);
   await write('channels/youtube-primary', channel(uid, { tags: ['standing', 'series'] }));
 
-  await page.goto('/publish');
-  await page.getByRole('button', { name: /Options/ }).click();
+  await page.goto('/publish/clip-1');
+  await page.getByRole('button', { name: 'Change' }).click();
 
   await expect(page.getByLabel('Tags', { exact: true })).toHaveValue('standing, series');
 
@@ -163,8 +168,8 @@ test('a channel picker appears only when there is more than one channel', async 
   await seedApprovedClip(uid);
   await write('channels/youtube-primary', channel(uid));
 
-  await page.goto('/publish');
-  await page.getByRole('button', { name: /Options/ }).click();
+  await page.goto('/publish/clip-1');
+  await page.getByRole('button', { name: 'Change' }).click();
 
   // One destination is not a choice, and a select with one option is furniture.
   await expect(page.getByLabel('Channel', { exact: true })).toHaveCount(0);
@@ -192,9 +197,71 @@ test('the panel shows the channel default rather than a blank privacy', async ({
   await seedApprovedClip(uid);
   await write('channels/youtube-primary', channel(uid, { privacy: 'private' }));
 
-  await page.goto('/publish');
-  await page.getByRole('button', { name: /Options/ }).click();
+  await page.goto('/publish/clip-1');
+  await page.getByRole('button', { name: 'Change' }).click();
 
   await expect(page.getByRole('radio', { name: /Private/ })).toBeChecked();
   await expect(page.getByRole('button', { name: 'Publish to YouTube (private)' })).toBeVisible();
+});
+
+test('a scheduled publish says when, and can be called off', async ({ page }) => {
+  // Scheduling was always possible and was invisible the moment the page
+  // reloaded: the publication that would have recorded it does not exist until
+  // the worker runs. Cancelling the job is therefore the only way to withdraw
+  // one, and this is the screen that can offer it.
+  const uid = await signIn(page);
+  await seedApprovedClip(uid);
+
+  await page.goto('/publish/clip-1');
+  await page.getByRole('button', { name: 'Change' }).click();
+  await page.getByLabel('Publish at (optional)').fill('2099-01-02T09:30');
+  await page.getByRole('button', { name: /^Schedule upload/ }).click();
+
+  await expect(page.getByRole('heading', { name: /Scheduled for/ })).toBeVisible();
+  await expect(page.getByText('2 Jan, 09:30')).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: /Scheduled for/ })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Call it off' }).click();
+
+  // Back to a clip nobody has queued, which is the only honest state once the
+  // job is cancelled.
+  await expect(page.getByRole('button', { name: /Publish to YouTube/ })).toBeVisible();
+});
+
+test('the publish history records what actually went out', async ({ page }) => {
+  // The audit trail, on the phone rather than in worker logs: where it went,
+  // with what words, under what privacy, and what the attempt cost.
+  const uid = await signIn(page);
+  await seedApprovedClip(uid);
+  await write('channels/youtube-primary', channel(uid));
+  await write('clips/clip-1/publications/pub-1', {
+    id: 'pub-1',
+    clipId: 'clip-1',
+    uid,
+    platform: 'YOUTUBE',
+    state: 'PUBLISHED',
+    externalId: 'vid-1',
+    externalUrl: 'https://www.youtube.com/watch?v=vid-1',
+    channelId: 'youtube-primary',
+    privacy: 'public',
+    title: 'The title that actually went out',
+    description: null,
+    categoryId: '27',
+    tags: ['angular', 'signals'],
+    attempts: 1,
+    quotaUnits: 1600,
+    error: null,
+    publishAt: null,
+    createdAt: NOW,
+    publishedAt: NOW,
+  });
+
+  await page.goto('/publish/clip-1');
+
+  await expect(page.getByRole('heading', { name: /Publish history/ })).toBeVisible();
+  await expect(page.getByText('YOUTUBE · YouTube · public · Education')).toBeVisible();
+  await expect(page.getByText('The title that actually went out')).toBeVisible();
+  await expect(page.getByText('angular, signals')).toBeVisible();
 });

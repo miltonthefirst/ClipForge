@@ -198,6 +198,30 @@ describe('trims', () => {
   });
 });
 
+/**
+ * The music a scored clip already carries.
+ *
+ * A remake re-renders, and the music is baked into the rendered file rather
+ * than kept beside it, so the remake has to mix the track again or the clip
+ * comes back silent. `keepMusic` is the opt-OUT from that: absent or true means
+ * carry it, and only false drops it. The rule exists because the field would
+ * otherwise fall foul of `hasOnly` and deny the create with a message that
+ * names nothing the reviewer did.
+ */
+describe('the music a remake carries', () => {
+  it('accepts an explicit request to drop the soundtrack', async () => {
+    await assertSucceeds(create(aliceDb(), remakeJob(ALICE, { keepMusic: false })));
+  });
+
+  it('accepts an untouched control, which carries it', async () => {
+    await assertSucceeds(create(aliceDb(), remakeJob(ALICE, { keepMusic: null })));
+  });
+
+  it('refuses a string where the worker reads a boolean', async () => {
+    await assertFails(create(aliceDb(), remakeJob(ALICE, { keepMusic: 'no' })));
+  });
+});
+
 describe('who may ask, and for what', () => {
   it('refuses a remake of a clip that does not exist', async () => {
     await assertFails(

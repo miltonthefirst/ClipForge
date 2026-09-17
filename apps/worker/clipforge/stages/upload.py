@@ -109,6 +109,12 @@ class UploadStage:
                 code="LOCAL_FILE_MISSING",
             )
 
+        # The size, because it is the only number that says whether this is a
+        # wait of seconds or of minutes. Off the clip where it is recorded, off
+        # the file when it is not.
+        megabytes = (clip.size_bytes or source.stat().st_size) // 1_048_576
+        context.progress(f"Uploading {megabytes} MB to the bucket")
+
         try:
             # `required=True` is the whole difference between this and a render's
             # upload. A render may end with a local-only copy and still have done

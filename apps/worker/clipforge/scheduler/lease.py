@@ -45,6 +45,7 @@ from clipforge_contracts import (
     JobEvent,
     JobEventKind,
     JobStatus,
+    Stage,
     StageError,
     StageName,
     StageStatus,
@@ -188,6 +189,29 @@ def _is_terminal(job: Job) -> bool:
     return job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 
 
+def _without_stale_notes(job: Job) -> list[Stage]:
+    """The job's stages, with the progress note dropped from any still RUNNING.
+
+    Reap, release and cancel each end a job at a moment its runner is not present
+    for, so nothing else is going to say that the stage stopped doing what it
+    last said it was doing. Left alone the note is copied forward onto a document
+    that is then never written again: Ctrl-C a worker mid-mix and the job sits
+    there claiming to be mixing, permanently — a QUEUED job in this deployment
+    means no worker is running, so nothing rewrites it.
+
+    A note on a FAILED stage is left exactly where it is. That one was put there
+    deliberately by ``StageRunner._record_failure``, and it records where the
+    stage had got to when it died — which is the one thing an error message
+    usually does not say.
+    """
+    return [
+        stage.model_copy(update={"progress": None})
+        if stage.status is StageStatus.RUNNING and stage.progress is not None
+        else stage
+        for stage in job.stages
+    ]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Transitions
 # ─────────────────────────────────────────────────────────────────────────────
@@ -306,6 +330,7 @@ def reap(
         failed = job.model_copy(
             update={
                 "status": JobStatus.FAILED,
+                "stages": _without_stale_notes(job),
                 "attempts": attempts,
                 "worker_id": None,
                 "lease_expires_at": None,
@@ -333,6 +358,7 @@ def reap(
     requeued = job.model_copy(
         update={
             "status": JobStatus.QUEUED,
+            "stages": _without_stale_notes(job),
             "attempts": attempts,
             "worker_id": None,
             "lease_expires_at": None,
@@ -407,8 +433,8 @@ def fail_stage(
     """Record a stage failure and decide whether the job retries or dies.
 
     A non-retryable error skips the remaining attempts entirely. Burning two more
-    attempts on a malformed URL or a refused rights attestation wastes twenty
-    minutes and tells nobody anything new.
+    attempts on a malformed URL, an unapproved clip or an uninstalled ffprobe
+    wastes twenty minutes and tells nobody anything new.
     """
     if job.status is not JobStatus.RUNNING:
         raise LeaseError(f"cannot fail a stage on a {job.status.value} job")
@@ -491,6 +517,7 @@ def release(
     released = job.model_copy(
         update={
             "status": JobStatus.QUEUED,
+            "stages": _without_stale_notes(job),
             "worker_id": None,
             "lease_expires_at": None,
             "updated_at": now,
@@ -524,6 +551,7 @@ def cancel(
     cancelled = job.model_copy(
         update={
             "status": JobStatus.CANCELLED,
+            "stages": _without_stale_notes(job),
             "worker_id": None,
             "lease_expires_at": None,
             "ended_at": now,

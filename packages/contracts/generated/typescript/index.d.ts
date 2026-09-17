@@ -25,11 +25,6 @@ export type MusicMode = 'BED' | 'REPLACE';
  */
 export type MusicCaptions = 'KEEP' | 'REMOVE';
 /**
- * Why the operator believes they may publish this clip. Publishing is disabled by default and no clip can be published without one of these recorded, together with who attested it and when. A null `rights` block means no attestation exists — which is a different thing from a weak one, and the gate refuses it. See docs/PLAN.md Phase 8.
- */
-export type RightsBasis =
-  'OWN_CONTENT' | 'LICENSED' | 'PERMISSION_GRANTED' | 'FAIR_USE_ASSERTED' | 'PUBLIC_DOMAIN';
-/**
  * How the 9:16 window is decided. AS_RENDERED keeps the profile's fixed crop, which is what every clip got before this existed. FIT crops nothing at all — the whole landscape frame is scaled into the canvas and the dead space is filled — so a subject that moves can never leave the picture; the cost is a smaller picture. PAN moves a full-height window along the source over time, between points the reviewer set. TRACK does the same thing but works the points out from the footage, by following where the motion is. FIT and TRACK exist because a fixed crop keeps about a third of a broadcast frame's width and holds still, which is the wrong answer for any sport where the thing worth watching moves.
  */
 export type FramingMode = 'AS_RENDERED' | 'FIT' | 'PAN' | 'TRACK';
@@ -59,6 +54,12 @@ export type ObscureMethod = 'BLUR' | 'PIXELATE' | 'DELOGO' | 'BOX';
  * Where a region came from. Worth recording because the three fail differently: AUTO can be in the wrong place, MANUAL cannot but costs the reviewer a drag, and REMEMBERED is a decision made once about a channel and applied ever after — which is the one that needs to be visible when it goes wrong, because nobody asked for it on this clip.
  */
 export type ObscureFound = 'AUTO' | 'MANUAL' | 'REMEMBERED';
+/**
+ * What to do with the captions RENDER burned into the picture, when the remake is not also replacing the voice. REMOVE re-cuts the segment without the subtitle filter; KEEP and null leave the picture alone. REBUILD belongs to a voice change and is ignored here, because with no new narration there is nothing to transcribe.
+ *
+ * It sits beside `voice` rather than inside it because captions are a property of the picture, not of the soundtrack. A reviewer who writes "remove caption" is not asking for a different voice, and until this existed there was no way to say it at all: the note was read correctly, had nowhere to go, and the clip came back unchanged with a summary claiming the language had been set to NONE.
+ */
+export type VoiceCaptions1 = 'REBUILD' | 'KEEP' | 'REMOVE';
 /**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
@@ -101,6 +102,10 @@ export type JobEventKind =
  * local exists so the whole pipeline can be exercised from a committed fixture with no network, which is what keeps the integration tier runnable in CI.
  */
 export type SourceProvider = 'youtube' | 'local';
+/**
+ * Whether this is footage to cut from or a track to score with. Null and absent both read as video, which is what every source written before this field was.
+ */
+export type SourceKind = 'video' | 'music';
 /**
  * Why an ingest failed, in terms a user can act on. Phase 3 requires each of these to map to a distinct user-facing message rather than a stack trace: 'this video is age-restricted' is actionable, 'DownloadError' is not. Only RATE_LIMITED and NETWORK are worth retrying.
  */
@@ -173,7 +178,7 @@ export type PreferenceScope = 'SOURCE' | 'EVERYTHING';
 /**
  * An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.
  */
-export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE';
+export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE' | 'CAPTIONS';
 /**
  * PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
  */
@@ -206,6 +211,12 @@ export type NoteObscure =
   | 'BOTTOM_RIGHT'
   | 'TOP'
   | 'BOTTOM';
+/**
+ * What a note asked for the captions burned into the picture. REMOVE takes them off, which means re-cutting the segment without the subtitle filter. KEEP is for a note that mentions them and wants them left. NOT_MENTIONED means the note said nothing about them, which is most notes.
+ *
+ * This exists because "Remove caption" had no field to land in. The model read it correctly and then had to put the answer somewhere, so it reported setting the language to NONE and the clip came back untouched — a confabulation caused by a missing option rather than by a misread.
+ */
+export type NoteCaptions = 'NOT_MENTIONED' | 'REMOVE' | 'KEEP';
 /**
  * Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
  *
@@ -269,7 +280,7 @@ export interface Job {
    */
   submission?: string | null;
   /**
-   * The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip's rights attestation before allowing the job to be created at all.
+   * The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all.
    */
   clipId?: string | null;
   /**
@@ -328,16 +339,6 @@ export interface MusicOptions {
    * Whether to start the music excerpt exactly on a beat, so its pulse lands with the clip's first frame. The music moves to meet the clip, never the other way round: re-cutting the video to fall on a beat would mean the published clip differed from the one that was reviewed, and would force a re-encode to achieve something the listener hears identically either way. Ignored when the track has no tempo clear enough to measure.
    */
   alignToBeat?: boolean;
-  rights: RightsAttestation;
-}
-/**
- * Why this track may be used. The same gate the video passes, applied to the music, because a Content ID claim does not care which half of the file it came from. It does not make a claim less likely — it records who decided the track was usable, which is the question that matters afterwards.
- */
-export interface RightsAttestation {
-  basis: RightsBasis;
-  attestedBy?: string | null;
-  attestedAt?: string | null;
-  note?: string | null;
 }
 /**
  * A reviewer's corrections to a finished clip. Every field is optional because a remake is usually one complaint, not a rebuild: 'the framing lost the ball' and 'this needs to be in Spanish' are separate errands and should not have to be sent together.
@@ -375,6 +376,11 @@ export interface RemakeOptions {
    * Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
    */
   profile?: string | null;
+  /**
+   * Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one.
+   */
+  keepMusic?: boolean | null;
+  captions?: VoiceCaptions1;
 }
 /**
  * The reframe half of a remake. Every mode other than AS_RENDERED re-cuts from the original source, because the rendered clip has already had the discarded pixels thrown away — so these need the source media to still be on the worker, and fail clearly when the workspace collector has taken it.
@@ -424,7 +430,7 @@ export interface PanKeyframe {
   xPct: number;
 }
 /**
- * A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make footage safe to publish — that is what the rights attestation is for.
+ * A new narration for a clip: what to say, in which language, in whose voice. Worth being plain about the limit of this, because it is easy to reach for the wrong reason: re-voicing changes the soundtrack and nothing else. On third-party footage the picture is still the picture, and it is the picture a rights holder's matching runs against. This helps with a claim on commentary or music, and it opens a clip to an audience that does not speak the original language. It does not make third-party footage safe to publish — nothing here decides that, and the operator still does.
  */
 export interface VoiceOptions {
   mode: SpeechMode;
@@ -569,6 +575,14 @@ export interface Stage {
   checkpoint?: {
     [k: string]: unknown;
   } | null;
+  /**
+   * One sentence on what this stage is doing right now — 'Fetching the track', 'Analysing the beat grid', 'Mixing'. Null until the stage says something.
+   *
+   * It exists because a long stage was indistinguishable from a hung one: a MUSIC job that ran for thirty minutes produced exactly two events, CLAIMED and STAGE_STARTED, and nothing after them until it finished. A sentence rather than an object with a percentage, because no stage here can honestly compute one — the work being waited on belongs to a remote server or a model, not to a loop with a countable denominator — and a bar stuck at 80 percent for nine minutes reads as broken in a way that a line of prose which keeps changing does not. It sits beside the checkpoint rather than inside it because a checkpoint is opaque to the scheduler by contract, and this is the one thing about a running stage that the scheduler and the PWA both have to read (docs/adr/0007-checkpointed-stage-pipeline.md). It is carried out by the lease heartbeat, which already rewrites the whole job document every 30 seconds, so it costs no Firestore write of its own — job-progress writes being throttled is a requirement rather than an optimisation (docs/adr/0004-dedicated-firebase-project.md).
+   *
+   * Capped at 120 characters, which is longer than any honest description of a step and short enough that whoever sets it has to write a sentence rather than paste a tool's output line. Callers truncate; the cap is a guard, not a formatter.
+   */
+  progress?: string | null;
   error?: StageError | null;
 }
 /**
@@ -586,7 +600,7 @@ export interface StageError {
   code?: string | null;
   traceback?: string | null;
   /**
-   * False marks a failure that will never succeed on retry (bad input, a rights refusal), so the scheduler fails the job immediately instead of burning its remaining attempts.
+   * False marks a failure that will never succeed on retry (bad input, a missing tool, an age-restricted video), so the scheduler fails the job immediately instead of burning its remaining attempts.
    */
   retryable?: boolean;
 }
@@ -645,6 +659,17 @@ export interface Source {
    * Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read.
    */
   lastAccessedAt?: string | null;
+  kind?: SourceKind;
+  /**
+   * How many jobs have used this source. The number the Sources list sorts by, and the one that decides what survives garbage collection: a source used more than once is kept, because a reviewer who came back to it will come back again, and re-downloading it costs the one thing this project cannot buy back — a video that has since been taken down.
+   *
+   * Counted per job rather than per read, so a CLIP pipeline reading the same file in DOWNLOAD, ANALYZE and RENDER scores one use and not three.
+   */
+  useCount?: number;
+  /**
+   * A frame from the video, or the track's cover art, on this machine. Local rather than uploaded: this is the Sources list's thumbnail and the list is only useful on the machine that holds the files, so paying Cloud Storage for a picture of a file the phone cannot open either way would buy nothing.
+   */
+  posterPath?: string | null;
   createdAt: string;
 }
 /**
@@ -861,6 +886,14 @@ export interface Clip {
   review: ReviewState;
   reviewedAt?: string | null;
   /**
+   * When a later version of this clip was approved, making this one history.
+   *
+   * A decision is about the video, not about the attempt. Approving the fifth cut of a clip settles the first four as well, and before this they stayed PENDING for ever: `latestOfEachLineage` kept them out of the queue, so they were invisible rather than resolved, and the reviewer found them later as work to tidy up.
+   *
+   * A timestamp beside `review` rather than a sixth `ReviewState`, because the desktop app ships its own copy of the PWA and does not update when hosting does — an added enum member is a value an older build cannot parse, while an unknown field is one it already ignores. It is also the grace period's clock: a superseded clip is deleted some days after this, not at once, so a reviewer who changes their mind has somewhere to change it back from.
+   */
+  supersededAt?: string | null;
+  /**
    * The id of the clip this one descends from, at the root of the chain — the clip RENDER originally made. Every version shares it, so a clip and every correction of it are one row in the review queue instead of five.
    *
    * That mattered immediately. The queue lists what is PENDING, a remake is always PENDING, and its parent usually still is too, so a single football clip corrected three times filled four slots and the reviewer had to work out which was newest. Null on a clip written before this field existed; readers treat that as the clip being its own root.
@@ -886,7 +919,6 @@ export interface Clip {
    * What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
    */
   reviewNote?: string | null;
-  rights?: RightsAttestation1 | null;
   createdAt: string;
 }
 /**
@@ -911,13 +943,14 @@ export interface AppliedMusic {
    * Where in the track the excerpt begins. Rarely 0: a track's first bars are usually its least interesting, so the stage picks a section by energy and starts it on a downbeat.
    */
   musicStartSec?: number | null;
-  rights?: RightsAttestation1 | null;
-}
-export interface RightsAttestation1 {
-  basis: RightsBasis;
-  attestedBy?: string | null;
-  attestedAt?: string | null;
-  note?: string | null;
+  /**
+   * The trim the reviewer asked for, copied from MusicOptions. Null when they asked for none and the stage's own level stands. Recorded because the music is baked into the rendered file: a remake re-renders and has to mix the track again, and without this number it comes back at the default level, silently undoing a correction the reviewer had already made and approved.
+   */
+  gainDb?: number | null;
+  /**
+   * Whether the excerpt was started on a beat, copied from MusicOptions. Null on clips scored before this was recorded, which is not the same as false. Kept for the same reason as gainDb: reproducing the mix the reviewer approved needs every input to it, not only the track and the start offset.
+   */
+  alignToBeat?: boolean | null;
 }
 /**
  * What was asked for, and what was done. Carried on the clip the remake produced, beside `derivedFromClipId`, so the pair reads as a correction and its result rather than as two unrelated clips.
@@ -1034,7 +1067,7 @@ export interface ClipPreview {
   createdAt: string;
 }
 /**
- * One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records who attested the rights basis and on what grounds, so 'who authorised this and why' is answerable for any published clip without reading worker logs.
+ * One publish attempt, at clips/{clipId}/publications/{pubId}. Doubles as the audit log: it records what title, description and privacy actually went out, to which channel and when, so 'what did we post' is answerable for any published clip without reading worker logs.
  */
 export interface Publication {
   id: string;
@@ -1059,10 +1092,6 @@ export interface Publication {
    * Recorded because it is part of what went out. The resolved value, not the request's — this record is the answer to 'what did we actually send', and a field that only sometimes reflects the upload answers nothing.
    */
   categoryId?: string | null;
-  /**
-   * Copied from the clip at publish time rather than referenced. The attestation that justified THIS upload must survive a later edit to the clip, or the audit trail records the wrong reason.
-   */
-  rights?: RightsAttestation1 | null;
   attempts?: number;
   /**
    * What this attempt cost. A YouTube upload is 1,600 of a 10,000 daily allowance — about six a day — so the budget is tracked rather than discovered on the seventh failure.
@@ -1488,6 +1517,7 @@ export interface LlmRemakeNote {
    */
   endDeltaSec: number;
   obscure: NoteObscure;
+  captions: NoteCaptions;
   /**
    * Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
    *

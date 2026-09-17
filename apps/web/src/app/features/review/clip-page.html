@@ -299,9 +299,6 @@
           <p class="mt-1 truncate text-xs text-ink-subtle" [title]="applied.source">
             {{ applied.trackTitle || applied.source }}
           </p>
-          @if (applied.rights; as trackRights) {
-            <p class="mt-1 text-xs text-ink-subtle">Track rights: {{ trackRights.basis }}</p>
-          }
           @if (clip.derivedFromClipId; as originalId) {
             <a
               [routerLink]="['/review', originalId]"
@@ -344,6 +341,34 @@
                   >Only the audio is fetched from a link — never the video.</span
                 >
               </label>
+
+              <!-- Refused rather than quietly trimmed to the one video. What
+                   the share button hands you is indistinguishable from someone
+                   deliberately linking a mix, and guessing between them is how
+                   a MUSIC job spent half an hour fetching 190 tracks. The typed
+                   text is left exactly as it is: rewriting it would be the same
+                   guess with a friendlier face. -->
+              @if (musicPlaylist(); as playlist) {
+                <div
+                  class="rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+                >
+                  <p class="font-medium">That link is a playlist, not a single video.</p>
+                  @if (playlist.singleVideoUrl; as single) {
+                    <p class="mt-1 leading-relaxed">
+                      The <span class="font-mono">list={{ playlist.listId }}</span> on the end is
+                      the mix YouTube was playing — the Share button puts it on everything it hands
+                      you. This is the one video in it:
+                    </p>
+                    <p class="mt-1 break-all font-mono">{{ single }}</p>
+                  } @else {
+                    <p class="mt-1 leading-relaxed">
+                      It names the playlist <span class="font-mono">{{ playlist.listId }}</span> and
+                      no video at all, so there is nothing here to suggest. Open the track itself on
+                      YouTube and copy the link from there.
+                    </p>
+                  }
+                </div>
+              }
 
               <fieldset>
                 <legend class="text-ink-muted">What it does to the existing audio</legend>
@@ -410,40 +435,6 @@
                     again from the original video — which has to still be on the worker. Keeping
                     them needs no re-encode at all.
                   </p>
-                }
-              </fieldset>
-
-              <!-- The same gate the footage passes, applied to the track. It
-                   does not make a Content ID claim less likely; it records who
-                   decided the track was usable. -->
-              <fieldset>
-                <legend class="text-ink-muted">Why this track may be used</legend>
-                <div class="mt-2 space-y-2">
-                  @for (basis of bases; track basis.value) {
-                    <label class="flex items-start gap-2">
-                      <input
-                        type="radio"
-                        name="musicBasis"
-                        class="mt-1"
-                        [checked]="musicBasis() === basis.value"
-                        (change)="musicBasis.set(basis.value)"
-                      />
-                      <span>
-                        <span class="font-medium text-ink">{{ basis.label }}</span>
-                        <span class="block text-xs text-ink-subtle">{{ basis.hint }}</span>
-                      </span>
-                    </label>
-                  }
-                </div>
-                @if (musicBasis() === 'FAIR_USE_ASSERTED') {
-                  <textarea
-                    class="mt-2 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
-                    rows="2"
-                    placeholder="Why fair use applies to this track"
-                    [ngModel]="musicNote()"
-                    (ngModelChange)="musicNote.set($event)"
-                    name="musicNote"
-                  ></textarea>
                 }
               </fieldset>
 
@@ -715,6 +706,26 @@
               </span>
             </label>
 
+            <!-- Captions. Beside the note rather than inside the voice block:
+                 taking the words off the picture is not a change to the sound,
+                 and while it lived under Voice there was no way to ask for it
+                 without also replacing the narration. -->
+            <label class="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                [checked]="remakeRemoveCaptions()"
+                (change)="remakeRemoveCaptions.set(!remakeRemoveCaptions())"
+                name="remakeRemoveCaptions"
+              />
+              <span>
+                Remove the captions
+                <span class="mt-0.5 block text-xs text-ink-subtle">
+                  They are burned into the picture, so this re-cuts the segment from the source.
+                </span>
+              </span>
+            </label>
+
             <!-- Framing -->
             <fieldset>
               <legend class="text-sm font-medium">Framing</legend>
@@ -975,9 +986,9 @@
                        reason people reach for this. -->
                   <p class="rounded-lg bg-panel-soft p-2 text-xs text-ink-subtle">
                     A new voice changes the soundtrack and nothing else. On third-party footage the
-                    picture is still the picture, and that is what a rights holder matches against —
-                    so this helps with a claim on commentary, and with reaching another audience,
-                    but it does not make footage safe to publish.
+                    picture is still the picture, and that is what a copyright holder matches
+                    against — so this helps with a claim on commentary, and with reaching another
+                    audience, but it does not make the footage yours.
                   </p>
                 </div>
               }
@@ -1020,6 +1031,34 @@
               </p>
             </fieldset>
 
+            <!-- Music.
+                 Shown only for a clip that has a track, and phrased as an
+                 opt-out. The music is mixed into the rendered file rather than
+                 kept beside it, so a remake has to fetch the track and mix it
+                 in again — and one that did not handed back a silent clip whose
+                 record still named a soundtrack. What the excerpt and the level
+                 will be is decided by the rest of this form, and by whatever the
+                 worker reads in the note, which is why the sentences come from
+                 core/remake-music.ts rather than sitting here as fixed text. -->
+            @if (remakeMusic(); as music) {
+              <fieldset>
+                <label class="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    [checked]="remakeKeepMusic()"
+                    (change)="remakeKeepMusic.set(!remakeKeepMusic())"
+                  />
+                  Keep the music
+                </label>
+                <p class="mt-1 text-xs text-ink-subtle">{{ music.summary }}</p>
+                @for (warning of music.warnings; track warning) {
+                  <p class="mt-2 rounded-lg bg-panel-soft px-3 py-2 text-xs text-ink-muted">
+                    {{ warning }}
+                  </p>
+                }
+              </fieldset>
+            }
+
             <button
               type="button"
               class="w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
@@ -1034,177 +1073,195 @@
 
       <!-- ── Publishing ────────────────────────────────────────────────────
            Only once approved. Offering an upload button beside a clip nobody
-           has said yes to invites exactly the mistake the rights gate exists
+           has said yes to invites exactly the mistake the review queue exists
            to prevent. -->
       @if (clip.review === 'APPROVED') {
         <section class="rounded-xl border border-line bg-panel p-4">
-          <h2 class="text-sm font-semibold">Publish</h2>
+          <div class="flex items-baseline justify-between gap-3">
+            <h2 class="text-sm font-semibold">Publish</h2>
+            <!-- The full record — every attempt, the numbers the platform
+                 reported back, the jobs that ran — lives on the clip's publish
+                 page. This block is the short version, for the case where
+                 "this is good, and this is how it should go out" is one
+                 thought. -->
+            <a [routerLink]="['/publish', clip.id]" class="text-xs text-accent-ink hover:underline"
+              >Publishing details →</a
+            >
+          </div>
 
-          @if (published(); as publication) {
-            <p class="mt-2 text-sm text-ok-ink">
-              Published
-              @if (publication.externalUrl) {
-                ·
-                <a class="underline" [href]="publication.externalUrl" target="_blank" rel="noopener"
-                  >view on YouTube</a
-                >
-              }
-            </p>
-          } @else {
-            @if (!attested()) {
-              <!-- The rights gate. Publishing a clip of someone else's video is
-                   a different act from making one privately, and the basis is
-                   the operator's to establish. -->
-              <p class="mt-2 text-sm text-ink-muted">
-                Record why this may be published. The worker checks this too — it uses the Admin SDK
-                and bypasses the security rules, so neither check is redundant.
-              </p>
-              <div class="mt-3 space-y-2">
-                @for (basis of bases; track basis.value) {
-                  <label class="flex items-start gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name="basis"
-                      class="mt-1"
-                      [value]="basis.value"
-                      [checked]="draftBasis() === basis.value"
-                      (change)="draftBasis.set(basis.value)"
-                    />
-                    <span>
-                      <span class="font-medium text-ink">{{ basis.label }}</span>
-                      <span class="block text-xs text-ink-subtle">{{ basis.hint }}</span>
-                    </span>
-                  </label>
-                }
-              </div>
-
-              @if (needsRightsNote()) {
-                <label class="mt-3 block">
-                  <span class="text-sm text-ink-muted">Why fair use applies here</span>
-                  <textarea
-                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
-                    rows="2"
-                    [ngModel]="draftRightsNote()"
-                    (ngModelChange)="draftRightsNote.set($event)"
-                    name="rightsNote"
-                  ></textarea>
-                </label>
-              }
-
-              <button
-                type="button"
-                class="mt-3 rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
-                [disabled]="busy() || !canAttest()"
-                (click)="attest()"
-              >
-                Record rights
-              </button>
-            } @else {
-              <p class="mt-1 text-xs text-ink-subtle">Rights recorded: {{ clip.rights?.basis }}</p>
-
-              <button
-                type="button"
-                class="mt-3 text-sm text-ink-subtle hover:text-ink"
-                [attr.aria-expanded]="showPublishOptions()"
-                (click)="showPublishOptions.set(!showPublishOptions())"
-              >
-                {{ showPublishOptions() ? 'Hide' : 'Change' }} what this upload says
-              </button>
-
-              @if (showPublishOptions()) {
-                <div class="mt-3 space-y-3 border-t border-line pt-3 text-sm">
-                  @if (channels().length > 1) {
-                    <label class="block">
-                      <span class="text-ink-muted">Channel</span>
-                      <select
-                        class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
-                        [ngModel]="draftChannel() ?? ''"
-                        (ngModelChange)="draftChannel.set($event || null)"
-                        name="channel"
-                      >
-                        <option value="">Default channel</option>
-                        @for (channel of channels(); track channel.id) {
-                          <option [value]="channel.id">{{ channel.label }}</option>
-                        }
-                      </select>
-                    </label>
+          <!-- ── What is already happening to it ──────────────────────────
+               Read from the publications AND the outstanding publish jobs,
+               through the same function the publish queue uses. Reading only
+               publications is what let this screen offer Publish to a clip
+               that was already queued: the worker writes a publication when it
+               STARTS, so a job waiting for Friday leaves nothing behind for a
+               page to notice. -->
+          @if (publishState(); as delivery) {
+            @switch (delivery.kind) {
+              @case ('PUBLISHED') {
+                <p class="mt-2 text-sm text-ok-ink">
+                  Published
+                  @if (delivery.publication?.externalUrl; as url) {
+                    ·
+                    <a class="underline" [href]="url" target="_blank" rel="noopener"
+                      >view on YouTube</a
+                    >
                   }
-
-                  <label class="block">
-                    <span class="text-ink-muted">Privacy</span>
-                    <select
-                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
-                      [ngModel]="draftPrivacy() ?? ''"
-                      (ngModelChange)="draftPrivacy.set($event || null)"
-                      name="privacy"
-                    >
-                      <option value="">Channel default</option>
-                      @for (privacy of privacies; track privacy) {
-                        <option [value]="privacy">{{ privacy }}</option>
-                      }
-                    </select>
-                  </label>
-
-                  <label class="block">
-                    <span class="text-ink-muted">Category</span>
-                    <select
-                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
-                      [ngModel]="draftCategory() ?? ''"
-                      (ngModelChange)="draftCategory.set($event || null)"
-                      name="category"
-                    >
-                      <option value="">Channel default</option>
-                      @for (category of categories; track category.id) {
-                        <option [value]="category.id">{{ category.label }}</option>
-                      }
-                    </select>
-                  </label>
-
-                  <label class="block">
-                    <span class="text-ink-muted">Tags</span>
-                    <input
-                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
-                      type="text"
-                      placeholder="comma, separated, tags"
-                      [ngModel]="tagsValue()"
-                      (ngModelChange)="draftTags.set($event)"
-                      name="tags"
-                    />
-                    <span class="mt-1 block text-xs text-ink-subtle"
-                      >Leave untouched to use the channel's. YouTube takes the first 20.</span
-                    >
-                  </label>
-
-                  <label class="block">
-                    <span class="text-ink-muted">Publish at (optional)</span>
-                    <input
-                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
-                      type="datetime-local"
-                      [ngModel]="draftSchedule()"
-                      (ngModelChange)="draftSchedule.set($event)"
-                      name="schedule"
-                    />
-                    <span class="mt-1 block text-xs text-ink-subtle"
-                      >Becomes the job's <code>notBefore</code>, which the scheduler already
-                      consults — no second timer anywhere.</span
-                    >
-                  </label>
-                </div>
+                </p>
               }
+              @case ('UPLOADING') {
+                <p class="mt-2 text-sm text-ink-muted">
+                  The worker has this one. It appears on the channel when the platform accepts it.
+                </p>
+              }
+              @case ('SCHEDULED') {
+                <p class="mt-2 text-sm text-ink-muted">
+                  Scheduled for {{ delivery.at | date: 'EEEE d MMM, HH:mm' }}. No worker may claim
+                  it before then.
+                </p>
+                <button
+                  type="button"
+                  class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+                  [disabled]="busy()"
+                  (click)="cancelScheduled()"
+                >
+                  Call it off
+                </button>
+              }
+              @case ('QUEUED') {
+                <p class="mt-2 text-sm text-ink-muted">
+                  Queued. Nothing picks this up until the worker is running.
+                </p>
+                <button
+                  type="button"
+                  class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+                  [disabled]="busy()"
+                  (click)="cancelScheduled()"
+                >
+                  Call it off
+                </button>
+              }
+            }
+          }
 
-              <button
-                type="button"
-                class="mt-4 w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
-                [disabled]="busy()"
-                (click)="publish()"
+          @if (publishState().kind === 'READY' || publishState().kind === 'FAILED') {
+            @if (publishState().publication?.error; as failure) {
+              <p
+                class="mt-2 rounded-lg border border-danger-line bg-danger-bg p-3 text-sm text-danger-ink"
               >
-                {{ draftSchedule() ? 'Schedule upload' : 'Publish to YouTube' }}
-              </button>
-              <p class="mt-2 text-xs text-ink-subtle">
-                Queues a job. The credentials live on the worker and never reach this app, so the
-                upload happens there.
+                The last attempt failed: {{ failure.message }}
               </p>
             }
+
+            <button
+              type="button"
+              class="mt-3 text-sm text-ink-subtle hover:text-ink"
+              [attr.aria-expanded]="showPublishOptions()"
+              (click)="showPublishOptions.set(!showPublishOptions())"
+            >
+              {{ showPublishOptions() ? 'Hide' : 'Change' }} what this upload says
+            </button>
+
+            @if (showPublishOptions()) {
+              <div class="mt-3 space-y-3 border-t border-line pt-3 text-sm">
+                @if (channels().length > 1) {
+                  <label class="block">
+                    <span class="text-ink-muted">Channel</span>
+                    <select
+                      class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
+                      [ngModel]="draftChannel() ?? ''"
+                      (ngModelChange)="draftChannel.set($event || null)"
+                      name="channel"
+                    >
+                      <option value="">Default channel</option>
+                      @for (channel of channels(); track channel.id) {
+                        <option [value]="channel.id">{{ channel.label }}</option>
+                      }
+                    </select>
+                  </label>
+                }
+
+                <label class="block">
+                  <span class="text-ink-muted">Privacy</span>
+                  <select
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
+                    [ngModel]="draftPrivacy() ?? ''"
+                    (ngModelChange)="draftPrivacy.set($event || null)"
+                    name="privacy"
+                  >
+                    <option value="">Channel default</option>
+                    @for (privacy of privacies; track privacy) {
+                      <option [value]="privacy">{{ privacy }}</option>
+                    }
+                  </select>
+                </label>
+
+                <label class="block">
+                  <span class="text-ink-muted">Category</span>
+                  <select
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink"
+                    [ngModel]="draftCategory() ?? ''"
+                    (ngModelChange)="draftCategory.set($event || null)"
+                    name="category"
+                  >
+                    <option value="">Channel default</option>
+                    @for (category of categories; track category.id) {
+                      <option [value]="category.id">{{ category.label }}</option>
+                    }
+                  </select>
+                </label>
+
+                <label class="block">
+                  <span class="text-ink-muted">Tags</span>
+                  <input
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+                    type="text"
+                    placeholder="comma, separated, tags"
+                    [ngModel]="tagsValue()"
+                    (ngModelChange)="draftTags.set($event)"
+                    name="tags"
+                  />
+                  <span class="mt-1 block text-xs text-ink-subtle"
+                    >Leave untouched to use the channel's. YouTube takes the first 20.</span
+                  >
+                </label>
+
+                <label class="block">
+                  <span class="text-ink-muted">Publish at (optional)</span>
+                  <input
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+                    type="datetime-local"
+                    [ngModel]="draftSchedule()"
+                    (ngModelChange)="draftSchedule.set($event)"
+                    name="schedule"
+                  />
+                  <span class="mt-1 block text-xs text-ink-subtle"
+                    >Becomes the job's <code>notBefore</code>, which the scheduler already consults
+                    — no second timer anywhere.</span
+                  >
+                </label>
+              </div>
+            }
+
+            <button
+              type="button"
+              class="mt-4 w-full rounded-lg bg-forge-600 px-4 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+              [disabled]="busy()"
+              (click)="publish()"
+            >
+              <!-- Named only when the operator actually chose one. This block
+                   falls back to "Channel default" rather than resolving it, so
+                   printing a privacy here would mean duplicating the worker's
+                   resolver — and a button that guessed "unlisted" and sent
+                   "public" would be worse than one that says nothing. The
+                   publish page, which does resolve it, always names it. -->
+              {{ draftSchedule() ? 'Schedule upload' : 'Publish to YouTube'
+              }}{{ draftPrivacy() ? ' (' + draftPrivacy() + ')' : '' }}
+            </button>
+            <p class="mt-2 text-xs text-ink-subtle">
+              Queues a job. The credentials live on the worker and never reach this app, so the
+              upload happens there.
+            </p>
           }
         </section>
       }

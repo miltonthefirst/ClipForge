@@ -243,7 +243,6 @@ export function clip(uid: string, overrides: Record<string, Value> = {}): Record
     description: 'Strong hook with a clear payoff inside forty seconds.',
     review: 'PENDING',
     reviewedAt: null,
-    rights: null,
     createdAt: NOW,
     ...overrides,
   };

@@ -40,6 +40,16 @@ actually *said* rather than what was written, and only then is the picture
 rendered with captions built from that. Which is why REBUILD re-cuts the picture
 even when the framing is unchanged, and why it is the one voice option that
 takes a GPU lease.
+
+## The soundtrack
+
+Music is mixed into the rendered audio; nothing keeps a separate track. So every
+path that rebuilds the audio destroys it — a re-cut takes the *source video's*
+own sound, and a REPLACE narration drops ``[0:a]`` from the graph — and the
+clip was still saved with `music=original.music`, claiming a soundtrack the file
+did not contain. `_score` puts it back, after the narration rather than before
+it, and a remake never fails over it: the picture correction is what was asked
+for and is already encoded by the time the music pass runs.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ from pathlib import Path
 from typing import Protocol
 
 from clipforge_contracts import (
+    AppliedMusic,
     AppliedRemake,
     AppliedVoice,
     Clip,
@@ -62,6 +73,7 @@ from clipforge_contracts import (
     Framing,
     FramingMode,
     Lane,
+    MusicMode,
     NoteInterpretation,
     ObscureFound,
     ObscureOptions,
@@ -109,6 +121,7 @@ from clipforge.media.obscure import (
 from clipforge.media.poster import PosterError, extract_poster
 from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, RenderRequest, render_clip
+from clipforge.media.scoring import apply_music
 from clipforge.media.speech import DEFAULT_VOICES, SpeechError, SpeechSynth, kokoro_language
 from clipforge.media.tracking import TrackError, plan_track
 from clipforge.media.vision import VISION_VRAM_MB, VisualContext, look
@@ -118,6 +131,12 @@ from clipforge.models.ollama import OllamaClient
 from clipforge.models.whisper import model_version
 from clipforge.observability import get_logger
 from clipforge.stages.base import StageContext, StageOutcome
+from clipforge.stages.lineage import (
+    inherited_framing,
+    inherited_mode,
+    inherited_profile,
+    parent_window,
+)
 from clipforge.store.blobs import BlobStore
 from clipforge.store.firestore import (
     CandidateStore,
@@ -135,6 +154,15 @@ __all__ = ["RemakeStage", "RemakeStageError"]
 # same model, so it takes the same lease against the same budget.
 NOTE_LLM_VRAM_MB = 3600
 
+# The ceiling on the narration mix, the same one media/render.py puts on a
+# render because the worst case is the same work: one ffmpeg pass over one clip.
+# The mix measures in seconds, so this is not a deadline anyone is expected to
+# meet — it is what stops a wedged ffmpeg becoming an immortal job. Nothing else
+# would stop it: the reaper deliberately leaves alone any job its own worker is
+# still running (JobStore.reap), so a process that never exits holds its lease
+# for as long as the worker lives.
+_MIX_TIMEOUT_S = 1800.0
+
 # What to tell the reviewer about each thing the system cannot do. Phrased as an
 # answer to the person who asked, not as a capability gap, because that is what
 # they are reading: a sentence next to a clip that is missing something.
@@ -151,9 +179,13 @@ _UNSUPPORTED_WORDING: dict[UnsupportedAsk, str] = {
         "burnt-in text can be covered now, though not removed — ask again with "
         '"blur" or "hide" in the note, or draw a box over it on the clip page'
     ),
+    # A remake carries the soundtrack the clip already has, so this is narrower
+    # than it used to read: keeping is not changing. Said this way because a
+    # reviewer who asks for a different track and is told "the music is a
+    # separate job" reasonably fears the track they have is about to be lost.
     UnsupportedAsk.CHANGE_MUSIC: (
-        "changing the music is a separate job \u2014 use Add music on the clip page, "
-        "which replaces or beds a track and records its rights"
+        "this remake keeps the soundtrack the clip already has; swapping it for a "
+        "different track is a separate job \u2014 use Add music on the clip page"
     ),
     UnsupportedAsk.ZOOM_ON_SUBJECT: (
         "zooming onto a particular subject is not supported; the closest is "
@@ -233,6 +265,11 @@ class _Picture:
     # copies the reviewed picture wholesale, so whatever was hidden in it was
     # hidden by an earlier job and is not this remake's to claim.
     obscured: list[ObscureRegion]
+    # Whether this was rendered from the source, or is the reviewed file handed
+    # straight on. Read by `_score`: a soundtrack is mixed into the rendered
+    # audio, so it survives exactly as long as that particular file does, and a
+    # re-cut takes its audio from the source video instead.
+    recut: bool
 
 
 class RemakeStage:
@@ -286,6 +323,28 @@ class RemakeStage:
         self._visual: VisualContext | None = None
         self._looked = False
 
+    # ── Saying what happened ─────────────────────────────────────────────────
+
+    def _note(self, sentence: str) -> None:
+        """Record something that was done but is likely to disappoint.
+
+        Cut to the contract's own ceiling, and that is the whole reason this is
+        a method rather than a `list.append`. `Warning` and `Refusal` are
+        strings of at most 300 characters, validated where `AppliedRemake` is
+        constructed — which is after the render, after the blob upload and after
+        the poster. An interpolated failure message routinely runs past 300
+        (yt-dlp's are paragraphs), and the cost of exceeding it is not a
+        truncated sentence but the loss of a clip that was already made.
+        """
+        self._notes.append(sentence[:300])
+
+    def _refuse(self, sentence: str) -> None:
+        """Record a part of the request understood and not carried out.
+
+        Cut at 300 for the reason given in `_note`.
+        """
+        self._refusals.append(sentence[:300])
+
     # ── Entry point ──────────────────────────────────────────────────────────
 
     def run(self, context: StageContext) -> StageOutcome:
@@ -316,7 +375,7 @@ class RemakeStage:
         resolved, interpretation = self._resolve(context, options, original, accepted)
         resolved, used = _prefill(resolved, accepted)
         cut = self._cut(original, resolved)
-        profile = load_profile(resolved.profile or _profile_name(original.render_profile))
+        profile = load_profile(resolved.profile or inherited_profile(original))
 
         # **A re-cut rebuilds the soundtrack from the source, and the source is
         # not what this clip sounds like.** Re-voicing leaves the picture alone
@@ -346,7 +405,7 @@ class RemakeStage:
                     # Reusing the words is right when the window is the same and
                     # a guess when it is not. Said out loud rather than silently
                     # re-derived, because re-deriving is what lost them.
-                    self._notes.append(
+                    self._note(
                         "the narration from the previous version was reused and the cut has "
                         "moved, so the words may no longer line up with the picture"
                     )
@@ -360,7 +419,19 @@ class RemakeStage:
             picture = self._picture(
                 context, resolved, original, cut, profile, scratch, voice, utterance_text
             )
-            final = self._mix(resolved.voice, picture.path, voice, original, cut, scratch)
+            final, spoke = self._mix(resolved.voice, picture.path, voice, original, cut, scratch)
+            # After the voice and before anything that writes words, because the
+            # music has to be mixed onto the finished narration rather than
+            # under something that will replace it. See `_score`.
+            final, music = self._score(
+                context,
+                options=resolved,
+                original=original,
+                final=final,
+                recut=picture.recut,
+                spoke=spoke,
+                scratch=scratch,
+            )
             metadata = self._metadata(context, original, cut, voice, utterance_text)
             outcome = self._publish(
                 context,
@@ -374,6 +445,7 @@ class RemakeStage:
                 obscured=picture.obscured,
                 framing_mode=picture.mode,
                 voice=voice,
+                music=music,
                 cut=cut,
                 scratch=scratch,
                 metadata=metadata,
@@ -454,11 +526,12 @@ class RemakeStage:
                 # same clip that carries it out — which is how three real notes
                 # asking for a logo to be blurred were answered before this.
                 continue
-            self._refusals.append(_UNSUPPORTED_WORDING[ask])
+            self._refuse(_UNSUPPORTED_WORDING[ask])
         # A conflict is not a refusal: the remake was made, it just resolved an
         # argument between the note and the form. The reviewer still needs to
         # see which side won.
-        self._notes.extend(applied.conflicts)
+        for conflict in applied.conflicts:
+            self._note(conflict)
 
         return applied.options, NoteInterpretation(
             understood=interpretation.understood,
@@ -578,17 +651,16 @@ class RemakeStage:
         The candidate remains the fallback, and the only source of truth for a
         clip that RENDER made.
         """
-        previous = original.remake
-        if previous is not None:
-            base_start, base_end = previous.start_sec, previous.end_sec
-        else:
+        window = parent_window(original)
+        if window is None:
             candidate = self._candidates.get(original.candidate_id)
             if candidate is None:
                 raise RemakeStageError(
                     "this clip's candidate is gone, and it is the only record of where in the "
                     "source the clip was cut from. A remake cannot re-cut without it."
                 )
-            base_start, base_end = candidate.start_sec, candidate.end_sec
+            window = (candidate.start_sec, candidate.end_sec)
+        base_start, base_end = window
 
         start = max(0.0, base_start + float(options.start_delta_sec or 0.0))
         end = base_end + float(options.end_delta_sec or 0.0)
@@ -673,7 +745,7 @@ class RemakeStage:
             # instead: a description that named the Europa League on a Champions
             # League tie went out silently, and the reviewer had no way to know
             # which words nothing stood behind.
-            self._notes.append(
+            self._note(
                 "the description mentions "
                 + ", ".join(written.unverified[:4])
                 + " — nothing in the clip or its source says so, so check before publishing"
@@ -761,7 +833,8 @@ class RemakeStage:
         # a feedback note read aloud, two words of commentary stretched into a
         # narration. See clipforge.analysis.feedback.
         verdict = speakability(script, self._facts(original, cut), from_transcript=from_transcript)
-        self._notes.extend(verdict.warnings)
+        for warning in verdict.warnings:
+            self._note(warning)
         if not verdict.ok:
             raise RemakeStageError(verdict.refusal or "there is nothing worth narrating here")
 
@@ -770,7 +843,7 @@ class RemakeStage:
             # anyway hands the model English and asks for English, which returns
             # the same text and used to fail the whole remake with a message
             # blaming the transcript.
-            self._notes.append(
+            self._note(
                 f"this clip already speaks {voice.language}, so the words were kept as they were"
             )
         elif voice.translate and script:
@@ -824,7 +897,7 @@ class RemakeStage:
                     "Write the line you want spoken, or keep the clip's own audio."
                 )
             if not written.from_transcript:
-                self._notes.append(
+                self._note(
                     "the clip's own commentary transcribed too poorly to carry across, so "
                     "the narration was written from what is on screen as well"
                 )
@@ -945,11 +1018,18 @@ class RemakeStage:
         voice-only remake leaves the picture exactly as it was reviewed, so
         there is nothing to render and the existing file is handed on.
         """
+        # Two different asks, and only one of them needs a voice. REBUILD is a
+        # consequence of new narration and cannot happen without it. REMOVE is a
+        # change to the picture alone — "take the words off" — and requiring a
+        # voice for it is what made `Remove caption` do nothing at all: the note
+        # was read correctly, `_subtitles` would have honoured it, and this
+        # predicate meant the re-cut that reaches `_subtitles` never ran.
         rebuilding_captions = (
             voice is not None
             and options.voice is not None
             and options.voice.captions is not VoiceCaptions.KEEP
         )
+        removing_captions = _wanted_captions(options) is VoiceCaptions.REMOVE
         reframing = options.framing is not None
         retrimming = bool(options.start_delta_sec or options.end_delta_sec)
         # Hiding something is a change to the pixels, so it takes the expensive
@@ -961,7 +1041,7 @@ class RemakeStage:
             options.obscure.auto or bool(options.obscure.regions)
         )
 
-        if not (reframing or retrimming or rebuilding_captions or hiding):
+        if not (reframing or retrimming or rebuilding_captions or removing_captions or hiding):
             existing = Path(original.local_path)
             if not existing.is_file():
                 raise RemakeStageError(
@@ -969,7 +1049,11 @@ class RemakeStage:
                     "remake does not re-cut from the source, so there is nothing to work from."
                 )
             return _Picture(
-                path=existing, keyframes=[], obscured=[], mode=_inherited_mode(original)
+                path=existing,
+                keyframes=[],
+                obscured=[],
+                mode=inherited_mode(original),
+                recut=False,
             )
 
         source = self._source_media(original)
@@ -983,7 +1067,7 @@ class RemakeStage:
         # asked for a different framing. Now "blur the logo" re-cuts too, and
         # without this a reviewer asking about a watermark gets back a FIT clip
         # silently cropped to its middle third.
-        framing = options.framing if options.framing is not None else _inherited_framing(original)
+        framing = options.framing if options.framing is not None else inherited_framing(original)
 
         obscure = self._hide(options, original, source, cut)
         keyframes = self._keyframes(framing, source, cut, media)
@@ -1031,6 +1115,7 @@ class RemakeStage:
             keyframes=keyframes,
             obscured=list(obscure.regions or []) if obscure is not None else [],
             mode=framing.mode if framing is not None else FramingMode.AS_RENDERED,
+            recut=True,
         )
 
     # ── What to hide ─────────────────────────────────────────────────────────
@@ -1070,11 +1155,11 @@ class RemakeStage:
                 # Not a failure of the remake. Everything else that was asked
                 # for is still worth doing, and the reviewer can draw the box.
                 log.warning("remake.obscure_failed", error=str(exc))
-                self._notes.append(f"the footage could not be searched for fixed marks: {exc}")
+                self._note(f"the footage could not be searched for fixed marks: {exc}")
             else:
                 found = detection.regions
                 if not found and not drawn and not remembered:
-                    self._refusals.append(
+                    self._refuse(
                         f"nothing fixed enough to hide was found — {detection.reason}. "
                         "Draw a box on the clip page and remake, and it goes exactly there."
                         if detection.reason
@@ -1177,7 +1262,7 @@ class RemakeStage:
           sentence at the speed the script implies, and captions cut from the
           script drift within a few seconds.
         """
-        wanted = options.voice.captions if options.voice is not None else None
+        wanted = _wanted_captions(options)
 
         if wanted is VoiceCaptions.REMOVE:
             return None
@@ -1218,7 +1303,7 @@ class RemakeStage:
                 reason="this worker has no transcriber (the gpu extra is not installed)",
                 effect="the clip is rendered without captions",
             )
-            self._notes.append("captions could not be rebuilt: this worker has no transcriber")
+            self._note("captions could not be rebuilt: this worker has no transcriber")
             return None
         try:
             result = transcriber.transcribe(narration, source_id="remake-narration")
@@ -1229,7 +1314,7 @@ class RemakeStage:
                 effect="the clip is rendered without captions",
                 spoken_chars=len(spoken_text),
             )
-            self._notes.append(f"captions could not be rebuilt: {exc}")
+            self._note(f"captions could not be rebuilt: {exc}")
             return None
         return result.transcript
 
@@ -1267,10 +1352,16 @@ class RemakeStage:
         original: Clip,
         cut: _Cut,
         scratch: Path,
-    ) -> Path:
-        """Put the narration onto the picture, or hand the picture straight on."""
+    ) -> tuple[Path, SpeechMode | None]:
+        """Put the narration onto the picture, or hand the picture straight on.
+
+        Returns the mode the mix ACTUALLY ran in, or None when no narration ran.
+        `_score` turns on it, and the requested mode would be the wrong thing to
+        ask: a BED over a picture with no audio is downgraded to REPLACE here,
+        and that downgrade takes the clip's music with it.
+        """
         if voice is None or options is None:
-            return picture
+            return picture, None
 
         narration = scratch / "narration.wav"
         media = probe(picture, ffprobe_bin=self._settings.ffprobe_bin)
@@ -1308,12 +1399,179 @@ class RemakeStage:
             reencode_video=False,
             ffmpeg=self._settings.ffmpeg_bin,
         )
-        done = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                argv, capture_output=True, text=True, timeout=_MIX_TIMEOUT_S, check=False
+            )
+        except subprocess.TimeoutExpired as exc:
+            # A TimeoutError rather than RemakeStageError, for the reason given
+            # at the same raise in stages/music.py: everything else this stage
+            # raises is a property of the request, and the runner gives those up
+            # immediately. A hung ffmpeg is the one thing here a retry fixes.
+            raise TimeoutError(f"mixing the narration timed out after {_MIX_TIMEOUT_S}s") from exc
         if done.returncode != 0:
             raise RemakeStageError(f"the narration would not mix: {done.stderr.strip()[:400]}")
         if original.duration_sec and plan.mode is SpeechMode.BED and not media.has_audio:
             log.info("remake.bed_without_audio", clip=original.id)
-        return destination
+        return destination, plan.mode
+
+    # ── The soundtrack ───────────────────────────────────────────────────────
+
+    def _score(
+        self,
+        context: StageContext,
+        *,
+        options: RemakeOptions,
+        original: Clip,
+        final: Path,
+        recut: bool,
+        spoke: SpeechMode | None,
+        scratch: Path,
+    ) -> tuple[Path, AppliedMusic | None]:
+        """Put the clip's approved soundtrack back onto the corrected picture.
+
+        Carried by default, because a reviewer correcting the framing of a
+        scored clip is not asking about the music — and before this they got
+        back a clip with the source video's own commentary on it, or no audio at
+        all, still recorded as having a soundtrack.
+
+        **After the narration, never before.** `MusicMode.REPLACE` and
+        `SpeechMode.REPLACE` both drop `[0:a]` from their graphs, so scoring
+        first has the music thrown away the moment the reviewer asks for a
+        replaced voice — which is what the clip page sends by default. This way
+        round is what both modules were written for: the bed's sidechain key
+        becomes the finished narration, and the music ducks under the new voice.
+
+        **Never fails the remake.** The picture correction is what was asked for
+        and is already encoded by the time this runs. A track that will not
+        fetch costs a refusal and `music=None`, which is a clip that says what
+        it is — the alternative is one claiming a soundtrack it does not
+        contain, and that is the bug this whole pass exists to end.
+        """
+        applied = original.music
+        if applied is None:
+            return final, None
+
+        # The one branch where the soundtrack is provably still in the file: the
+        # picture is the reviewed file handed straight on, and the audio was
+        # either untouched or rebuilt as a BED, which keeps `[0:a]` — and
+        # `[0:a]` is where the music lives. Mixing it again here would put two
+        # copies of the track on the clip.
+        intact = not recut and spoke in (None, SpeechMode.BED)
+
+        if options.keep_music is False:
+            if intact:
+                # **Refused, not recorded.** The track is mixed into `[0:a]` and
+                # a mix cannot be un-mixed; this branch copied the reviewed
+                # picture rather than re-encoding it, so there is no pass for
+                # the music to be left out of. Writing `music=None` over that
+                # was worse than merely inaccurate: the clip page gates the
+                # Add-a-track panel on `music` being null, so the null re-opened
+                # the door to mixing a SECOND track over the first — the exact
+                # doubling this whole pass exists to prevent. A record that
+                # matches the file is the only option with no lie in it.
+                self._refuse(
+                    "the soundtrack could not be dropped: this remake copied the reviewed "
+                    "picture instead of re-cutting it, and a track is mixed into the audio "
+                    "rather than kept beside it. Ask for a trim or a reframe as well and it "
+                    "goes."
+                )
+                return final, applied
+            self._note("the soundtrack was dropped, as asked")
+            return final, None
+
+        if intact:
+            return final, applied
+
+        try:
+            # The file the mix will actually read. Not `cut.duration_sec` and
+            # not `original.duration_sec`: `-t` bounds the copied video stream
+            # as well as the looping music, and a plan built from a 12-second
+            # window against a 20.000-second picture produced a 12.000-second
+            # file with the rest of the footage simply gone.
+            media = probe(final, ffprobe_bin=self._settings.ffprobe_bin)
+            moved = abs(media.duration_sec - float(original.duration_sec or 0.0)) > 0.05
+
+            mode = applied.mode
+            if mode is MusicMode.REPLACE and spoke is not None:
+                # REPLACE drops `[0:a]`, and `[0:a]` is now the narration this
+                # job was asked to produce. Carried verbatim it would throw away
+                # the voice to make room for the music.
+                mode = MusicMode.BED
+
+            result = apply_music(
+                picture=final,
+                destination=scratch / "scored.mp4",
+                duration_sec=media.duration_sec,
+                source=applied.source,
+                mode=mode,
+                gain_db=applied.gain_db,
+                # Null on a clip scored before this was recorded, which is not
+                # the same as false: the MusicOptions default is true.
+                align_to_beat=applied.align_to_beat is not False,
+                # The excerpt the reviewer approved, reused verbatim whenever
+                # the picture is still the same length — `pick_section` reads
+                # the energy envelope over a window of the clip's length, so a
+                # ten-second change moves what it chooses by about nine seconds
+                # of track. Identical, not merely similar, is the point.
+                forced_start_sec=None if moved else applied.music_start_sec,
+                forced_tempo_bpm=None if moved else applied.tempo_bpm,
+                has_original_audio=media.has_audio,
+                # The same directory MUSIC fetched into, so a track already on
+                # this machine is not pulled off YouTube a second time.
+                work_dir=self._workspace.music_dir,
+                ffmpeg=self._settings.ffmpeg_bin,
+                ffprobe=self._settings.ffprobe_bin,
+                on_progress=context.progress,
+            )
+        except Exception as exc:  # noqa: BLE001 - the remake must never fail over the music
+            # Everything the seam can raise, and none of it is worth a finished
+            # clip: ScoringError, TimeoutError, IngestError from a track that
+            # will not fetch, ToolchainError, ProbeError, and a bare RuntimeError
+            # from a track with no audio in it.
+            log.warning("remake.music_not_carried", clip=original.id, error=str(exc))
+            # The instruction first and the error last, because `_refuse` cuts
+            # at 300 and a yt-dlp failure is a paragraph. What the reviewer does
+            # next must survive the truncation; the whole message is in the log.
+            self._refuse(
+                "the soundtrack could not be put back, so this clip has no music — "
+                "everything else you asked for was done. Add the track again with Add "
+                f"music. The mix said: {exc}"
+            )
+            return final, None
+
+        if mode is not applied.mode:
+            self._note(
+                "this clip's music replaced its audio and this remake adds a narration, so "
+                "the track was put underneath the voice instead of over it"
+            )
+        if moved:
+            self._note(
+                "the clip's length changed, so the music was fitted again and starts from a "
+                "different point in the track than the version you approved"
+            )
+        log.info(
+            "remake.music_carried",
+            clip=original.id,
+            mode=result.plan.mode.value,
+            recorded_mode=applied.mode.value,
+            reused_excerpt=not moved,
+            music_start_sec=result.plan.music_start_sec,
+        )
+        return result.path, AppliedMusic(
+            # From the plan that ran, never from what was asked for: a BED over
+            # a picture with no audio comes back as a REPLACE.
+            mode=result.plan.mode,
+            captions=applied.captions,
+            source=applied.source,
+            track_title=result.track_title or applied.track_title,
+            tempo_bpm=result.plan.tempo_bpm,
+            music_start_sec=result.plan.music_start_sec,
+            # The reviewer's own inputs, carried on unchanged so the next remake
+            # reproduces this mix rather than the stage's defaults.
+            gain_db=applied.gain_db,
+            align_to_beat=applied.align_to_beat,
+        )
 
     # ── Saving ───────────────────────────────────────────────────────────────
 
@@ -1331,6 +1589,7 @@ class RemakeStage:
         obscured: list[ObscureRegion],
         framing_mode: FramingMode,
         voice: AppliedVoice | None,
+        music: AppliedMusic | None,
         cut: _Cut,
         scratch: Path,
         metadata: ClipMetadata | None = None,
@@ -1393,11 +1652,11 @@ class RemakeStage:
             # made from; a correction is a different edit and deserves to be
             # watched before it goes anywhere.
             review=ReviewState.PENDING,
-            # The footage is the same footage, so its rights carry over. The
-            # voice does not change that and must not be allowed to look as
-            # though it did.
-            rights=original.rights,
-            music=original.music,
+            # What `_score` actually produced, which is the only honest source
+            # for it. `original.music` was what stood here, and on every path
+            # that rebuilds the audio it described a soundtrack the file had
+            # just lost.
+            music=music,
             remake=AppliedRemake(
                 notes=options.notes,
                 interpretation=interpretation,
@@ -1506,6 +1765,21 @@ class RemakeStage:
         )
 
 
+def _wanted_captions(options: RemakeOptions) -> VoiceCaptions | None:
+    """What this remake wants done with the burned-in captions.
+
+    Two places can say it, and they are not competing. `voice.captions` comes
+    with a new narration and is the only one that can mean REBUILD; the
+    top-level `captions` is for a reviewer who wants the words off the picture
+    and is not touching the soundtrack. The voice wins when both are set,
+    because a note that changed the language has already decided what the
+    captions must say.
+    """
+    if options.voice is not None:
+        return options.voice.captions
+    return options.captions
+
+
 def _inherited_voice(original: Clip) -> VoiceOptions | None:
     """The narration a re-cut has to put back, when the clip had one.
 
@@ -1534,36 +1808,6 @@ def _inherited_voice(original: Clip) -> VoiceOptions | None:
         # they show words against the wrong frames.
         captions=VoiceCaptions.REBUILD,
     )
-
-
-def _inherited_framing(original: Clip) -> Framing | None:
-    """The framing a re-cut should use when the request did not name one.
-
-    None means the profile's fixed crop, which is the right answer for a clip
-    RENDER made — that IS what it has. For one that was reframed, the answer is
-    whatever it was reframed to, so a correction about something else does not
-    quietly undo it.
-
-    FIT's fill and zoom are not recorded on `AppliedRemake`, so an inherited FIT
-    comes back with the defaults. That is a real if small loss of fidelity and
-    is worth less than the alternative, which is an inherited FIT that is not
-    FIT at all.
-    """
-    applied = original.remake
-    if applied is None or applied.framing_mode is FramingMode.AS_RENDERED:
-        return None
-    return Framing(
-        mode=applied.framing_mode,
-        # Only PAN reads them. TRACK re-runs the tracker over the cut, which is
-        # the more correct answer when the trim moved, and the same answer when
-        # it did not.
-        keyframes=list(applied.keyframes or []) if applied.framing_mode is FramingMode.PAN else [],
-    )
-
-
-def _inherited_mode(original: Clip) -> FramingMode:
-    """What the copied picture is framed as, for the record on the new clip."""
-    return original.remake.framing_mode if original.remake is not None else FramingMode.AS_RENDERED
 
 
 def _prefill(
@@ -1603,13 +1847,6 @@ def _prefill(
         )
         used.extend(p for p in accepted if p.defaults and p.defaults.language)
     return updated, used
-
-
-def _profile_name(identifier: str | None) -> str:
-    """`name:version` back to `name`, for reloading the profile a clip used."""
-    if not identifier:
-        return "default"
-    return identifier.split(":", 1)[0]
 
 
 def _subtitles_filter(path: Path | None) -> str | None:

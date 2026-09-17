@@ -33,48 +33,90 @@
   </p>
 }
 
-@if (jobs() === null) {
+<!-- ── Tabs ─────────────────────────────────────────────────────────────────
+     Links rather than buttons, because the selected tab is in the URL: back
+     returns to the previous one, and a link to this page can name the list it
+     meant. Each one carries its count, which is what keeps finished work
+     honestly visible rather than merely hidden behind a tab nobody opens. -->
+<nav class="mt-6 flex flex-wrap gap-2" aria-label="Which jobs to show">
+  @for (item of tabs; track item.key) {
+    <a
+      [routerLink]="['/jobs']"
+      [queryParams]="{ tab: item.key }"
+      class="rounded-lg border px-3 py-1.5 text-sm"
+      [class]="
+        selected() === item.key
+          ? 'border-forge-500 bg-forge-600/10 text-ink'
+          : 'border-line-strong text-ink-muted hover:bg-line'
+      "
+      [attr.aria-current]="selected() === item.key ? 'page' : null"
+      >{{ item.label }}
+      @if (counts(); as totals) {
+        <span class="ml-1.5 text-xs text-ink-subtle">{{ totals[item.key] }}</span>
+      }
+    </a>
+  }
+</nav>
+
+<!-- Three states, not two. A query that failed delivers nothing, so it used to
+     be indistinguishable from one that had not answered yet — and since
+     `onSnapshot` gives up after an error, "Loading the queue…" stayed on screen
+     for as long as the tab was open. This one says what happened and, where the
+     cause is a deploy rather than a bug, what fixes it. -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">The queue could not be loaded.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (rows() === null) {
   <p class="py-16 text-center text-ink-subtle">Loading the queue…</p>
-} @else if (jobs()!.length === 0) {
-  <p class="py-16 text-center text-ink-subtle">
-    No jobs yet. Paste a YouTube URL above and the worker will pick it up.
-  </p>
+} @else if (rows()!.length === 0) {
+  @if (nothingAnywhere()) {
+    <p class="py-16 text-center text-ink-subtle">
+      No jobs yet. Paste a YouTube URL above and the worker will pick it up.
+    </p>
+  } @else {
+    <p class="py-16 text-center text-ink-subtle">{{ emptyHere() }}</p>
+  }
 } @else {
-  <ul class="mt-6 space-y-3">
-    @for (job of jobs(); track job.id) {
+  <ul class="mt-4 space-y-3">
+    @for (row of rows(); track row.job.id) {
       <!-- The whole card opens the job, via a stretched link rather than an
-           `<a>` wrapping everything: Cancel is a real button and nesting one
-           inside a link is both invalid and unclickable. The link covers the
-           card with `after:inset-0`, and Cancel sits above it on `z-10`. -->
+           `<a>` wrapping everything: Cancel and Delete are real buttons and
+           nesting one inside a link is both invalid and unclickable. The link
+           covers the card with `after:inset-0`, and the buttons sit above it on
+           `z-10`. -->
       <li class="relative rounded-xl border border-line bg-panel p-4 hover:border-line-strong">
         <div class="flex items-start gap-3">
           <div class="min-w-0 flex-1">
             <a
-              [routerLink]="['/jobs', job.id]"
+              [routerLink]="['/jobs', row.job.id]"
               class="truncate text-sm text-ink-muted after:absolute after:inset-0 hover:text-ink focus-visible:outline-none focus-visible:after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-forge-500"
             >
-              {{ job.submission ?? job.id }}
+              {{ row.job.submission ?? row.job.id }}
             </a>
             <p class="mt-1 text-xs text-ink-subtle">
-              {{ progress(job).done }} of {{ progress(job).total }} stages
-              @if (progress(job).current; as stage) {
-                · <span class="text-accent-ink">{{ stage }}</span>
+              {{ row.progress.done }} of {{ row.progress.total }} stages
+              @if (row.progress.current; as stage) {
+                · <span class="text-accent-ink">{{ stage.name }}</span>
               }
-              @if (job.attempts) {
-                · attempt {{ job.attempts + 1 }}
+              @if (row.job.attempts) {
+                · attempt {{ row.job.attempts + 1 }}
               }
             </p>
+            <!-- What the stage says it is doing, when it says anything. A long
+                 stage and a hung one look identical without it. -->
+            @if (row.note; as note) {
+              <p class="mt-1 truncate text-xs text-ink-muted">{{ note }}</p>
+            }
           </div>
-          <span
-            class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium"
-            [class]="statusTone(job)"
-          >
-            {{ job.status }}
+          <span class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium" [class]="row.tone">
+            {{ row.job.status }}
           </span>
         </div>
 
         <div class="mt-3 flex gap-1">
-          @for (stage of job.stages; track stage.name) {
+          @for (stage of row.job.stages; track stage.name) {
             <div
               class="h-1.5 flex-1 rounded-full"
               [class.bg-forge-600]="stage.status === 'DONE'"
@@ -87,22 +129,42 @@
           }
         </div>
 
-        @if (job.error; as failure) {
+        @if (row.job.error; as failure) {
           <p class="mt-3 rounded-lg bg-danger-bg px-3 py-2 text-xs text-danger-ink">
             {{ failure.message }}
           </p>
         }
 
-        @if (cancellable(job)) {
-          <button
-            type="button"
-            class="relative z-10 mt-3 text-xs text-ink-subtle hover:text-ink-muted"
-            (click)="cancel(job)"
-          >
-            Cancel
-          </button>
-        }
+        <div class="mt-3 flex gap-4">
+          @if (row.cancellable) {
+            <button
+              type="button"
+              class="relative z-10 text-xs text-ink-subtle hover:text-ink-muted disabled:opacity-50"
+              [disabled]="busy() === row.job.id"
+              (click)="cancel(row)"
+            >
+              Cancel
+            </button>
+          }
+          <!-- Offered only on a job that has stopped. Deleting one a worker is
+               still holding does not stop the worker: the stage finishes, writes
+               the document back, and the job returns marked COMPLETED. -->
+          @if (row.deletable) {
+            <button
+              type="button"
+              class="relative z-10 text-xs text-ink-subtle hover:text-danger-ink disabled:opacity-50"
+              [disabled]="busy() === row.job.id"
+              (click)="remove(row)"
+            >
+              Delete
+            </button>
+          }
+        </div>
       </li>
     }
   </ul>
+
+  @if (truncation(); as note) {
+    <p class="mt-3 text-xs text-ink-subtle">{{ note }}</p>
+  }
 }

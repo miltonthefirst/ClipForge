@@ -1,4 +1,4 @@
-import { DecimalPipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -19,6 +19,7 @@ import type {
   CropAnchor,
   FitFill,
   FramingMode,
+  Job,
   MusicCaptions,
   MusicMode,
   MusicOptions,
@@ -29,14 +30,15 @@ import type {
   PublishOptions,
   PublishPrivacy,
   RemakeOptions,
-  RightsBasis,
   SpeechMode,
   SubScores,
   VoiceCaptions,
 } from '@clipforge/contracts';
 
+import { youtubePlaylist } from '../../core/music-source';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
-import { RIGHTS_BASES, draftIsComplete } from '../../core/rights';
+import { publishStateOf } from '../../core/publish-state';
+import { remakeMusicOutlook } from '../../core/remake-music';
 import { CATEGORIES, PRIVACY_OPTIONS, categoryLabel } from '../../core/youtube';
 import { SessionService } from '../../core/session';
 import { ClipForgeStore } from '../../core/store';
@@ -163,7 +165,7 @@ const SUB_SCORE_MAXIMA: readonly (readonly [keyof SubScores, string, number])[] 
  */
 @Component({
   selector: 'app-clip-page',
-  imports: [DecimalPipe, FormsModule, RouterLink],
+  imports: [DatePipe, DecimalPipe, FormsModule, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './clip-page.html',
 })
@@ -178,8 +180,8 @@ export class ClipPage implements OnDestroy {
 
   private stopClip: (() => void) | null = null;
   private stopChannels: (() => void) | null = null;
+  private stopDelivery: (() => void) | null = null;
 
-  protected readonly bases = RIGHTS_BASES;
   protected readonly categories = CATEGORIES;
   protected readonly privacies = PRIVACY_OPTIONS;
   protected readonly categoryLabel = categoryLabel;
@@ -188,6 +190,18 @@ export class ClipPage implements OnDestroy {
   protected readonly preview = signal<ClipPreview | null>(null);
   protected readonly candidate = signal<Candidate | null>(null);
   protected readonly publications = signal<Publication[]>([]);
+  /**
+   * Outstanding publish jobs for this clip.
+   *
+   * Watched because a `Publication` does not exist until the worker picks the
+   * job up, so without these a publish that has been *asked for* — scheduled
+   * for Friday, or queued behind a worker that is not running — is
+   * indistinguishable from one nobody has requested. This screen offered
+   * Publish again in exactly that state, which is how the same video goes out
+   * twice. The publish queue reads the same two sources through the same
+   * function (core/publish-state.ts), so the two screens cannot disagree.
+   */
+  protected readonly publishJobs = signal<Job[]>([]);
   /**
    * Every version of this clip, oldest first.
    *
@@ -264,8 +278,6 @@ export class ClipPage implements OnDestroy {
   protected readonly draftPrivacy = signal<PublishPrivacy | null>(null);
   protected readonly draftCategory = signal<string | null>(null);
   protected readonly draftSchedule = signal('');
-  protected readonly draftBasis = signal<RightsBasis | null>(null);
-  protected readonly draftRightsNote = signal('');
   protected readonly showPublishOptions = signal(false);
 
   // ── Music ──────────────────────────────────────────────────────────────────
@@ -273,8 +285,6 @@ export class ClipPage implements OnDestroy {
   protected readonly musicSource = signal('');
   protected readonly musicMode = signal<MusicMode>('BED');
   protected readonly musicCaptions = signal<MusicCaptions>('KEEP');
-  protected readonly musicBasis = signal<RightsBasis | null>(null);
-  protected readonly musicNote = signal('');
 
   /**
    * REMOVE re-cuts the segment from the original video, because captions are
@@ -284,9 +294,25 @@ export class ClipPage implements OnDestroy {
    */
   protected readonly captionsNeedSource = computed(() => this.musicCaptions() === 'REMOVE');
 
+  /**
+   * The playlist in what they typed, when there is one.
+   *
+   * Not corrected on their behalf. A `list=` can mean "play me this mix" or
+   * "here is the track I meant, with some rubbish on the end", and silently
+   * picking the second is the same guess that let a MUSIC job fetch 190 tracks
+   * before anyone noticed. The field keeps what they pasted; the message below
+   * it says what to paste instead.
+   */
+  protected readonly musicPlaylist = computed(() => youtubePlaylist(this.musicSource()));
+
+  /**
+   * The worker refuses a playlist link too, and that guard is the authoritative
+   * one. This is the same answer without the round trip: a job created here
+   * would be queued, and a QUEUED job on this project means going to find out
+   * whether a worker is running at all before it can even fail.
+   */
   protected readonly canAddMusic = computed(
-    () =>
-      this.musicSource().trim().length > 0 && draftIsComplete(this.musicBasis(), this.musicNote()),
+    () => this.musicSource().trim().length > 0 && !this.musicPlaylist(),
   );
 
   // ── Remake ─────────────────────────────────────────────────────────────────
@@ -349,6 +375,27 @@ export class ClipPage implements OnDestroy {
   protected readonly remakeVoiceCaptions = signal<VoiceCaptions>('REBUILD');
   protected readonly remakeScript = signal('');
 
+  /**
+   * Whether the new version gets this clip's track. An opt-OUT, defaulting to
+   * carrying it.
+   *
+   * Reset to true for every clip, deliberately: dropping the soundtrack is a
+   * thing you decide about one remake, and a control that remembered the last
+   * answer would silently strip the music from the next clip.
+   */
+  protected readonly remakeKeepMusic = signal(true);
+
+  /**
+   * Take the burned-in captions off, without touching the voice.
+   *
+   * Separate from `remakeVoiceCaptions` because that one only applies when a
+   * new narration is being synthesised. A reviewer who writes "Remove caption"
+   * is not asking for a different voice, and until this existed the request had
+   * nowhere to go: the note was read correctly and the clip came back with its
+   * captions and a summary about the language.
+   */
+  protected readonly remakeRemoveCaptions = signal(false);
+
   protected readonly notesMax = NOTES_MAX;
   protected readonly scriptMax = SCRIPT_MAX;
   protected readonly trimLimit = TRIM_LIMIT_SEC;
@@ -385,6 +432,27 @@ export class ClipPage implements OnDestroy {
         this.remakeEndDelta() !== 0),
   );
 
+  /**
+   * What this remake will do to the clip's music, or null when it has none.
+   *
+   * Computed rather than written into the template because the answer depends
+   * on the rest of what has been asked for — a trim that changes the length
+   * moves the excerpt, and a track that replaces the audio has to give way to a
+   * narration this remake adds. The note goes in too, not to be read but to be
+   * counted: the worker interprets it into these same options after this screen
+   * is gone, so its presence is what turns the definite sentences into
+   * conditional ones. See core/remake-music.ts.
+   */
+  protected readonly remakeMusic = computed(() =>
+    remakeMusicOutlook(this.clip()?.music, {
+      keepMusic: this.remakeKeepMusic(),
+      startDeltaSec: this.remakeStartDelta(),
+      endDeltaSec: this.remakeEndDelta(),
+      addsNarration: this.remakeVoiceOn(),
+      notes: this.remakeNotes(),
+    }),
+  );
+
   /** Where the playhead is, so a pan point can be set against what is on screen. */
   protected readonly playhead = signal(0);
 
@@ -417,11 +485,52 @@ export class ClipPage implements OnDestroy {
       this.stopChannels = stop;
       onCleanup(stop);
     });
+
+    /**
+     * What is happening to this clip on its way out, watched only once it is
+     * approved.
+     *
+     * Gated rather than always on, and gated on a *computed* rather than on
+     * `clip()` itself: a clip document changes whenever a review note is saved,
+     * and keying the effect on the whole document would tear both listeners
+     * down and build them again on every save. `approved()` flips once, which
+     * is the only time this needs to change.
+     *
+     * Publications are watched rather than loaded once for the reason the
+     * publish page watches them: the worker writes PENDING before it calls
+     * YouTube and stamps PUBLISHED after, so a page that read once sits on
+     * "uploading" until somebody reloads it.
+     */
+    effect((onCleanup) => {
+      const id = this.id();
+      if (!this.approved()) {
+        this.publications.set([]);
+        this.publishJobs.set([]);
+        return;
+      }
+
+      const stopPublications = this.store.watchPublications(
+        id,
+        (publications) => this.publications.set(publications),
+        () => this.publications.set([]),
+      );
+      const stopJobs = this.store.watchPublishJobs(
+        (jobs) => this.publishJobs.set(jobs.filter((job) => job.clipId === id)),
+        () => this.publishJobs.set([]),
+      );
+
+      this.stopDelivery = () => {
+        stopPublications();
+        stopJobs();
+      };
+      onCleanup(this.stopDelivery);
+    });
   }
 
   ngOnDestroy(): void {
     this.stopClip?.();
     this.stopChannels?.();
+    this.stopDelivery?.();
     if (this.retryPlayback) clearInterval(this.retryPlayback);
   }
 
@@ -470,9 +579,9 @@ export class ClipPage implements OnDestroy {
     if (!this.candidate()) {
       this.candidate.set(await this.store.loadCandidate(clip.candidateId).catch(() => null));
     }
-    if (clip.review === 'APPROVED' && this.publications().length === 0) {
-      this.publications.set(await this.store.loadPublications(clip.id).catch(() => []));
-    }
+    // Publications are not fetched here. They have a listener of their own,
+    // because the interesting moments — PENDING becoming PUBLISHED — happen
+    // while this page is open and would otherwise need a reload to be seen.
   }
 
   // ── Derived ────────────────────────────────────────────────────────────────
@@ -498,19 +607,23 @@ export class ClipPage implements OnDestroy {
     }));
   });
 
-  protected readonly attested = computed(() => !!this.clip()?.rights);
-  protected readonly published = computed(
-    () => this.publications().find((p) => p.state === 'PUBLISHED') ?? null,
+  /** Whether this clip has been said yes to, and so may be published at all. */
+  protected readonly approved = computed(() => this.clip()?.review === 'APPROVED');
+
+  /**
+   * Where this clip has got to on its way to a platform.
+   *
+   * `new Date()` is read here rather than held in a ticking signal: the only
+   * thing it decides is whether a scheduled publish is still in the future, and
+   * this recomputes whenever a publication or a job changes — every occasion on
+   * which that answer can change what to offer.
+   */
+  protected readonly publishState = computed(() =>
+    publishStateOf(this.publications(), this.publishJobs(), new Date()),
   );
 
-  /** A basis of FAIR_USE_ASSERTED has to say why; the rules require it too. */
-  protected readonly needsRightsNote = computed(() => this.draftBasis() === 'FAIR_USE_ASSERTED');
-
-  // `draftIsComplete` is the same rule the Publish page applies, imported
-  // rather than restated — two copies of "when may this be attested" is one
-  // copy too many for a gate.
-  protected readonly canAttest = computed(() =>
-    draftIsComplete(this.draftBasis(), this.draftRightsNote()),
+  protected readonly published = computed(
+    () => this.publications().find((p) => p.state === 'PUBLISHED') ?? null,
   );
 
   protected readonly title = computed(() => this.draftTitle() ?? this.clip()?.title ?? '');
@@ -554,6 +667,7 @@ export class ClipPage implements OnDestroy {
     this.preview.set(null);
     this.candidate.set(null);
     this.publications.set([]);
+    this.publishJobs.set([]);
     this.lineage.set([]);
     this.showHistory.set(false);
     this.source.set({ kind: 'poster' });
@@ -569,14 +683,10 @@ export class ClipPage implements OnDestroy {
     this.draftPrivacy.set(null);
     this.draftCategory.set(null);
     this.draftSchedule.set('');
-    this.draftBasis.set(null);
-    this.draftRightsNote.set('');
     this.showPublishOptions.set(false);
 
     this.showMusic.set(false);
     this.musicSource.set('');
-    this.musicBasis.set(null);
-    this.musicNote.set('');
 
     this.showRemake.set(false);
     this.remakeNotes.set('');
@@ -587,6 +697,7 @@ export class ClipPage implements OnDestroy {
     this.remakeHideMarks.set(false);
     this.remakeKeepMarks.set(false);
     this.remakeScript.set('');
+    this.remakeKeepMusic.set(true);
     this.remakeStartDelta.set(0);
     this.remakeEndDelta.set(0);
     this.playhead.set(0);
@@ -651,25 +762,34 @@ export class ClipPage implements OnDestroy {
     );
   }
 
-  protected async attest(): Promise<void> {
-    const clip = this.clip();
-    const uid = this.session.uid;
-    const basis = this.draftBasis();
-    if (!clip || !uid || !basis) return;
-    await this.run('Rights recorded', () =>
-      this.store.attest(uid, clip.id, basis, this.draftRightsNote().trim() || null),
-    );
-  }
-
   protected async publish(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
     if (!clip || !uid) return;
+    // Refused here as well as by the disabled button, because a disabled
+    // button is a hint to a person and not a constraint on a program. Queueing
+    // a second publish behind one that has not run yet is how the same video
+    // reaches the same channel twice.
+    if (this.publishState().kind !== 'READY' && this.publishState().kind !== 'FAILED') return;
 
     const when = this.draftSchedule() ? new Date(this.draftSchedule()) : null;
     await this.run('Queued for publishing', async () => {
       await this.store.requestPublish(uid, clip.id, when, this.publishOptions());
     });
+  }
+
+  /**
+   * Call off a publish that has not started.
+   *
+   * The counterpart to refusing a second one: a job queued for Friday is
+   * claimable by any worker that comes up after Friday, so "I changed my mind"
+   * has to be expressible before then — and cancelling the job is the only
+   * place it can be said, because there is no publication yet to withdraw.
+   */
+  protected async cancelScheduled(): Promise<void> {
+    const job = this.publishState().job;
+    if (!job || job.status !== 'QUEUED') return;
+    await this.run('Publish called off', () => this.store.cancel(job.id));
   }
 
   /**
@@ -734,19 +854,12 @@ export class ClipPage implements OnDestroy {
   protected async addMusic(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
-    const basis = this.musicBasis();
-    if (!clip || !uid || !basis) return;
+    if (!clip || !uid || !this.canAddMusic()) return;
 
     const options: MusicOptions = {
       source: this.musicSource().trim(),
       mode: this.musicMode(),
       captions: this.musicCaptions(),
-      rights: {
-        basis,
-        attestedBy: uid,
-        attestedAt: new Date().toISOString(),
-        note: this.musicNote().trim() || null,
-      },
     };
 
     await this.run(
@@ -875,8 +988,8 @@ export class ClipPage implements OnDestroy {
    *
    * The record only. Its file stays on whichever machine holds it, and its
    * publications stay too — those are the record of what was actually posted
-   * and under what rights, and an audit trail that vanishes when somebody tidies
-   * their queue is not an audit trail.
+   * and where, and an audit trail that vanishes when somebody tidies their
+   * queue is not an audit trail.
    */
   protected async deleteClip(): Promise<void> {
     const clip = this.clip();
@@ -952,6 +1065,15 @@ export class ClipPage implements OnDestroy {
             }
           : null,
       profile: null,
+      // An opt-OUT, so the boolean goes out on every remake rather than only
+      // when it is false: the worker reads null and true alike as "carry it",
+      // and saying so explicitly is what makes the request readable later
+      // beside a clip that came back without its track.
+      keepMusic: this.remakeKeepMusic(),
+      // Omitted rather than sent as KEEP when the box is unticked: the rules
+      // accept an absent field, and an absent one is what "the reviewer did not
+      // raise this" has meant everywhere else in these options.
+      ...(this.remakeRemoveCaptions() ? { captions: 'REMOVE' as const } : {}),
     };
 
     await this.run('Remake queued — the new version will appear in the review queue', async () => {

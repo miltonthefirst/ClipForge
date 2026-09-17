@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, Injector, effect, inject } from '@angular/core';
 import type {
   AgentDesired,
   AgentReport,
@@ -9,6 +9,7 @@ import type {
   ClipPreview,
   Job,
   JobEvent,
+  JobStatus,
   MetricSnapshot,
   MusicOptions,
   ObscureOptions,
@@ -18,7 +19,6 @@ import type {
   PublishOptions,
   RemakeOptions,
   ReviewState,
-  RightsBasis,
   Source,
   UserProfile,
   UserRole,
@@ -28,6 +28,7 @@ import type {
 import {
   collection,
   doc,
+  getDoc,
   limit,
   onSnapshot,
   orderBy,
@@ -39,12 +40,21 @@ import {
 } from 'firebase/firestore';
 
 import { fromDocument } from './documents';
+import { LiveQueries } from './live-queries';
 import { FirebaseService } from './firebase';
 
 // Firestore's own ceiling on a batched write. Paging at this size means one
 // enormous source needs no different code path from a small one — it just takes
 // more trips.
 const BATCH_LIMIT = 500;
+
+/**
+ * How many jobs one queue listener delivers.
+ *
+ * Exported because the page has to say when it is showing fewer jobs than exist,
+ * and it can only know that by comparing what arrived against this.
+ */
+export const JOB_PAGE = 25;
 
 /**
  * Firestore reads and writes, as signals.
@@ -61,6 +71,43 @@ const BATCH_LIMIT = 500;
 @Injectable({ providedIn: 'root' })
 export class ClipForgeStore {
   private readonly firebase = inject(FirebaseService);
+  private readonly live = inject(LiveQueries);
+  private readonly injector = inject(Injector);
+
+  /**
+   * Run one shared listener behind the callback shape the pages already use.
+   *
+   * The saving is not the sharing — two pages rarely watch the same query at
+   * once. It is that the listener outlives the page: Review → Clip → Review
+   * used to pay for the whole queue twice, because a listener closed on the way
+   * out re-reads every document when it is attached again. Held open, the
+   * second visit costs nothing and renders from data already in hand.
+   *
+   * The bridge exists so this can be adopted one query at a time. A page that
+   * wants the signal can take it from `LiveQueries` directly; a page that has
+   * an `effect` and an `onCleanup` keeps working untouched.
+   */
+  private shared<T>(
+    key: string,
+    open: (emit: (value: T) => void, fail: (error: Error) => void) => Unsubscribe,
+    onData: (value: T) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    const held = this.live.watch<T>(key, open);
+    const bridge = effect(
+      () => {
+        const value = held.value();
+        if (value !== null) onData(value);
+        const failure = held.error();
+        if (failure) onError?.(failure);
+      },
+      { injector: this.injector },
+    );
+    return () => {
+      bridge.destroy();
+      held.release();
+    };
+  }
 
   /**
    * The queue, newest first — everyone's, because there is only one.
@@ -75,13 +122,69 @@ export class ClipForgeStore {
    * would push the caller into creating an `effect` to read it — and an effect
    * created inside another effect is not valid in Angular, which is exactly the
    * shape a re-subscribing watcher wants to take.
+   *
+   * `statuses` narrows the query rather than the delivered result, and the
+   * difference is the point. The bound below is a *window on the newest*, not a
+   * sample of each status, so once the queue outgrows it a tab built by
+   * filtering this listener's output shows whatever happens to have survived
+   * into the window and looks complete — it has no way to know what fell off
+   * the end. (Measured on the live project in September 2026, the newest 25
+   * jobs held about two thirds of the COMPLETED ones.)
+   *
+   * Several statuses go in one `in` query rather than one listener each, the
+   * same way {@link countJobs} asks for a tab's total. A merged pair would have
+   * two bounds where the page needs one: "the newest 25" is a single answer,
+   * and "the newest 25 of each, re-sorted" costs twice the reads to arrive at
+   * it and leaves the page unable to say plainly how much it is not showing.
+   *
+   * Filtering by status needs a composite index — `jobs [status ASC, createdAt
+   * DESC]`, in firebase/firestore.indexes.json. The existing ASC pair does not
+   * serve it: verified against the project, which answered FAILED_PRECONDITION
+   * and named that exact index.
    */
-  watchJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
-    return onSnapshot(
-      query(collection(this.firebase.db, 'jobs'), orderBy('createdAt', 'desc'), limit(25)),
-      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
-      (error) => onError?.(error),
+  watchJobs(
+    onData: (jobs: Job[]) => void,
+    statuses: readonly JobStatus[] | null = null,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    // The key is the query, not the collection. Two tabs sharing one entry
+    // would hand the second the first's rows, which is the one way a cache like
+    // this fails while still looking like working software.
+    const key = `jobs:${statuses === null ? 'all' : [...statuses].sort().join(',')}`;
+    return this.shared<Job[]>(
+      key,
+      (emit, fail) => {
+        const jobs = collection(this.firebase.db, 'jobs');
+        const newest = [orderBy('createdAt', 'desc'), limit(JOB_PAGE)] as const;
+        return onSnapshot(
+          statuses === null
+            ? query(jobs, ...newest)
+            : query(jobs, where('status', 'in', [...statuses]), ...newest),
+          (snapshot) => emit(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
+          fail,
+        );
+      },
+      onData,
+      onError,
     );
+  }
+
+  /**
+   * How many jobs are in one slice, without reading them.
+   *
+   * An aggregation rather than a longer listen: the tab labels have to be true
+   * about jobs the bounded listener never delivers, and counting them by
+   * fetching them would cost a read each for a number. It needs no composite
+   * index — there is no ordering to serve — so the counts are right even while
+   * the index the lists depend on is still being built.
+   */
+  async countJobs(statuses: readonly JobStatus[] | null): Promise<number> {
+    const { getCountFromServer } = await import('firebase/firestore');
+    const jobs = collection(this.firebase.db, 'jobs');
+    const snapshot = await getCountFromServer(
+      statuses === null ? query(jobs) : query(jobs, where('status', 'in', [...statuses])),
+    );
+    return snapshot.data().count;
   }
 
   /**
@@ -283,15 +386,23 @@ export class ClipForgeStore {
     review: ReviewState = 'PENDING',
     onError?: (error: Error) => void,
   ): Unsubscribe {
-    return onSnapshot(
-      query(
-        collection(this.firebase.db, 'clips'),
-        where('review', '==', review),
-        orderBy('createdAt', 'desc'),
-        limit(50),
-      ),
-      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Clip>(d.data()))),
-      (error) => onError?.(error),
+    // The queue is the query most worth holding open: a reviewer works through
+    // it one clip at a time, and every return trip used to re-read all fifty.
+    return this.shared<Clip[]>(
+      `clips:${review}`,
+      (emit, fail) =>
+        onSnapshot(
+          query(
+            collection(this.firebase.db, 'clips'),
+            where('review', '==', review),
+            orderBy('createdAt', 'desc'),
+            limit(50),
+          ),
+          (snapshot) => emit(snapshot.docs.map((d) => fromDocument<Clip>(d.data()))),
+          fail,
+        ),
+      onData,
+      onError,
     );
   }
 
@@ -407,6 +518,54 @@ export class ClipForgeStore {
     }
 
     await updateDoc(doc(this.firebase.db, 'clips', clipId), changes);
+    await this.settleLineage(clipId, review);
+  }
+
+  /**
+   * Carry a decision to the rest of the versions it was also about.
+   *
+   * A reviewer decides about a video, not about an attempt. The fifth cut is
+   * what the first four were for, so approving it settles them too — and
+   * rejecting it rejects the idea, not the latest render of it.
+   *
+   * Before this they were left PENDING for ever. `latestOfEachLineage` keeps
+   * them out of the queue, so nothing looked wrong; they simply accumulated,
+   * and the reviewer met them later as a pile of tidying that the decision
+   * should already have done.
+   *
+   * Approving marks the others superseded rather than deleting them here: the
+   * worker's tidy pass removes them after a grace period, which is what leaves
+   * room to change your mind. Rejecting marks the whole lineage REJECTED and
+   * the same pass takes the records and bins the files.
+   *
+   * Failures are swallowed on purpose. The decision itself is already written,
+   * and a lineage that did not settle is untidy rather than wrong — throwing
+   * here would report a failed review that actually succeeded.
+   */
+  private async settleLineage(clipId: string, review: ReviewState): Promise<void> {
+    if (review !== 'APPROVED' && review !== 'REJECTED') return;
+    try {
+      const decided = await getDoc(doc(this.firebase.db, 'clips', clipId));
+      const lineageId = (decided.data() as Clip | undefined)?.lineageId ?? clipId;
+      const versions = await this.loadLineage(lineageId);
+      const others = versions.filter((clip) => clip.id !== clipId);
+      if (others.length === 0) return;
+
+      const { writeBatch } = await import('firebase/firestore');
+      const now = new Date().toISOString();
+      const batch = writeBatch(this.firebase.db);
+      for (const clip of others) {
+        batch.update(
+          doc(this.firebase.db, 'clips', clip.id),
+          review === 'REJECTED'
+            ? { review: 'REJECTED', reviewedAt: now }
+            : { supersededAt: now },
+        );
+      }
+      await batch.commit();
+    } catch (error) {
+      console.warn('could not settle the rest of the lineage', error);
+    }
   }
 
   /**
@@ -500,8 +659,8 @@ export class ClipForgeStore {
    * Forget one clip. Its media stays on whichever machine holds it.
    *
    * Publications are left behind on purpose. They are the record of what was
-   * actually posted and under what rights, and an audit trail that vanishes
-   * when somebody tidies their queue is not an audit trail.
+   * actually posted and where, and an audit trail that vanishes when somebody
+   * tidies their queue is not an audit trail.
    */
   async deleteClip(clipId: string): Promise<void> {
     const { deleteDoc } = await import('firebase/firestore');
@@ -514,7 +673,16 @@ export class ClipForgeStore {
     await deleteDoc(doc(this.firebase.db, 'candidates', candidateId));
   }
 
-  /** Forget one job and its event log. */
+  /**
+   * Forget one job. Its event log stays where it is.
+   *
+   * Deleting a document does not delete its subcollections, and `events` is
+   * `allow write: if false` in the rules, so nothing on this side could clear
+   * the log even in a loop. Orphaning it is the accepted outcome
+   * (docs/adr/0017-deleting-a-record-is-not-deleting-a-file.md) — this says so
+   * because the sentence that used to be here claimed the log went too, and the
+   * confirmation the operator reads was repeating it.
+   */
   async deleteJob(jobId: string): Promise<void> {
     const { deleteDoc } = await import('firebase/firestore');
     await deleteDoc(doc(this.firebase.db, 'jobs', jobId));
@@ -583,31 +751,7 @@ export class ClipForgeStore {
   }
 
   /**
-   * Record why this clip may be published.
-   *
-   * `attestedBy` is the caller's own uid and `attestedAt` is set here rather
-   * than accepted from the caller: an attestation whose author or date could be
-   * supplied by whoever wrote it would answer neither of the questions the audit
-   * log exists to answer. firestore.rules requires both to be present.
-   */
-  async attest(
-    uid: string,
-    clipId: string,
-    basis: RightsBasis,
-    note: string | null,
-  ): Promise<void> {
-    await updateDoc(doc(this.firebase.db, 'clips', clipId), {
-      rights: {
-        basis,
-        attestedBy: uid,
-        attestedAt: new Date().toISOString(),
-        note: note?.trim() ? note.trim() : null,
-      },
-    });
-  }
-
-  /**
-   * Ask the worker to publish an approved, attested clip.
+   * Ask the worker to publish an approved clip.
    *
    * This creates a job, not an upload. The credentials live on the worker
    * (docs/adr/0010-worker-held-publishing-credentials.md), so the phone's role
@@ -744,6 +888,13 @@ export class ClipForgeStore {
    * a source the workspace collector has taken, a language with no voice, nudges
    * that cross over — and a retry reproduces them exactly while spending the
    * render time twice.
+   *
+   * The options go into the job verbatim, including `keepMusic`, which decides
+   * whether the new version gets the track this clip was scored with. Verbatim
+   * means every field has to be in the `hasOnly` list `remakeOptionsOk` in
+   * firebase/firestore.rules enforces: a field this app invents and the rules
+   * have not been told about does not arrive stripped, it gets the whole create
+   * denied with "Missing or insufficient permissions", which names nothing.
    */
   async requestRemake(uid: string, clipId: string, options: RemakeOptions): Promise<string> {
     const reference = doc(collection(this.firebase.db, 'jobs'));
@@ -780,6 +931,87 @@ export class ClipForgeStore {
     const { getDocs } = await import('firebase/firestore');
     const snapshot = await getDocs(collection(this.firebase.db, 'clips', clipId, 'publications'));
     return snapshot.docs.map((d) => fromDocument<Publication>(d.data()));
+  }
+
+  /**
+   * The same audit trail, live.
+   *
+   * The one-shot load is right for a queue of fifty rows; it is wrong for the
+   * page you are looking at while the upload happens. The worker writes a
+   * PENDING publication before it calls YouTube and stamps it PUBLISHED after,
+   * so a page that read once shows "pending" until somebody reloads it — which
+   * is exactly the moment an operator concludes the worker is stuck.
+   *
+   * Bounded like every other listener here. A clip with more than twenty
+   * publish attempts has a problem no screen can solve.
+   */
+  watchPublications(
+    clipId: string,
+    onData: (publications: Publication[]) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'clips', clipId, 'publications'), limit(20)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Publication>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Every publish job, whatever state it is in.
+   *
+   * What a `Publication` cannot tell you: a publish that has been *asked for*
+   * and not yet run has no publication at all — the worker writes that document
+   * when it starts. Without this, a scheduled upload and an untouched clip look
+   * identical the moment the page is reloaded, and the queue invites the
+   * operator to publish the same clip twice.
+   *
+   * One equality filter and a bound, so no composite index is needed. Sorting
+   * is left to the caller for the same reason: `where` plus `orderBy` on a
+   * different field is what would require one.
+   */
+  watchPublishJobs(onData: (jobs: Job[]) => void, onError?: (error: Error) => void): Unsubscribe {
+    return onSnapshot(
+      query(collection(this.firebase.db, 'jobs'), where('type', '==', 'PUBLISH'), limit(100)),
+      (snapshot) => onData(snapshot.docs.map((d) => fromDocument<Job>(d.data()))),
+      (error) => onError?.(error),
+    );
+  }
+
+  /**
+   * Everything the worker was ever asked to do to one clip.
+   *
+   * Publish, upload, music, remake — the operational history behind a single
+   * video, which is otherwise only legible by scrolling the Jobs page and
+   * matching ids by eye.
+   */
+  async loadJobsForClip(clipId: string): Promise<Job[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(
+      query(collection(this.firebase.db, 'jobs'), where('clipId', '==', clipId), limit(25)),
+    );
+    return snapshot.docs
+      .map((d) => fromDocument<Job>(d.data()))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
+
+  /**
+   * What actually happened to one clip after it went out, day by day.
+   *
+   * The Insights page asks this across every clip at once; this asks it about
+   * the one on screen, which is the question somebody looking at a published
+   * video actually has. Ordered here rather than in the query, because
+   * `where` plus `orderBy('date')` is a composite index for a result set that
+   * is at most a few dozen rows.
+   */
+  async loadMetricsForClip(clipId: string): Promise<MetricSnapshot[]> {
+    const { getDocs } = await import('firebase/firestore');
+    const snapshot = await getDocs(
+      query(collection(this.firebase.db, 'metrics'), where('clipId', '==', clipId), limit(400)),
+    );
+    return snapshot.docs
+      .map((d) => fromDocument<MetricSnapshot>(d.data()))
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
   }
 
   /**

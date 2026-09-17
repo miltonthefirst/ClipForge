@@ -81,8 +81,19 @@ class TranscribeStage:
             )
 
         audio_path = self._workspace.tmp_dir / f"{source.content_hash}.wav"
+        # Decoding a two-gigabyte source is minutes of ffmpeg on its own, before
+        # the model has been asked for anything.
+        context.progress("Extracting the audio track")
         extract_audio(media_path, audio_path, ffmpeg_bin=settings.ffmpeg_bin)
 
+        # The stage the whole checkpoint design exists for: twenty minutes with
+        # nothing to show until it is over. Whisper yields segments lazily and
+        # only inside the broker lease, so there is no count to report from out
+        # here — the length of the audio is the honest thing to say instead.
+        minutes = round((source.duration_sec or 0.0) / 60)
+        context.progress(
+            f"Transcribing {minutes} minutes of audio" if minutes else "Transcribing the audio"
+        )
         try:
             transcriber = self._build_transcriber(context)
             result = transcriber.transcribe(audio_path, source_id=source_id)

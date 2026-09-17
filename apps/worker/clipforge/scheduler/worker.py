@@ -45,14 +45,16 @@ from clipforge_contracts import (
 )
 
 from clipforge.config import Settings
+from clipforge.media.trash import Trash
 from clipforge.models.broker import ModelBroker
 from clipforge.models.vram import probe_vram
 from clipforge.observability import bind_job, get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.runner import LeaseLostError, StageRunner
-from clipforge.stages.base import StageRegistry
+from clipforge.scheduler.tidy import tidy_reviewed_clips
+from clipforge.stages.base import StageProgress, StageRegistry
 from clipforge.stages.echo import registry_for
-from clipforge.store.firestore import JobStore, WorkerStore
+from clipforge.store.firestore import ClipStore, JobStore, WorkerStore
 from clipforge.version import __version__
 
 log = get_logger(__name__)
@@ -70,6 +72,10 @@ class Worker:
         jobs: JobStore,
         workers: WorkerStore,
         broker: ModelBroker | None = None,
+        # Optional so every existing caller and test keeps working: without it
+        # the worker simply does not tidy, which is the behaviour it had before.
+        clips: ClipStore | None = None,
+        trash: Trash | None = None,
         uid: str = "local",
         poll_interval_s: float = 1.0,
         registry_factory: Callable[[JobType], StageRegistry] = registry_for,
@@ -78,6 +84,8 @@ class Worker:
         self._jobs = jobs
         self._workers = workers
         self._broker = broker or ModelBroker(reserve_mb=settings.vram_reserve_mb)
+        self._clips = clips
+        self._trash = trash
         self._uid = uid
         self._poll_interval_s = poll_interval_s
         # Injected so tests can supply stage behaviour that is awkward to
@@ -87,6 +95,10 @@ class Worker:
 
         self._stop = threading.Event()
         self._active: dict[str, Job] = {}
+        # What each running job's current stage says it is doing. Keyed the same
+        # way as `_active` and guarded by the same lock, because the thread that
+        # writes a note is never the thread that publishes it.
+        self._notes: dict[str, StageProgress] = {}
         self._active_lock = threading.Lock()
         self._started_at = datetime.now(UTC)
         self._threads: list[threading.Thread] = []
@@ -206,11 +218,19 @@ class Worker:
             self._reject(job, exc)
             return
 
+        # Registered before the runner starts, so a heartbeat landing during the
+        # first stage already has somewhere to read from rather than skipping a
+        # renewal's worth of whatever that stage was saying.
+        notes = StageProgress()
+        with self._active_lock:
+            self._notes[job.id] = notes
+
         runner = StageRunner(
             store=self._jobs,
             registry=registry,
             settings=self._settings,
             broker=self._broker,
+            progress=notes,
         )
         # A job stays in `_active` only while this worker is still responsible
         # for it. Popping unconditionally would be wrong on the shutdown path:
@@ -235,6 +255,7 @@ class Worker:
             if not still_ours:
                 with self._active_lock:
                     self._active.pop(job.id, None)
+                    self._notes.pop(job.id, None)
 
     def _reject(self, job: Job, exc: Exception) -> None:
         """Fail a job this worker cannot run, with the reason recorded."""
@@ -285,7 +306,7 @@ class Worker:
         """
         for job_id in active:
             try:
-                if self._jobs.renew(job_id) is None:
+                if self._jobs.renew(job_id, progress=self._note_for(job_id)) is None:
                     # Genuinely lost: someone else owns this now. The runner
                     # notices on its next checkpoint and abandons the job.
                     log.warning("lease.lost_during_heartbeat", job_id=job_id)
@@ -295,6 +316,26 @@ class Worker:
                 # `lease_seconds` precisely so a missed beat is survivable — so
                 # the right response is to try again on the next tick.
                 log.warning("lease.renew_failed", job_id=job_id, error=str(exc))
+
+    def _note_for(self, job_id: str) -> str | None:
+        """What this job's running stage last said, if it has said anything.
+
+        Read as late as this call site allows, which is not as late as the
+        write: `JobStore.renew` opens its transaction and re-reads the document
+        after this has already returned, so a note the stage changes during that
+        round trip goes out on the next heartbeat instead of this one. One beat
+        late, once, on a sentence describing a step measured in minutes — and
+        closing the gap would mean handing the store a callback to call inside
+        its transaction, which is machinery bought for nothing.
+
+        Reading it here rather than taking it as a parameter still earns its
+        keep: a round walks every active job in turn, so a note captured when
+        the round started would be stale by however long the jobs ahead of this
+        one took.
+        """
+        with self._active_lock:
+            notes = self._notes.get(job_id)
+        return notes.current() if notes else None
 
     def _reaper_loop(self) -> None:
         while not self._stop.wait(self._settings.reaper_interval_seconds):
@@ -309,6 +350,33 @@ class Worker:
                 continue
             if reaped:
                 log.info("reaper.reclaimed", jobs=[j.id for j in reaped])
+
+            self._tidy_once()
+
+    def _tidy_once(self) -> None:
+        """Collect the clips a review decision has already settled.
+
+        On the reaper's cadence rather than a thread of its own: both are
+        periodic housekeeping, neither is urgent, and a second timer would be a
+        second thing to reason about when the worker is shutting down.
+
+        Swallows everything. A failure to tidy is untidy, and taking the reaper
+        down with it would cost the thing that actually matters.
+        """
+        if self._clips is None or self._trash is None:
+            return
+        try:
+            settled = self._clips.settled()
+            if not settled:
+                return
+            tidy_reviewed_clips(
+                self._clips.lineage_peers(settled),
+                trash=self._trash,
+                delete_record=self._clips.forget,
+                grace_days=self._settings.superseded_grace_days,
+            )
+        except Exception:
+            log.exception("tidy.failed")
 
     # ── Heartbeat document ───────────────────────────────────────────────────
 
@@ -379,6 +447,7 @@ class Worker:
         with self._active_lock:
             job_ids = list(self._active)
             self._active.clear()
+            self._notes.clear()
 
         for job_id in job_ids:
             current = self._jobs.get(job_id)

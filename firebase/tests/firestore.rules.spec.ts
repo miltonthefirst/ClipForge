@@ -315,16 +315,14 @@ describe('clip review', () => {
     );
   });
 
-  it('allows attaching a rights attestation', async () => {
-    await assertSucceeds(
+  it('denies writing a field the clip no longer has', async () => {
+    // `rights` was a writable field until it was removed. The allow-list is
+    // what makes a removal actually take effect on the wire, rather than
+    // leaving a client free to keep writing a field nothing reads.
+    await assertFails(
       updateDoc(doc(aliceDb(), 'clips/clip-1'), {
         review: 'APPROVED',
-        rights: {
-          basis: 'OWN_CONTENT',
-          attestedBy: ALICE,
-          attestedAt: '2026-09-08T12:05:00.000Z',
-          note: null,
-        },
+        rights: { basis: 'OWN_CONTENT', attestedBy: ALICE },
       }),
     );
   });
@@ -582,9 +580,9 @@ describe('deleting records to keep the database tidy', () => {
 
   it('keeps a publication when its clip goes', async () => {
     /**
-     * The record of what was actually posted, and under what rights. An audit
-     * trail that vanishes when somebody tidies their queue is not an audit
-     * trail — so publications are not deletable at all.
+     * The record of what was actually posted, and where. An audit trail that
+     * vanishes when somebody tidies their queue is not an audit trail — so
+     * publications are not deletable at all.
      */
     await seed('clips/clip-del/publications/pub-1', {
       id: 'pub-1',

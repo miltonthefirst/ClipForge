@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from clipforge.media.toolchain import resolve_toolchain
 from clipforge.models.cuda import (
     find_cuda_dll_directories,
     register_cuda_dll_directories,
@@ -242,6 +243,56 @@ def probe_ffmpeg(binary: str = "ffmpeg") -> CheckResult:
     return CheckResult("ffmpeg", True, "libx264, ass, loudnorm, silencedetect present")
 
 
+def probe_ffprobe(ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> CheckResult:
+    """Confirm ffprobe exists too, and that it is a sibling of ffmpeg.
+
+    A separate check from `probe_ffmpeg` because this file used to have only the
+    one, and the gap was load-bearing: every MUSIC job failed with *"ffprobe and
+    ffmpeg not found"* on a machine whose doctor reported ffmpeg present, which
+    made the message read like nonsense. Two programs are two questions.
+
+    The sibling half matters for a different reason. Nothing that shells out
+    cares where these live — `subprocess` resolves both against PATH
+    independently. yt-dlp does care, because it is told *one* location and finds
+    the other beside it, so a split install is a real configuration worth naming
+    before it produces a confusing failure rather than after.
+    """
+    try:
+        version = subprocess.run(  # noqa: S603
+            [ffprobe, "-hide_banner", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return CheckResult(
+            "ffprobe",
+            False,
+            f"{ffprobe} not runnable: {exc}. Durations, dimensions and the beat grid all "
+            "read through it, so ingest and music both stop without it.",
+        )
+
+    tools = resolve_toolchain(ffmpeg, ffprobe)
+    if tools.ffmpeg is not None and tools.ffprobe is not None:
+        if tools.ffmpeg.parent != tools.ffprobe.parent:
+            return CheckResult(
+                "ffprobe",
+                True,
+                f"present, but installed apart from ffmpeg ({tools.ffprobe.parent}). Everything "
+                "still works; yt-dlp is simply left to find both on PATH.",
+                {"ffmpeg": str(tools.ffmpeg), "ffprobe": str(tools.ffprobe)},
+            )
+        return CheckResult(
+            "ffprobe",
+            True,
+            f"{version.splitlines()[0][:60]}, beside ffmpeg",
+            {"directory": str(tools.ffprobe.parent)},
+        )
+
+    return CheckResult("ffprobe", True, version.splitlines()[0][:60])
+
+
 def probe_nvenc(binary: str = "ffmpeg") -> CheckResult:
     """Actually encode a frame with NVENC, rather than trusting the listing.
 
@@ -405,7 +456,14 @@ def probe_publishing(settings: Any | None = None) -> CheckResult:
 
 def run_all(*, include_gpu: bool = True) -> list[CheckResult]:
     """Run every diagnostic and return the results in report order."""
-    results = [probe_ffmpeg(), probe_nvenc(), probe_ollama(), probe_gpu(), probe_publishing()]
+    results = [
+        probe_ffmpeg(),
+        probe_ffprobe(),
+        probe_nvenc(),
+        probe_ollama(),
+        probe_gpu(),
+        probe_publishing(),
+    ]
     if include_gpu:
         results.append(probe_cuda_libraries())
         results.append(smoke_transcribe())

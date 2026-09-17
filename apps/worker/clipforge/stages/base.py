@@ -18,6 +18,7 @@ checkpoint is a stage that has put scheduling logic in the wrong place.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Protocol, runtime_checkable
 
 from clipforge_contracts import Job, Lane, StageName
@@ -25,16 +26,52 @@ from clipforge_contracts import Job, Lane, StageName
 from clipforge.config import Settings
 from clipforge.models.broker import ModelBroker
 
-__all__ = ["Stage", "StageContext", "StageOutcome", "StageRegistry"]
+__all__ = ["Stage", "StageContext", "StageOutcome", "StageProgress", "StageRegistry"]
+
+
+class StageProgress:
+    """What a running stage is currently doing, held in memory and nowhere else.
+
+    Saying something has to be free, or a stage ends up rationing how often it
+    speaks and the note becomes as uninformative as the silence it replaced. So
+    nothing here writes: the note is published by whatever write happens next,
+    which in practice is the 30-second lease heartbeat — a full-document write
+    the job was paying for anyway (docs/adr/0004-dedicated-firebase-project.md
+    makes throttled progress writes a requirement, not a preference).
+
+    One instance per running job. The stage thread sets it and the heartbeat
+    thread reads it, which is why the lock is here rather than a bare attribute.
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._note: str | None = None
+
+    def set(self, note: str) -> None:
+        with self._lock:
+            self._note = note
+
+    def clear(self) -> None:
+        with self._lock:
+            self._note = None
+
+    def current(self) -> str | None:
+        with self._lock:
+            return self._note
 
 
 @dataclass
 class StageContext:
-    """Everything a stage is given, and the only channel it has back.
+    """Everything a stage is given, and the channels it has back.
 
     A stage receives its own checkpoint — never the whole job's history — and
     returns a new one. It gets the broker so GPU stages can take a residency
     lease, and the settings so nothing has to reach for a global.
+
+    :meth:`progress` is the only thing a stage can say *while* it runs. The
+    outcome is the rest, and it arrives after the work is over — which was the
+    whole problem: a MUSIC job that ran for thirty minutes produced two events
+    and then nothing, and was indistinguishable from a hung one.
     """
 
     job: Job
@@ -45,9 +82,24 @@ class StageContext:
     # Set by the runner while the stage runs; a stage that has been asked to stop
     # should checkpoint and return rather than fight it.
     should_stop: Any = None
+    # Set by the runner. Absent in a test that builds a context by hand, which is
+    # why `progress` tolerates it being None rather than making every caller check.
+    notes: StageProgress | None = None
 
     def stopping(self) -> bool:
         return bool(self.should_stop and self.should_stop.is_set())
+
+    def progress(self, note: str) -> None:
+        """Say what this stage is doing now, in one sentence.
+
+        Call it before anything slow. It costs nothing — the note goes to memory
+        and rides out on the next lease heartbeat — so the only thing to weigh is
+        whether the sentence tells a reviewer something true. Narrating a step
+        that takes 50 ms is worse than saying nothing, because a ticker that
+        moves at the wrong granularity teaches people to distrust it.
+        """
+        if self.notes is not None:
+            self.notes.set(note)
 
 
 @dataclass
