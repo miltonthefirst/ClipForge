@@ -706,6 +706,26 @@
               </span>
             </label>
 
+            <!-- Captions. Beside the note rather than inside the voice block:
+                 taking the words off the picture is not a change to the sound,
+                 and while it lived under Voice there was no way to ask for it
+                 without also replacing the narration. -->
+            <label class="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                [checked]="remakeRemoveCaptions()"
+                (change)="remakeRemoveCaptions.set(!remakeRemoveCaptions())"
+                name="remakeRemoveCaptions"
+              />
+              <span>
+                Remove the captions
+                <span class="mt-0.5 block text-xs text-ink-subtle">
+                  They are burned into the picture, so this re-cuts the segment from the source.
+                </span>
+              </span>
+            </label>
+
             <!-- Framing -->
             <fieldset>
               <legend class="text-sm font-medium">Framing</legend>

@@ -55,6 +55,12 @@ export type ObscureMethod = 'BLUR' | 'PIXELATE' | 'DELOGO' | 'BOX';
  */
 export type ObscureFound = 'AUTO' | 'MANUAL' | 'REMEMBERED';
 /**
+ * What to do with the captions RENDER burned into the picture, when the remake is not also replacing the voice. REMOVE re-cuts the segment without the subtitle filter; KEEP and null leave the picture alone. REBUILD belongs to a voice change and is ignored here, because with no new narration there is nothing to transcribe.
+ *
+ * It sits beside `voice` rather than inside it because captions are a property of the picture, not of the soundtrack. A reviewer who writes "remove caption" is not asking for a different voice, and until this existed there was no way to say it at all: the note was read correctly, had nowhere to go, and the clip came back unchanged with a summary claiming the language had been set to NONE.
+ */
+export type VoiceCaptions1 = 'REBUILD' | 'KEEP' | 'REMOVE';
+/**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
@@ -168,7 +174,7 @@ export type PreferenceScope = 'SOURCE' | 'EVERYTHING';
 /**
  * An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.
  */
-export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE';
+export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE' | 'CAPTIONS';
 /**
  * PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
  */
@@ -201,6 +207,12 @@ export type NoteObscure =
   | 'BOTTOM_RIGHT'
   | 'TOP'
   | 'BOTTOM';
+/**
+ * What a note asked for the captions burned into the picture. REMOVE takes them off, which means re-cutting the segment without the subtitle filter. KEEP is for a note that mentions them and wants them left. NOT_MENTIONED means the note said nothing about them, which is most notes.
+ *
+ * This exists because "Remove caption" had no field to land in. The model read it correctly and then had to put the answer somewhere, so it reported setting the language to NONE and the clip came back untouched — a confabulation caused by a missing option rather than by a misread.
+ */
+export type NoteCaptions = 'NOT_MENTIONED' | 'REMOVE' | 'KEEP';
 /**
  * Something a reviewer asked for that ClipForge cannot do. Recorded rather than ignored, because the alternative is what happened in practice: a reviewer asked for a watermark to be removed, got back a clip with the watermark still on it and no explanation, and had no way to tell 'refused' from 'misunderstood' from 'quietly broken'. It also doubles as the list of what to build next, written by the person who wanted it.
  *
@@ -364,6 +376,7 @@ export interface RemakeOptions {
    * Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one.
    */
   keepMusic?: boolean | null;
+  captions?: VoiceCaptions1;
 }
 /**
  * The reframe half of a remake. Every mode other than AS_RENDERED re-cuts from the original source, because the rendered clip has already had the discarded pixels thrown away — so these need the source media to still be on the worker, and fail clearly when the workspace collector has taken it.
@@ -1481,6 +1494,7 @@ export interface LlmRemakeNote {
    */
   endDeltaSec: number;
   obscure: NoteObscure;
+  captions: NoteCaptions;
   /**
    * Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
    *

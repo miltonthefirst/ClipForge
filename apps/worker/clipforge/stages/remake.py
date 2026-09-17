@@ -1018,11 +1018,18 @@ class RemakeStage:
         voice-only remake leaves the picture exactly as it was reviewed, so
         there is nothing to render and the existing file is handed on.
         """
+        # Two different asks, and only one of them needs a voice. REBUILD is a
+        # consequence of new narration and cannot happen without it. REMOVE is a
+        # change to the picture alone — "take the words off" — and requiring a
+        # voice for it is what made `Remove caption` do nothing at all: the note
+        # was read correctly, `_subtitles` would have honoured it, and this
+        # predicate meant the re-cut that reaches `_subtitles` never ran.
         rebuilding_captions = (
             voice is not None
             and options.voice is not None
             and options.voice.captions is not VoiceCaptions.KEEP
         )
+        removing_captions = _wanted_captions(options) is VoiceCaptions.REMOVE
         reframing = options.framing is not None
         retrimming = bool(options.start_delta_sec or options.end_delta_sec)
         # Hiding something is a change to the pixels, so it takes the expensive
@@ -1034,7 +1041,7 @@ class RemakeStage:
             options.obscure.auto or bool(options.obscure.regions)
         )
 
-        if not (reframing or retrimming or rebuilding_captions or hiding):
+        if not (reframing or retrimming or rebuilding_captions or removing_captions or hiding):
             existing = Path(original.local_path)
             if not existing.is_file():
                 raise RemakeStageError(
@@ -1255,7 +1262,7 @@ class RemakeStage:
           sentence at the speed the script implies, and captions cut from the
           script drift within a few seconds.
         """
-        wanted = options.voice.captions if options.voice is not None else None
+        wanted = _wanted_captions(options)
 
         if wanted is VoiceCaptions.REMOVE:
             return None
@@ -1756,6 +1763,21 @@ class RemakeStage:
             model=self._settings.ollama_model,
             num_ctx=self._settings.ollama_num_ctx,
         )
+
+
+def _wanted_captions(options: RemakeOptions) -> VoiceCaptions | None:
+    """What this remake wants done with the burned-in captions.
+
+    Two places can say it, and they are not competing. `voice.captions` comes
+    with a new narration and is the only one that can mean REBUILD; the
+    top-level `captions` is for a reviewer who wants the words off the picture
+    and is not touching the soundtrack. The voice wins when both are set,
+    because a note that changed the language has already decided what the
+    captions must say.
+    """
+    if options.voice is not None:
+        return options.voice.captions
+    return options.captions
 
 
 def _inherited_voice(original: Clip) -> VoiceOptions | None:

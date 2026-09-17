@@ -362,7 +362,12 @@ service cloud.firestore {
              && options.keys().hasOnly(
                   ['notes', 'interpretNotes', 'framing', 'voice',
                    'startDeltaSec', 'endDeltaSec', 'profile', 'obscure',
-                   'keepMusic'])
+                   'keepMusic', 'captions'])
+             // Captions are a property of the picture, so this stands beside
+             // `voice` rather than inside it. REBUILD is meaningless without a
+             // new narration to transcribe, and the stage ignores it here.
+             && (options.get('captions', null) == null
+                 || options.captions in ['KEEP', 'REMOVE', 'REBUILD'])
              && (options.get('notes', null) == null
                  || (options.notes is string && options.notes.size() <= 2000))
              && (options.get('interpretNotes', null) == null || options.interpretNotes is bool)

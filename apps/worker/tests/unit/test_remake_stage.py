@@ -47,6 +47,7 @@ from clipforge_contracts import (
     MusicCaptions,
     MusicMode,
     NoteAudio,
+    NoteCaptions,
     NoteCrop,
     NoteFraming,
     NoteObscure,
@@ -824,6 +825,7 @@ def test_a_refusal_from_the_note_reaches_the_clip(tmp_path: Path) -> None:
                 start_delta_sec=0,
                 end_delta_sec=0,
                 obscure=NoteObscure.NOT_MENTIONED,
+                captions=NoteCaptions.NOT_MENTIONED,
                 unsupported=[UnsupportedAsk.SLOW_MOTION],
                 summary="fit the whole frame",
             )

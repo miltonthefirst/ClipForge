@@ -385,6 +385,17 @@ export class ClipPage implements OnDestroy {
    */
   protected readonly remakeKeepMusic = signal(true);
 
+  /**
+   * Take the burned-in captions off, without touching the voice.
+   *
+   * Separate from `remakeVoiceCaptions` because that one only applies when a
+   * new narration is being synthesised. A reviewer who writes "Remove caption"
+   * is not asking for a different voice, and until this existed the request had
+   * nowhere to go: the note was read correctly and the clip came back with its
+   * captions and a summary about the language.
+   */
+  protected readonly remakeRemoveCaptions = signal(false);
+
   protected readonly notesMax = NOTES_MAX;
   protected readonly scriptMax = SCRIPT_MAX;
   protected readonly trimLimit = TRIM_LIMIT_SEC;
@@ -1059,6 +1070,10 @@ export class ClipPage implements OnDestroy {
       // and saying so explicitly is what makes the request readable later
       // beside a clip that came back without its track.
       keepMusic: this.remakeKeepMusic(),
+      // Omitted rather than sent as KEEP when the box is unticked: the rules
+      // accept an absent field, and an absent one is what "the reviewer did not
+      // raise this" has meant everywhere else in these options.
+      ...(this.remakeRemoveCaptions() ? { captions: 'REMOVE' as const } : {}),
     };
 
     await this.run('Remake queued — the new version will appear in the review queue', async () => {
