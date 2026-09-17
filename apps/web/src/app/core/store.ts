@@ -28,6 +28,7 @@ import type {
 import {
   collection,
   doc,
+  getDoc,
   limit,
   onSnapshot,
   orderBy,
@@ -460,6 +461,54 @@ export class ClipForgeStore {
     }
 
     await updateDoc(doc(this.firebase.db, 'clips', clipId), changes);
+    await this.settleLineage(clipId, review);
+  }
+
+  /**
+   * Carry a decision to the rest of the versions it was also about.
+   *
+   * A reviewer decides about a video, not about an attempt. The fifth cut is
+   * what the first four were for, so approving it settles them too — and
+   * rejecting it rejects the idea, not the latest render of it.
+   *
+   * Before this they were left PENDING for ever. `latestOfEachLineage` keeps
+   * them out of the queue, so nothing looked wrong; they simply accumulated,
+   * and the reviewer met them later as a pile of tidying that the decision
+   * should already have done.
+   *
+   * Approving marks the others superseded rather than deleting them here: the
+   * worker's tidy pass removes them after a grace period, which is what leaves
+   * room to change your mind. Rejecting marks the whole lineage REJECTED and
+   * the same pass takes the records and bins the files.
+   *
+   * Failures are swallowed on purpose. The decision itself is already written,
+   * and a lineage that did not settle is untidy rather than wrong — throwing
+   * here would report a failed review that actually succeeded.
+   */
+  private async settleLineage(clipId: string, review: ReviewState): Promise<void> {
+    if (review !== 'APPROVED' && review !== 'REJECTED') return;
+    try {
+      const decided = await getDoc(doc(this.firebase.db, 'clips', clipId));
+      const lineageId = (decided.data() as Clip | undefined)?.lineageId ?? clipId;
+      const versions = await this.loadLineage(lineageId);
+      const others = versions.filter((clip) => clip.id !== clipId);
+      if (others.length === 0) return;
+
+      const { writeBatch } = await import('firebase/firestore');
+      const now = new Date().toISOString();
+      const batch = writeBatch(this.firebase.db);
+      for (const clip of others) {
+        batch.update(
+          doc(this.firebase.db, 'clips', clip.id),
+          review === 'REJECTED'
+            ? { review: 'REJECTED', reviewedAt: now }
+            : { supersededAt: now },
+        );
+      }
+      await batch.commit();
+    } catch (error) {
+      console.warn('could not settle the rest of the lineage', error);
+    }
   }
 
   /**

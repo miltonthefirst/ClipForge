@@ -132,6 +132,12 @@ export class ReviewPage implements OnDestroy {
    */
   private latestOfEachLineage(clips: Clip[]): Clip[] {
     const best = new Map<string, Clip>();
+    // A superseded version is one a decision has already been made about: a
+    // later cut of it was approved. It stays PENDING because nothing rewrites
+    // `review` on the versions that lost, and until the worker's tidy pass
+    // collects it there is a window where it would otherwise reappear here as
+    // the only survivor of its lineage — the decision undone by a deletion.
+    clips = clips.filter((clip) => !clip.supersededAt);
     for (const clip of clips) {
       // A clip written before lineages existed is its own root.
       const key = clip.lineageId ?? clip.id;

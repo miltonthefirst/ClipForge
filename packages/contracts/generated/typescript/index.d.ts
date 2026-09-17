@@ -871,6 +871,14 @@ export interface Clip {
   review: ReviewState;
   reviewedAt?: string | null;
   /**
+   * When a later version of this clip was approved, making this one history.
+   *
+   * A decision is about the video, not about the attempt. Approving the fifth cut of a clip settles the first four as well, and before this they stayed PENDING for ever: `latestOfEachLineage` kept them out of the queue, so they were invisible rather than resolved, and the reviewer found them later as work to tidy up.
+   *
+   * A timestamp beside `review` rather than a sixth `ReviewState`, because the desktop app ships its own copy of the PWA and does not update when hosting does — an added enum member is a value an older build cannot parse, while an unknown field is one it already ignores. It is also the grace period's clock: a superseded clip is deleted some days after this, not at once, so a reviewer who changes their mind has somewhere to change it back from.
+   */
+  supersededAt?: string | null;
+  /**
    * The id of the clip this one descends from, at the root of the chain — the clip RENDER originally made. Every version shares it, so a clip and every correction of it are one row in the review queue instead of five.
    *
    * That mattered immediately. The queue lists what is PENDING, a remake is always PENDING, and its parent usually still is too, so a single football clip corrected three times filled four slots and the reviewer had to work out which was newest. Null on a clip written before this field existed; readers treat that as the clip being its own root.

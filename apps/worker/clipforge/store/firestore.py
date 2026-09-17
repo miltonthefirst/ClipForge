@@ -41,6 +41,7 @@ from clipforge_contracts import (
     PreferenceStatus,
     Publication,
     PublicationState,
+    ReviewState,
     Source,
     SourceProvider,
     StageStatus,
@@ -758,6 +759,55 @@ class ClipStore:
             filter=firestore.FieldFilter("jobId", "==", job_id)
         )
         return [_read(Clip, doc.to_dict() or {}) for doc in query.stream()]
+
+    def settled(self) -> list[Clip]:
+        """Every clip a review decision has finished with.
+
+        Two reads rather than one: Firestore has no OR across fields, and the
+        alternative is streaming the whole collection to filter it here. The
+        union is deduplicated because a rejected clip can also carry a
+        `supersededAt` from an approval that happened first.
+        """
+        found: dict[str, Clip] = {}
+        for field_filter in (
+            firestore.FieldFilter("review", "==", ReviewState.REJECTED.value),
+            firestore.FieldFilter("supersededAt", "!=", None),
+        ):
+            for doc in self._db.collection(CLIPS).where(filter=field_filter).stream():
+                clip = _read(Clip, doc.to_dict() or {})
+                found[clip.id] = clip
+        return list(found.values())
+
+    def lineage_peers(self, clips: list[Clip]) -> list[Clip]:
+        """The rest of the versions belonging to the lineages in `clips`.
+
+        The tidy pass has to know which clip is the newest of its lineage before
+        it collects any of them, and `settled()` only returns the ones with a
+        decision on them — the survivor usually has none.
+        """
+        wanted = {clip.lineage_id or clip.id for clip in clips}
+        if not wanted:
+            return []
+        found: dict[str, Clip] = {}
+        for lineage_id in sorted(wanted):
+            query = self._db.collection(CLIPS).where(
+                filter=firestore.FieldFilter("lineageId", "==", lineage_id)
+            )
+            for doc in query.stream():
+                clip = _read(Clip, doc.to_dict() or {})
+                found[clip.id] = clip
+            # A clip written before lineages existed is its own root, and no
+            # document carries its id in `lineageId`.
+            if lineage_id not in found:
+                snapshot = self._db.collection(CLIPS).document(lineage_id).get()
+                if snapshot.exists:
+                    clip = _read(Clip, snapshot.to_dict() or {})
+                    found[clip.id] = clip
+        return list(found.values())
+
+    def forget(self, clip_id: str) -> None:
+        """Remove a clip's record. The file is the caller's business."""
+        self._db.collection(CLIPS).document(clip_id).delete()
 
     def preview(self, clip_id: str) -> ClipPreview | None:
         snapshot = (

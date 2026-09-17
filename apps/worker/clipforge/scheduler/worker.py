@@ -45,14 +45,16 @@ from clipforge_contracts import (
 )
 
 from clipforge.config import Settings
+from clipforge.media.trash import Trash
 from clipforge.models.broker import ModelBroker
 from clipforge.models.vram import probe_vram
 from clipforge.observability import bind_job, get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.runner import LeaseLostError, StageRunner
+from clipforge.scheduler.tidy import tidy_reviewed_clips
 from clipforge.stages.base import StageProgress, StageRegistry
 from clipforge.stages.echo import registry_for
-from clipforge.store.firestore import JobStore, WorkerStore
+from clipforge.store.firestore import ClipStore, JobStore, WorkerStore
 from clipforge.version import __version__
 
 log = get_logger(__name__)
@@ -70,6 +72,10 @@ class Worker:
         jobs: JobStore,
         workers: WorkerStore,
         broker: ModelBroker | None = None,
+        # Optional so every existing caller and test keeps working: without it
+        # the worker simply does not tidy, which is the behaviour it had before.
+        clips: ClipStore | None = None,
+        trash: Trash | None = None,
         uid: str = "local",
         poll_interval_s: float = 1.0,
         registry_factory: Callable[[JobType], StageRegistry] = registry_for,
@@ -78,6 +84,8 @@ class Worker:
         self._jobs = jobs
         self._workers = workers
         self._broker = broker or ModelBroker(reserve_mb=settings.vram_reserve_mb)
+        self._clips = clips
+        self._trash = trash
         self._uid = uid
         self._poll_interval_s = poll_interval_s
         # Injected so tests can supply stage behaviour that is awkward to
@@ -342,6 +350,33 @@ class Worker:
                 continue
             if reaped:
                 log.info("reaper.reclaimed", jobs=[j.id for j in reaped])
+
+            self._tidy_once()
+
+    def _tidy_once(self) -> None:
+        """Collect the clips a review decision has already settled.
+
+        On the reaper's cadence rather than a thread of its own: both are
+        periodic housekeeping, neither is urgent, and a second timer would be a
+        second thing to reason about when the worker is shutting down.
+
+        Swallows everything. A failure to tidy is untidy, and taking the reaper
+        down with it would cost the thing that actually matters.
+        """
+        if self._clips is None or self._trash is None:
+            return
+        try:
+            settled = self._clips.settled()
+            if not settled:
+                return
+            tidy_reviewed_clips(
+                self._clips.lineage_peers(settled),
+                trash=self._trash,
+                delete_record=self._clips.forget,
+                grace_days=self._settings.superseded_grace_days,
+            )
+        except Exception:
+            log.exception("tidy.failed")
 
     # ── Heartbeat document ───────────────────────────────────────────────────
 

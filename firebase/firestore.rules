@@ -670,11 +670,18 @@ service cloud.firestore {
       // same breath keeps the document honest about what is in the bucket. It
       // is not an exception to "the client may not write pipeline state": the
       // render itself is `localPath`, which stays untouchable.
+      // `supersededAt` is a decision, not pipeline state: it records that a
+      // later version of this clip was approved, which is something only the
+      // reviewer knows. It is write-once-ish by intent — a timestamp or null,
+      // never anything else — and the worker's tidy pass is what acts on it.
       allow update: if isApproved()
                     && changed().hasOnly(['review', 'reviewedAt', 'reviewNote',
                                           'title', 'description', 'storagePath',
-                                          'playbackExpiresAt'])
+                                          'playbackExpiresAt', 'supersededAt'])
                     && request.resource.data.review in ['PENDING', 'APPROVED', 'REJECTED']
+                    && (!('supersededAt' in changed())
+                        || request.resource.data.supersededAt == null
+                        || request.resource.data.supersededAt is string)
                     && (!('storagePath' in changed())
                         || request.resource.data.storagePath == null)
                     && (!('playbackExpiresAt' in changed())
