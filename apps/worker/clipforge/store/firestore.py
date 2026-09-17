@@ -43,6 +43,7 @@ from clipforge_contracts import (
     PublicationState,
     ReviewState,
     Source,
+    SourceKind,
     SourceProvider,
     StageStatus,
     TranscriptRef,
@@ -625,6 +626,41 @@ class SourceStore:
         self._db.collection(SOURCES).document(source_id).update(
             {"lastAccessedAt": now or datetime.now(UTC)}
         )
+
+    def record_use(self, source_id: str, *, now: datetime | None = None) -> None:
+        """Count one job against this source, and touch it while we are here.
+
+        `Increment` rather than read-modify-write: two jobs can start on the same
+        source in the same second — the CPU lane runs three deep — and the count
+        this decides eviction by is not worth losing a race over.
+
+        Counted per job rather than per read. A CLIP pipeline opens the same
+        file in DOWNLOAD, ANALYZE and RENDER; scoring that as three uses would
+        make a source look popular for having a long pipeline.
+        """
+        self._db.collection(SOURCES).document(source_id).update(
+            {
+                "useCount": firestore.Increment(1),
+                "lastAccessedAt": now or datetime.now(UTC),
+            }
+        )
+
+    def of_kind(self, kind: SourceKind, *, uid: str | None = None) -> list[Source]:
+        """Every source of one kind, for the Sources list.
+
+        `kind` is absent on everything written before the field existed, and a
+        Firestore equality filter does not match a missing field — so video is
+        read as "not music" rather than as "kind == video", which is the only
+        form that finds the sources already on disk.
+        """
+        collection = self._db.collection(SOURCES)
+        query: firestore.Query | firestore.CollectionReference = (
+            collection.where(filter=firestore.FieldFilter("uid", "==", uid))
+            if uid is not None
+            else collection
+        )
+        found = [_read(Source, doc.to_dict() or {}) for doc in query.stream()]
+        return [source for source in found if source.kind is kind]
 
     def eviction_candidates(self, *, uid: str | None = None) -> list[Source]:
         """Downloaded sources the GC may consider.

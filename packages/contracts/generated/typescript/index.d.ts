@@ -103,6 +103,10 @@ export type JobEventKind =
  */
 export type SourceProvider = 'youtube' | 'local';
 /**
+ * Whether this is footage to cut from or a track to score with. Null and absent both read as video, which is what every source written before this field was.
+ */
+export type SourceKind = 'video' | 'music';
+/**
  * Why an ingest failed, in terms a user can act on. Phase 3 requires each of these to map to a distinct user-facing message rather than a stack trace: 'this video is age-restricted' is actionable, 'DownloadError' is not. Only RATE_LIMITED and NETWORK are worth retrying.
  */
 export type IngestErrorCode =
@@ -655,6 +659,17 @@ export interface Source {
    * Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read.
    */
   lastAccessedAt?: string | null;
+  kind?: SourceKind;
+  /**
+   * How many jobs have used this source. The number the Sources list sorts by, and the one that decides what survives garbage collection: a source used more than once is kept, because a reviewer who came back to it will come back again, and re-downloading it costs the one thing this project cannot buy back — a video that has since been taken down.
+   *
+   * Counted per job rather than per read, so a CLIP pipeline reading the same file in DOWNLOAD, ANALYZE and RENDER scores one use and not three.
+   */
+  useCount?: number;
+  /**
+   * A frame from the video, or the track's cover art, on this machine. Local rather than uploaded: this is the Sources list's thumbnail and the list is only useful on the machine that holds the files, so paying Cloud Storage for a picture of a file the phone cannot open either way would buy nothing.
+   */
+  posterPath?: string | null;
   createdAt: string;
 }
 /**

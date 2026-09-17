@@ -187,6 +187,9 @@ class FakeWorkspace:
     def __init__(self, root: Path) -> None:
         self.tmp_dir = root / "tmp"
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        # Tracks live outside tmp so they survive a worker restart.
+        self.music_dir = root / "music"
+        self.music_dir.mkdir(parents=True, exist_ok=True)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────

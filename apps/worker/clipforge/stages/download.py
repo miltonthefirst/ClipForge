@@ -185,7 +185,13 @@ class DownloadStage:
                 path=Path(source.local_path),
                 size_bytes=source.size_bytes or 0,
                 last_accessed_at=source.last_accessed_at or source.created_at,
-                pinned=bool(source.pinned),
+                # Pinned by hand, or pinned by being worth coming back to. A
+                # source used more than once is one the reviewer returned to,
+                # and they will return again — while re-fetching it risks the
+                # one thing this project cannot buy back, a video that has since
+                # been taken down. A single-use source stays collectable, so the
+                # budget keeps its release valve.
+                pinned=bool(source.pinned) or (source.use_count or 0) > 1,
             )
             for source in self._sources.eviction_candidates()
             if source.provider is not SourceProvider.LOCAL and source.local_path

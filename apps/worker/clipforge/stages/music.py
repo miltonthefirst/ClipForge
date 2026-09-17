@@ -68,6 +68,7 @@ from clipforge_contracts import (
 from clipforge.config import Settings
 from clipforge.media.ffprobe import probe
 from clipforge.media.framing import FramingError, build_video_chain
+from clipforge.media.library import remember_music
 from clipforge.media.obscure import merge_regions
 from clipforge.media.profiles import load_profile
 from clipforge.media.render import RenderRequest, render_clip
@@ -205,7 +206,7 @@ class MusicStage:
                 forced_start_sec=None,
                 forced_tempo_bpm=None,
                 has_original_audio=media.has_audio,
-                work_dir=self._workspace.tmp_dir,
+                work_dir=self._workspace.music_dir,
                 ffmpeg=self._settings.ffmpeg_bin,
                 ffprobe=self._settings.ffprobe_bin,
                 on_progress=context.progress,
@@ -216,6 +217,18 @@ class MusicStage:
             # A TimeoutError from the same call is deliberately left alone: a
             # wedged ffmpeg is the one failure here another attempt gets past.
             raise MusicStageError(str(exc)) from exc
+
+        # Keep score of the track. It is what the Sources list sorts by and what
+        # decides, later, whether the collector may reclaim it — a bed used
+        # twice is one the reviewer will come back to a third time.
+        if result.track_path is not None:
+            remember_music(
+                self._sources,
+                uid=job.uid,
+                reference=options.source,
+                path=result.track_path,
+                title=result.track_title,
+            )
 
         # ── What is left of the parent's record ──────────────────────────────
         #

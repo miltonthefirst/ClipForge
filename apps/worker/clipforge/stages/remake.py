@@ -1519,7 +1519,7 @@ class RemakeStage:
                 has_original_audio=media.has_audio,
                 # The same directory MUSIC fetched into, so a track already on
                 # this machine is not pulled off YouTube a second time.
-                work_dir=self._workspace.tmp_dir,
+                work_dir=self._workspace.music_dir,
                 ffmpeg=self._settings.ffmpeg_bin,
                 ffprobe=self._settings.ffprobe_bin,
                 on_progress=context.progress,

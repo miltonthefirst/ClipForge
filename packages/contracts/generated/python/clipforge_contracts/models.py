@@ -896,6 +896,19 @@ class SourceProvider(StrEnum):
     LOCAL = "local"
 
 
+class SourceKind(StrEnum):
+    """
+    What a source is for, which is a different question from where it came from — `SourceProvider` answers that, and both a video and a music track can be either.
+
+    Music used to be neither: a track was fetched to `tmp`, mixed, and swept, on the reasoning that it is not clipped, not transcribed and not tracked. That held until the same track was wanted twice. Re-fetching a bed the reviewer has already chosen costs a download for bytes that were on the disk an hour ago, and nothing could answer "which tracks do I actually use?" because nothing was keeping score.
+
+    Defaults to video, which is what every source written before this field was.
+    """
+
+    VIDEO = "video"
+    MUSIC = "music"
+
+
 class Source(BaseModel):
     """
     One ingested long-form video at sources/{sourceId}. The media itself never leaves the worker (docs/PLAN.md decision D3).
@@ -938,6 +951,20 @@ class Source(BaseModel):
     last_accessed_at: AwareDatetime | None = Field(None, alias="lastAccessedAt")
     """
     Drives least-recently-used eviction. Touched whenever a stage reads the file, not when the document is read.
+    """
+    kind: SourceKind | None = "video"
+    """
+    Whether this is footage to cut from or a track to score with. Null and absent both read as video, which is what every source written before this field was.
+    """
+    use_count: int | None = Field(0, alias="useCount", ge=0)
+    """
+    How many jobs have used this source. The number the Sources list sorts by, and the one that decides what survives garbage collection: a source used more than once is kept, because a reviewer who came back to it will come back again, and re-downloading it costs the one thing this project cannot buy back — a video that has since been taken down.
+
+    Counted per job rather than per read, so a CLIP pipeline reading the same file in DOWNLOAD, ANALYZE and RENDER scores one use and not three.
+    """
+    poster_path: str | None = Field(None, alias="posterPath")
+    """
+    A frame from the video, or the track's cover art, on this machine. Local rather than uploaded: this is the Sources list's thumbnail and the list is only useful on the machine that holds the files, so paying Cloud Storage for a picture of a file the phone cannot open either way would buy nothing.
     """
     created_at: AwareDatetime = Field(..., alias="createdAt")
 

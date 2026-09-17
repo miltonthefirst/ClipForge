@@ -79,6 +79,14 @@ class AppliedMusicResult:
     track_title: str | None
     """What the source called the track, or ``None`` when nothing named it."""
 
+    track_path: Path | None = None
+    """The track itself, on disk, so the caller can keep score of it.
+
+    Returned rather than re-derived: only this function knows whether the fetch
+    hit the cache or downloaded, and the caller's job is to record that a track
+    was used — which is what decides, later, whether it is worth keeping.
+    """
+
 
 def apply_music(
     *,
@@ -174,7 +182,9 @@ def apply_music(
         tempo_bpm=round(plan.tempo_bpm, 1) if plan.tempo_bpm else None,
         analysed=forced_start_sec is None or forced_tempo_bpm is None,
     )
-    return AppliedMusicResult(path=destination, plan=plan, track_title=track.title)
+    return AppliedMusicResult(
+        path=destination, plan=plan, track_title=track.title, track_path=track.path
+    )
 
 
 def _recorded_analysis(track: Path, tempo_bpm: float, *, ffprobe: str) -> BeatAnalysis:
