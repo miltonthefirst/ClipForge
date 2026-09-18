@@ -170,7 +170,9 @@ export class ClipsRepository {
    * to load — but it does not have to load *with the list*.
    */
   async loadPreview(clipId: string): Promise<ClipPreview | null> {
-    return this.db.onceDoc<ClipPreview>(`clips/${clipId}/preview`, 'poster');
+    // Write-once: RENDER writes it and nothing updates it, so coming back to
+    // the queue redraws from memory instead of re-fetching 28 KB of base64.
+    return this.db.stableDoc<ClipPreview>(`clips/${clipId}/preview`, 'poster');
   }
 
   /**
@@ -180,7 +182,9 @@ export class ClipsRepository {
    * the video itself cannot be played remotely.
    */
   async loadCandidate(candidateId: string): Promise<Candidate | null> {
-    return this.db.onceDoc<Candidate>('candidates', candidateId);
+    // Write-once, the same as the poster: ANALYZE proposed this window and
+    // nothing rewrites it.
+    return this.db.stableDoc<Candidate>('candidates', candidateId);
   }
 
   /**

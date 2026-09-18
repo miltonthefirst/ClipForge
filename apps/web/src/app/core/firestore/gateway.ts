@@ -76,6 +76,8 @@ interface Entry {
 export class FirestoreGateway {
   private readonly firebase = inject(FirebaseService);
   private readonly entries = new Map<string, Entry>();
+  /** Write-once documents, kept for the life of the app. See {@link stableDoc}. */
+  private readonly stable = new Map<string, Promise<unknown>>();
 
   constructor() {
     inject(DestroyRef).onDestroy(() => {
@@ -118,6 +120,49 @@ export class FirestoreGateway {
   async onceDoc<T>(path: string, id: string): Promise<T | null> {
     const snapshot = await getDoc(doc(this.firebase.db, path, id));
     return snapshot.exists() ? fromDocument<T>(snapshot.data()) : null;
+  }
+
+  /**
+   * A document that cannot change, read once for as long as the app is open.
+   *
+   * For write-once records only — a clip's poster, the candidate window a clip
+   * was cut from, a source's thumbnail. One stage writes each of them and
+   * nothing ever updates them, so a second read can only return what the first
+   * one did.
+   *
+   * This is the difference between a page that re-opens and a page that comes
+   * back. A held listener already makes the *list* instant on returning to a
+   * screen, but everything derived per row was fetched by the component, and
+   * the router destroys that component on the way out — so Review to Jobs to
+   * Review re-fetched a poster and a candidate for every card, about a quarter
+   * of a megabyte of base64, to redraw what was on screen a moment earlier.
+   *
+   * Deliberately narrow, and deliberately not a general read-through cache. A
+   * cache over mutable documents is a page showing a decision somebody has
+   * already changed; `onceDoc` beside it stays uncached for exactly that
+   * reason, and the caller picks by knowing which kind of document it is.
+   *
+   * The promise is cached rather than the value, so a row that asks while the
+   * first read is still in flight waits on that read instead of starting a
+   * second. A failed read is evicted: a poster missing because the network
+   * dropped is not a poster that does not exist.
+   */
+  stableDoc<T>(path: string, id: string): Promise<T | null> {
+    const key = `${path}/${id}`;
+    const held = this.stable.get(key);
+    if (held) return held as Promise<T | null>;
+
+    const reading = this.onceDoc<T>(path, id).catch((error: unknown) => {
+      this.stable.delete(key);
+      throw error;
+    });
+    this.stable.set(key, reading as Promise<unknown>);
+    return reading;
+  }
+
+  /** Forget one write-once document, for the rare case something rewrote it. */
+  forgetStable(path: string, id: string): void {
+    this.stable.delete(`${path}/${id}`);
   }
 
   /**

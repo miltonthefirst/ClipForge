@@ -125,7 +125,9 @@ export class SourcesRepository {
    * again on every reconnect. The list arrives first and the pictures fill in.
    */
   async loadPreview(sourceId: string): Promise<SourcePreview | null> {
-    return this.db.onceDoc<SourcePreview>(`sources/${sourceId}/preview`, 'poster');
+    // Write-once, like a clip's poster, and worth it for the same reason: the
+    // Sources list redraws from memory rather than re-fetching every thumbnail.
+    return this.db.stableDoc<SourcePreview>(`sources/${sourceId}/preview`, 'poster');
   }
 
   /** What a job's submission resolved to, once ingestion has worked it out. */
