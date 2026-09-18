@@ -80,10 +80,10 @@ time, and a row that ranked oddly can be explained by reading the components off
 it rather than by asking a model why. Signals are clustered by topic tokens —
 Jaccard for the general case, containment for the case the feeds actually
 produce, which is a two-word trending phrase inside a twelve-word post title —
-and the cluster is scored on how many providers agree (30), how loudly the
-loudest one said it (25), how recently (15), whether there is any video at all
-(10), how good the best one looks (10), and whether it is about something the
-channel covers (10).
+and the cluster is scored on how many providers agree (30), whether it is
+about something the channel covers (20), how loudly the loudest one said it
+(20), how recently (10), whether there is any video at all (10), and how good
+the best one looks (10).
 
 Clustering by tokens rather than by a model is a deliberate choice about which
 mistakes to make. Two rows that should have been one are two rows, which a
@@ -146,6 +146,15 @@ already moved once; the parser matches local tag names for that reason.
 **Reddit is the weakest signal by construction.** No upvote count means position
 is all it can offer, and a subreddit's top-of-day is fifty posts however quiet
 the day was. It earns its place by being the one provider that links the video.
+
+**The first real run rewrote two numbers.** Asked about the Premier League from
+GB, it returned one football row and seven American political posts from
+r/videos: a position of 1 read as strength 1.0 — louder than a million searches
+— and a topic match was worth ten points. Position now tops out at 0.7 and a
+match is worth twenty, which is the same as the loudest provider. The same run
+showed every Reddit-linked video scoring as "unknown views", below anything a
+search returned; the finder now looks those up, a bounded number per row, and
+the row still records that Reddit surfaced them.
 
 ## Alternatives considered
 

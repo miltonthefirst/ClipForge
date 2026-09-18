@@ -1392,7 +1392,11 @@ scorer just produces bad clips faster.
 **Exit criteria.** A manual trend run produces a ranked opportunity list; promoting one creates a normal
 job; quota consumption is bounded and displayed; nothing runs without a human trigger.
 
-**Delivered** (2026-09-19). A `RESEARCH` job type of two stages — `RESEARCH` on the CPU lane asks
+**Delivered** (2026-09-19), and run once for real against the live feeds on the emulator: 61 signals
+from three providers, 8 rows ranked in under a minute (most of it looking up the videos Reddit
+linked), all 8 explained by the model in 37 seconds. That
+run rewrote two scoring weights before the day was out — see ADR-0021's last section. A `RESEARCH`
+job type of two stages — `RESEARCH` on the CPU lane asks
 the providers and ranks; `CURATE` on the GPU lane puts each row to the local model for an angle and
 a relevance score, and degrades to `SKIPPED` without one — and a `trends/` collection the worker
 writes and a person decides about. The Trends page asks, lists, and offers two actions per video:

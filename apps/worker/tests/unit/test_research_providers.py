@@ -25,7 +25,7 @@ from clipforge.research.providers import (
     strength_from_traffic,
     strength_from_velocity,
 )
-from clipforge.research.signals import ResearchRequest
+from clipforge.research.signals import ResearchRequest, VideoHit
 from clipforge_contracts import TrendSource
 
 NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
@@ -109,10 +109,12 @@ def test_traffic_strength_puts_the_knee_at_twenty_thousand_searches() -> None:
 
 
 @pytest.mark.unit
-def test_position_strength_keeps_a_floor_for_the_last_post() -> None:
-    assert strength_from_position(1, 50) == 1.0
-    assert strength_from_position(50, 50) == pytest.approx(0.2)
-    assert strength_from_position(1, 1) == 1.0
+def test_position_strength_keeps_a_floor_for_the_last_post_and_a_ceiling_for_the_first() -> None:
+    """The top of one subreddit on one day is not the loudest thing a provider can say."""
+    assert strength_from_position(1, 50) == pytest.approx(0.7)
+    assert strength_from_position(50, 50) == pytest.approx(0.15)
+    assert strength_from_position(1, 1) == pytest.approx(0.7)
+    assert strength_from_position(1, 50) < strength_from_traffic(1_000_000)
 
 
 @pytest.mark.unit
@@ -191,7 +193,7 @@ def test_reddit_reads_titles_positions_and_the_youtube_link_inside_the_content()
     ]
     first, second = signals
     assert first.source is TrendSource.REDDIT
-    assert first.strength == 1.0
+    assert first.strength == pytest.approx(0.7)
     assert first.detail == "r/videos · #1 today"
     assert first.url == "https://www.reddit.com/r/videos/comments/one/"
     assert len(first.videos) == 1
@@ -323,6 +325,53 @@ def test_youtube_provider_tolerates_a_failed_lookup_and_a_live_stream() -> None:
     assert [hit.external_id for hit in hits] == ["aaaaaaaaaaa"]
     assert hits[0].uploaded_at is None
     assert hits[0].view_count == 10
+
+
+@pytest.mark.unit
+def test_enrich_fills_in_what_a_reddit_link_did_not_know_and_keeps_who_shared_it() -> None:
+    def inspect(url: str) -> dict[str, Any]:
+        return {
+            "timestamp": int((NOW - timedelta(hours=5)).timestamp()),
+            "view_count": 42_000,
+            "duration": 300,
+        }
+
+    provider = YouTubeSearchProvider(search=lambda _u, _l: [], inspect=inspect)
+    shared = VideoHit(
+        url="https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        external_id="aaaaaaaaaaa",
+        title="Shared on Reddit",
+        via=TrendSource.REDDIT,
+        thumbnail_url="https://preview/x.jpg",
+    )
+    enriched = provider.enrich(shared)
+    assert enriched.view_count == 42_000
+    assert enriched.uploaded_at == NOW - timedelta(hours=5)
+    assert enriched.duration_sec == 300.0
+    assert enriched.via is TrendSource.REDDIT
+    assert enriched.title == "Shared on Reddit"
+    assert enriched.thumbnail_url == "https://preview/x.jpg"
+
+
+@pytest.mark.unit
+def test_enrich_leaves_a_hit_that_already_knows_alone() -> None:
+    calls: list[str] = []
+
+    def inspect(url: str) -> dict[str, Any]:
+        calls.append(url)
+        return {}
+
+    provider = YouTubeSearchProvider(search=lambda _u, _l: [], inspect=inspect)
+    known = VideoHit(
+        url="u",
+        external_id="aaaaaaaaaaa",
+        title="t",
+        via=TrendSource.YOUTUBE,
+        view_count=1,
+        uploaded_at=NOW,
+    )
+    assert provider.enrich(known) is known
+    assert calls == []
 
 
 @pytest.mark.unit

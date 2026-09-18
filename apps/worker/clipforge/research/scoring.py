@@ -326,10 +326,13 @@ def score_trend(
     """The opportunity score, 0-100, with its parts fixed by weight.
 
     Agreement between providers is worth the most (30): one feed saying a thing
-    is a feed; two saying it is news. Then how loudly the loudest one said it
-    (25), how recently (15), whether there is any video at all (10) and how
-    good the best one looks (10), and whether it is about something this
-    channel actually covers (10).
+    is a feed; two saying it is news. Whether it is about something this channel
+    actually covers is worth as much as the loudest provider (20 each): the
+    first real run, asked about the Premier League, listed one football row and
+    seven American political posts from r/videos, because a topic match was
+    worth ten points and a top-of-subreddit position was worth twenty-five.
+    Then how recently (10), whether there is any video at all (10) and how
+    good the best one looks (10).
     """
     sources = len(cluster.sources)
     corroboration = {1: 0.3, 2: 0.7}.get(sources, 1.0 if sources >= 3 else 0.0)
@@ -353,11 +356,11 @@ def score_trend(
 
     total = (
         30.0 * corroboration
-        + 25.0 * cluster.strength
-        + 15.0 * recency
+        + 20.0 * cluster.strength
+        + 10.0 * recency
         + (10.0 if scored_videos else 0.0)
         + 10.0 * best_video
-        + (10.0 if matched else 0.0)
+        + (20.0 if matched else 0.0)
     )
     return ScoredTrend(
         cluster=cluster,

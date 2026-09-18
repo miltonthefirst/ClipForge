@@ -7,6 +7,11 @@ and which are the job's, and what SELECT writes down about how each moment was
 chosen. ASSEMBLE needs ffmpeg and lives in the integration tier.
 """
 
+# The fakes below stand in for the stores by shape, not by type. Said once here
+# rather than on every argument, because the formatter moves a trailing comment
+# off the line it was written for.
+# mypy: disable-error-code="arg-type"
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -259,7 +264,7 @@ C = "https://youtu.be/ccccccccccc"
 
 def test_gather_ingests_every_item_and_records_which_source_each_became() -> None:
     download = FakeDownload({A: "src-a", B: "src-b"})
-    outcome = GatherStage(download=download).run(context(job(options()), stage=StageName.GATHER))  # type: ignore[arg-type]
+    outcome = GatherStage(download=download).run(context(job(options()), stage=StageName.GATHER))
     assert download.asked == [A, B]
     assert outcome.checkpoint == {
         "items": [
@@ -273,7 +278,7 @@ def test_gather_ingests_every_item_and_records_which_source_each_became() -> Non
 def test_gather_skips_a_dead_link_and_keeps_the_rest() -> None:
     download = FakeDownload({A: "src-a", B: DeadError("This video does not exist"), C: "src-c"})
     opts = options(items=[CompileItem(submission=s) for s in (A, B, C)])
-    outcome = GatherStage(download=download).run(context(job(opts), stage=StageName.GATHER))  # type: ignore[arg-type]
+    outcome = GatherStage(download=download).run(context(job(opts), stage=StageName.GATHER))
     items = (outcome.checkpoint or {})["items"]
     assert items[1]["sourceId"] is None
     assert items[1]["error"] == "This video does not exist"
@@ -284,7 +289,7 @@ def test_gather_skips_a_dead_link_and_keeps_the_rest() -> None:
 def test_gather_fails_the_job_when_fewer_than_two_survive() -> None:
     download = FakeDownload({A: "src-a", B: DeadError("gone")})
     with pytest.raises(CompileError) as caught:
-        GatherStage(download=download).run(context(job(options()), stage=StageName.GATHER))  # type: ignore[arg-type]
+        GatherStage(download=download).run(context(job(options()), stage=StageName.GATHER))
     assert caught.value.retryable is False
     assert caught.value.code == "COMPILE_TOO_FEW"
     assert "gone" in str(caught.value)
@@ -293,7 +298,7 @@ def test_gather_fails_the_job_when_fewer_than_two_survive() -> None:
 def test_gather_lets_a_rate_limit_retry_the_stage() -> None:
     download = FakeDownload({A: "src-a", B: RateLimitedError("429")})
     with pytest.raises(RateLimitedError):
-        GatherStage(download=download).run(context(job(options()), stage=StageName.GATHER))  # type: ignore[arg-type]
+        GatherStage(download=download).run(context(job(options()), stage=StageName.GATHER))
 
 
 def test_gather_resumes_without_refetching_what_already_landed() -> None:
@@ -306,14 +311,14 @@ def test_gather_resumes_without_refetching_what_already_landed() -> None:
     }
     GatherStage(download=download).run(
         context(job(options()), stage=StageName.GATHER, checkpoint=resumed)
-    )  # type: ignore[arg-type]
+    )
     assert download.asked == [B]
 
 
 def test_gather_refuses_a_job_with_no_options() -> None:
     the_job = job(options()).model_copy(update={"compile_options": None})
     with pytest.raises(CompileError, match="no compileOptions"):
-        GatherStage(download=FakeDownload({})).run(context(the_job, stage=StageName.GATHER))  # type: ignore[arg-type]
+        GatherStage(download=FakeDownload({})).run(context(the_job, stage=StageName.GATHER))
 
 
 # ── SELECT ───────────────────────────────────────────────────────────────────
@@ -328,12 +333,12 @@ def select_stage(
 ) -> tuple[SelectStage, FakeCandidateStore]:
     candidates = FakeCandidateStore()
     stage = SelectStage(
-        transcribe=transcribe or FakeTranscribe(),  # type: ignore[arg-type]
-        analyze=analyze,  # type: ignore[arg-type]
+        transcribe=transcribe or FakeTranscribe(),
+        analyze=analyze,
         archive=archive
-        or FakeArchive({"hash-src-a": transcript("src-a"), "hash-src-b": transcript("src-b")}),  # type: ignore[arg-type]
-        candidates=candidates,  # type: ignore[arg-type]
-        sources=sources or FakeSourceStore({}),  # type: ignore[arg-type]
+        or FakeArchive({"hash-src-a": transcript("src-a"), "hash-src-b": transcript("src-b")}),
+        candidates=candidates,
+        sources=sources or FakeSourceStore({}),
     )
     return stage, candidates
 

@@ -6,6 +6,11 @@ machine — and deliberately differ in frame rate and sample rate, because that
 mismatch is exactly what the concat filter exists to absorb.
 """
 
+# The fakes below stand in for the stores by shape, not by type. Said once here
+# rather than on every argument, because the formatter moves a trailing comment
+# off the line it was written for.
+# mypy: disable-error-code="arg-type"
+
 from __future__ import annotations
 
 import shutil
@@ -275,7 +280,7 @@ def test_assemble_writes_one_clip_that_records_every_segment(
         archive=FakeArchive(),
         workspace=FakeWorkspace(tmp_path),
         blobs=blobs,
-    )  # type: ignore[arg-type]
+    )
     options = CompileOptions(
         theme="Best goals of the week",
         items=[
@@ -333,7 +338,7 @@ def test_a_segment_whose_source_is_gone_is_skipped_and_written_down(
         archive=FakeArchive(),
         workspace=FakeWorkspace(tmp_path),
         blobs=FakeBlobStore(tmp_path / "bucket"),
-    )  # type: ignore[arg-type]
+    )
     options = CompileOptions(
         theme="x",
         items=[CompileItem(submission="a"), CompileItem(submission="b")],
@@ -368,7 +373,7 @@ def test_assemble_fails_when_no_segment_can_be_rendered(tmp_path: Path) -> None:
         archive=FakeArchive(),
         workspace=FakeWorkspace(tmp_path),
         blobs=FakeBlobStore(tmp_path / "bucket"),
-    )  # type: ignore[arg-type]
+    )
     options = CompileOptions(
         theme="x",
         items=[CompileItem(submission="a"), CompileItem(submission="b")],

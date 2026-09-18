@@ -8,6 +8,7 @@ Each part is pinned on its own, and the combination is pinned as an order.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from clipforge.research.scoring import (
@@ -172,7 +173,12 @@ def test_agreement_between_providers_is_worth_the_most() -> None:
             signal("shared topic", TrendSource.YOUTUBE, strength=0.5),
         ]
     )[0]
-    kwargs = {"now": NOW, "lookback_hours": 48, "interests": [], "max_duration_sec": MAX}
+    kwargs: dict[str, Any] = {
+        "now": NOW,
+        "lookback_hours": 48,
+        "interests": [],
+        "max_duration_sec": MAX,
+    }
     assert score_trend(agreed, **kwargs).score > score_trend(alone, **kwargs).score
 
 
@@ -186,7 +192,7 @@ def test_an_interest_match_is_recorded_and_rewarded() -> None:
         cluster, now=NOW, lookback_hours=48, interests=["premier league"], max_duration_sec=MAX
     )
     assert matched.matched == ("premier league",)
-    assert matched.score - plain.score == 10
+    assert matched.score - plain.score == 20
 
 
 @pytest.mark.unit
@@ -197,7 +203,12 @@ def test_a_topic_the_run_searched_for_matches_by_name() -> None:
 
 @pytest.mark.unit
 def test_videos_raise_a_trend_and_the_best_one_is_scored() -> None:
-    kwargs = {"now": NOW, "lookback_hours": 48, "interests": [], "max_duration_sec": MAX}
+    kwargs: dict[str, Any] = {
+        "now": NOW,
+        "lookback_hours": 48,
+        "interests": [],
+        "max_duration_sec": MAX,
+    }
     without = cluster_signals([signal("topic")])[0]
     with_video = cluster_signals([signal("topic", videos=(hit("aaaaaaaaaaa"),))])[0]
     assert score_trend(with_video, **kwargs).score > score_trend(without, **kwargs).score
@@ -208,7 +219,12 @@ def test_videos_raise_a_trend_and_the_best_one_is_scored() -> None:
 
 @pytest.mark.unit
 def test_ranking_is_best_first_bounded_and_stable() -> None:
-    kwargs = {"now": NOW, "lookback_hours": 48, "interests": [], "max_duration_sec": MAX}
+    kwargs: dict[str, Any] = {
+        "now": NOW,
+        "lookback_hours": 48,
+        "interests": [],
+        "max_duration_sec": MAX,
+    }
     clusters = cluster_signals(
         [
             signal("quiet", strength=0.1),

@@ -102,3 +102,7 @@ class VideoFinder(Protocol):
     def find_videos(
         self, topic: str, *, limit: int, request: ResearchRequest
     ) -> list[VideoHit]: ...
+
+    def enrich(self, hit: VideoHit) -> VideoHit:
+        """Look up what a sighting did not know — views, upload time. May raise."""
+        ...

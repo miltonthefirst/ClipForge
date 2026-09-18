@@ -78,14 +78,18 @@ def strength_from_traffic(approx_searches: int) -> float:
 
 
 def strength_from_position(position: int, total: int) -> float:
-    """Where a post sits in a top-of-the-day list → 0.2-1.0.
+    """Where a post sits in a top-of-the-day list → 0.15-0.7.
 
     A floor rather than zero for the last one: it is still in the top fifty of
-    the day, which is more than most things can say.
+    the day, which is more than most things can say. And a ceiling well short
+    of 1.0: the top of r/videos is the top of one subreddit on one day, however
+    quiet the day was, and the first real run ranked eight of its posts above
+    every trending search because a position of 1 read as the loudest thing
+    any provider can say. It is not; a million searches is.
     """
     if total <= 1:
-        return 1.0
-    return 0.2 + 0.8 * (1.0 - (position - 1) / (total - 1))
+        return 0.7
+    return 0.15 + 0.55 * (1.0 - (position - 1) / (total - 1))
 
 
 def strength_from_velocity(views_per_hour: float) -> float:
@@ -471,6 +475,38 @@ class YouTubeSearchProvider:
             )
         log.info("research.youtube", topics=len(request.topics), signals=len(signals))
         return signals
+
+    def enrich(self, hit: VideoHit) -> VideoHit:
+        """Fill in what another provider's sighting did not know.
+
+        A Reddit link is a video with no view count and no upload time, which
+        the scorer treats as neutral — so a video somebody chose to share
+        scored below one a search merely returned. One lookup fixes that, and
+        the stage bounds how many it asks for.
+        """
+        if hit.view_count is not None and hit.uploaded_at is not None:
+            return hit
+        flat = _Flat(
+            video_id=hit.external_id,
+            title=hit.title,
+            channel=hit.channel,
+            duration_sec=hit.duration_sec,
+            view_count=hit.view_count,
+            thumbnail_url=hit.thumbnail_url,
+        )
+        looked_up = self._enrich(flat)
+        return VideoHit(
+            url=hit.url,
+            external_id=hit.external_id,
+            title=hit.title,
+            via=hit.via,
+            channel=hit.channel or looked_up.channel,
+            duration_sec=hit.duration_sec or looked_up.duration_sec,
+            view_count=hit.view_count or looked_up.view_count,
+            uploaded_at=hit.uploaded_at or looked_up.uploaded_at,
+            thumbnail_url=hit.thumbnail_url or looked_up.thumbnail_url,
+            channel_followers=hit.channel_followers or looked_up.channel_followers,
+        )
 
     def find_videos(self, topic: str, *, limit: int, request: ResearchRequest) -> list[VideoHit]:
         try:

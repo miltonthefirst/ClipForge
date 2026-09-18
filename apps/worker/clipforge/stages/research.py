@@ -42,6 +42,7 @@ from clipforge.models.ollama import OllamaClient, OllamaError
 from clipforge.observability import get_logger
 from clipforge.research.curate import CURATE_PROMPT_VERSION, curate_trend
 from clipforge.research.scoring import (
+    Cluster,
     ScoredTrend,
     blend_rank,
     cluster_signals,
@@ -163,15 +164,19 @@ class ResearchStage:
 
         # Videos are looked up for the rows most likely to make the list, not
         # for every cluster: a busy feed day is sixty clusters and each lookup
-        # is a handful of requests.
+        # is a handful of requests. A row that already has videos — a Reddit
+        # link — gets those looked up instead, because a link carries no view
+        # count and an unknown scores as neutral, which put every shared video
+        # below every searched one on the first real run.
         if self._finder is not None:
             shortlist = rank_trends(scored(), limit=max_trends * 2)
             for scored_trend in shortlist:
-                cluster = scored_trend.cluster
-                if cluster.videos:
-                    continue
                 if context.stopping():
                     return StageOutcome(incomplete=True)
+                cluster = scored_trend.cluster
+                if cluster.videos:
+                    self._enrich(context, cluster, limit=request.videos_per_topic)
+                    continue
                 context.progress(f"Looking for videos about {cluster.label[:60]}")
                 try:
                     cluster.found.extend(
@@ -211,6 +216,24 @@ class ResearchStage:
             },
             detail=detail,
         )
+
+    def _enrich(self, context: StageContext, cluster: Cluster, *, limit: int) -> None:
+        """Look up the videos a sighting left blank, a bounded number per row."""
+        if self._finder is None:
+            return
+        wanting = [
+            hit for hit in cluster.videos if hit.view_count is None or hit.uploaded_at is None
+        ][:limit]
+        if not wanting:
+            return
+        context.progress(f"Looking up {len(wanting)} video(s) about {cluster.label[:50]}")
+        for hit in wanting:
+            try:
+                # Appended rather than replaced: `Cluster.videos` merges what
+                # every sighting knew, and prefers a known value to a blank.
+                cluster.found.append(self._finder.enrich(hit))
+            except Exception as exc:  # noqa: BLE001 - a blank view count is not worth the run
+                log.debug("research.enrich_failed", video=hit.external_id, error=str(exc)[:120])
 
     def _gather(
         self,

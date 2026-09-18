@@ -5,6 +5,11 @@ orchestration — which rows get written, in what order, with what attached, and
 which failures are the run's problem versus one provider's.
 """
 
+# The fakes below stand in for the stores by shape, not by type. Said once here
+# rather than on every argument, because the formatter moves a trailing comment
+# off the line it was written for.
+# mypy: disable-error-code="arg-type"
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -100,10 +105,23 @@ class FakeFinder:
     def __init__(self, hits: dict[str, list[VideoHit]]) -> None:
         self._hits = hits
         self.asked: list[str] = []
+        self.enriched: list[str] = []
 
     def find_videos(self, topic: str, *, limit: int, request: ResearchRequest) -> list[VideoHit]:
         self.asked.append(topic)
         return self._hits.get(topic, [])[:limit]
+
+    def enrich(self, hit: VideoHit) -> VideoHit:
+        self.enriched.append(hit.external_id)
+        return VideoHit(
+            url=hit.url,
+            external_id=hit.external_id,
+            title=hit.title,
+            via=hit.via,
+            view_count=12_000,
+            uploaded_at=NOW - timedelta(hours=12),
+            duration_sec=240.0,
+        )
 
 
 class ScriptedModel:
@@ -192,15 +210,15 @@ def sig(topic: str, source: TrendSource, strength: float = 0.5, **over: Any) -> 
     )
 
 
-def hit(video_id: str, via: TrendSource = TrendSource.YOUTUBE) -> VideoHit:
+def hit(video_id: str, via: TrendSource = TrendSource.YOUTUBE, *, blank: bool = False) -> VideoHit:
     return VideoHit(
         url=f"https://www.youtube.com/watch?v={video_id}",
         external_id=video_id,
         title=f"Video {video_id}",
         via=via,
-        view_count=50_000,
-        uploaded_at=NOW - timedelta(hours=6),
-        duration_sec=400.0,
+        view_count=None if blank else 50_000,
+        uploaded_at=None if blank else NOW - timedelta(hours=6),
+        duration_sec=None if blank else 400.0,
     )
 
 
@@ -238,14 +256,14 @@ def test_research_writes_a_ranked_list_with_the_videos_it_found() -> None:
                 "Brewers beat the Orioles late",
                 TrendSource.REDDIT,
                 0.8,
-                videos=(hit("rrrrrrrrrrr", TrendSource.REDDIT),),
+                videos=(hit("rrrrrrrrrrr", TrendSource.REDDIT, blank=True),),
             )
         ],
     )
     finder = FakeFinder({"arsenal": [hit("aaaaaaaaaaa")]})
     stage = ResearchStage(
         trends=store, providers=[google, reddit], finder=finder, clock=lambda: NOW
-    )  # type: ignore[arg-type]
+    )
 
     outcome = stage.run(context(job(ResearchOptions(max_trends=5)), stage=StageName.RESEARCH))
 
@@ -254,7 +272,11 @@ def test_research_writes_a_ranked_list_with_the_videos_it_found() -> None:
     assert rows[0].topic == "brewers vs orioles"
     assert {s.source for s in rows[0].signals} == {TrendSource.GOOGLE_TRENDS, TrendSource.REDDIT}
     assert [v.external_id for v in rows[0].videos] == ["rrrrrrrrrrr"]
-    assert rows[0].videos[0].views_per_hour == pytest.approx(50_000 / 6, rel=0.01)
+    # The Reddit link arrived knowing nothing; the finder looked it up, and the
+    # row still says Reddit surfaced it.
+    assert finder.enriched == ["rrrrrrrrrrr"]
+    assert rows[0].videos[0].views_per_hour == pytest.approx(12_000 / 12, rel=0.01)
+    assert rows[0].videos[0].via is TrendSource.REDDIT
     # Arsenal arrived with no video, so the finder was asked — and only for it.
     assert finder.asked == ["arsenal"]
     assert [v.external_id for v in rows[1].videos] == ["aaaaaaaaaaa"]
@@ -269,7 +291,7 @@ def test_research_records_a_provider_that_failed_and_carries_on() -> None:
     store = FakeTrendStore()
     google = FakeProvider(TrendSource.GOOGLE_TRENDS, [sig("thing", TrendSource.GOOGLE_TRENDS)])
     reddit = FakeProvider(TrendSource.REDDIT, fails="answered 403")
-    stage = ResearchStage(trends=store, providers=[google, reddit], finder=None, clock=lambda: NOW)  # type: ignore[arg-type]
+    stage = ResearchStage(trends=store, providers=[google, reddit], finder=None, clock=lambda: NOW)
 
     outcome = stage.run(context(job(), stage=StageName.RESEARCH))
 
@@ -281,7 +303,7 @@ def test_research_records_a_provider_that_failed_and_carries_on() -> None:
 
 def test_research_fails_retryably_when_every_provider_failed() -> None:
     stage = ResearchStage(
-        trends=FakeTrendStore(),  # type: ignore[arg-type]
+        trends=FakeTrendStore(),
         providers=[FakeProvider(TrendSource.REDDIT, fails="down")],
         finder=None,
         clock=lambda: NOW,
@@ -294,7 +316,7 @@ def test_research_fails_retryably_when_every_provider_failed() -> None:
 
 def test_research_refuses_a_run_that_asks_for_no_enabled_source() -> None:
     stage = ResearchStage(
-        trends=FakeTrendStore(),  # type: ignore[arg-type]
+        trends=FakeTrendStore(),
         providers=[FakeProvider(TrendSource.REDDIT)],
         finder=None,
         clock=lambda: NOW,
@@ -312,13 +334,13 @@ def test_research_asks_only_the_sources_the_run_named_and_passes_its_topics() ->
     store = FakeTrendStore()
     google = FakeProvider(TrendSource.GOOGLE_TRENDS, [sig("x", TrendSource.GOOGLE_TRENDS)])
     youtube = FakeProvider(TrendSource.YOUTUBE, [sig("premier league", TrendSource.YOUTUBE)])
-    stage = ResearchStage(trends=store, providers=[google, youtube], finder=None, clock=lambda: NOW)  # type: ignore[arg-type]
+    stage = ResearchStage(trends=store, providers=[google, youtube], finder=None, clock=lambda: NOW)
 
     stage.run(
         context(
             job(
                 ResearchOptions(
-                    topics=["premier league"],  # type: ignore[list-item]
+                    topics=["premier league"],
                     sources=[TrendSource.YOUTUBE],
                     region="GB",
                     lookback_hours=24,
@@ -343,7 +365,7 @@ def test_an_empty_window_is_a_result_not_a_failure() -> None:
         providers=[FakeProvider(TrendSource.REDDIT, [])],
         finder=None,
         clock=lambda: NOW,
-    )  # type: ignore[arg-type]
+    )
     outcome = stage.run(context(job(), stage=StageName.RESEARCH))
     assert store.for_job("job-research") == []
     assert outcome.checkpoint == {
@@ -361,7 +383,7 @@ def test_a_stop_request_leaves_the_stage_pending() -> None:
         providers=[FakeProvider(TrendSource.REDDIT, [sig("x", TrendSource.REDDIT)])],
         finder=None,
         clock=lambda: NOW,
-    )  # type: ignore[arg-type]
+    )
     ctx = context(job(), stage=StageName.RESEARCH)
     ctx.should_stop.set()
     outcome = stage.run(ctx)
@@ -376,10 +398,10 @@ def test_curate_annotates_every_row_and_reorders_by_the_blend() -> None:
     rows = [trend("t1", "dull topic", 1, score=70), trend("t2", "premier league", 2, score=60)]
     store = FakeTrendStore(rows)
     model = ScriptedModel()
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: model)  # type: ignore[arg-type]
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: model)
 
     outcome = stage.run(
-        context(job(ResearchOptions(topics=["premier league"])), stage=StageName.CURATE)  # type: ignore[list-item]
+        context(job(ResearchOptions(topics=["premier league"])), stage=StageName.CURATE)
     )
 
     assert {a["id"] for a in store.annotations} == {"t1", "t2"}
@@ -400,7 +422,7 @@ def test_curate_annotates_every_row_and_reorders_by_the_blend() -> None:
 
 def test_curate_records_no_relevance_when_the_run_named_no_interests() -> None:
     store = FakeTrendStore([trend("t1", "anything", 1)])
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel())  # type: ignore[arg-type]
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel())
     stage.run(context(job(ResearchOptions()), stage=StageName.CURATE))
     assert store.annotations[0]["relevance"] is None
     assert store.annotations[0]["angle"] == "What a clip would show."
@@ -408,7 +430,7 @@ def test_curate_records_no_relevance_when_the_run_named_no_interests() -> None:
 
 def test_curate_is_skipped_when_the_run_turned_it_off() -> None:
     store = FakeTrendStore([trend("t1", "x", 1)])
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel())  # type: ignore[arg-type]
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel())
     outcome = stage.run(context(job(ResearchOptions(curate=False)), stage=StageName.CURATE))
     assert outcome.skipped is True
     assert store.annotations == []
@@ -416,7 +438,7 @@ def test_curate_is_skipped_when_the_run_turned_it_off() -> None:
 
 def test_curate_degrades_to_nothing_without_a_model() -> None:
     store = FakeTrendStore([trend("t1", "x", 1)])
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel(available=False))  # type: ignore[arg-type]
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel(available=False))
     outcome = stage.run(context(job(), stage=StageName.CURATE))
     assert outcome.skipped is True
     assert "not reachable" in (outcome.detail or "")
@@ -426,7 +448,7 @@ def test_curate_degrades_to_nothing_without_a_model() -> None:
 def test_curate_resumes_past_rows_it_already_explained() -> None:
     store = FakeTrendStore([trend("t1", "one", 1), trend("t2", "two", 2)])
     model = ScriptedModel()
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: model)  # type: ignore[arg-type]
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: model)
     stage.run(context(job(), stage=StageName.CURATE, checkpoint={"curated": ["t1"]}))
     assert [a["id"] for a in store.annotations] == ["t2"]
     assert len(model.prompts) == 1
@@ -434,7 +456,7 @@ def test_curate_resumes_past_rows_it_already_explained() -> None:
 
 def test_curate_keeps_going_when_the_model_refuses_one_row() -> None:
     store = FakeTrendStore([trend("t1", "bad row", 1), trend("t2", "good row", 2)])
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel(fail_on="bad row"))  # type: ignore[arg-type]
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel(fail_on="bad row"))
     outcome = stage.run(context(job(), stage=StageName.CURATE))
     assert [a["id"] for a in store.annotations] == ["t2"]
     assert outcome.checkpoint is not None
