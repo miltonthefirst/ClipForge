@@ -1,8 +1,8 @@
 import { Injectable, inject } from '@angular/core';
 import type { Clip } from '@clipforge/contracts';
-import { getDownloadURL, ref } from 'firebase/storage';
 
 import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
+import { StorageGateway } from './storage/gateway';
 
 /**
  * How the worker's file server identifies itself. Mirrors
@@ -68,6 +68,7 @@ export type PlaybackSource =
 export class PlaybackService {
   private readonly config = inject(CLIPFORGE_CONFIG);
   private readonly firebase = inject(FirebaseService);
+  private readonly bucket = inject(StorageGateway);
   private localReachable: boolean | null = null;
   private probedAt = 0;
 
@@ -164,34 +165,32 @@ export class PlaybackService {
     }
 
     if (this.bucketCopyLive(clip)) {
-      try {
-        // Resolved here rather than stored on the document. `getDownloadURL`
-        // runs storage.rules on the request, so access is decided when the
-        // video is fetched; a URL written into Firestore would be a bearer
-        // token in a database row, valid to anyone who ever read it.
-        const url = await getDownloadURL(ref(this.firebase.storage, clip.storagePath!));
-        return { kind: 'bucket', url };
-      } catch (error) {
-        // This used to be a bare `catch {}` falling through to the poster, on
-        // the reasoning that a collected object and an absent one look the same
-        // to a viewer. They do — and that is exactly why the distinction has to
-        // survive: running storage.rules at fetch time means this call is also
-        // where *access* is decided, and a refusal arrived here looking like a
-        // clip that had never been uploaded.
-        //
-        // It cost a release. Every bucket read in the project was denied — the
-        // rules ask Firestore whether the viewer is approved, and that
-        // cross-service call needs an IAM grant the deploy never made — so
-        // every uploaded clip showed a poster and an upload button, and every
-        // upload the button asked for was skipped as already done.
-        const code = storageErrorCode(error);
-        if (code === 'storage/object-not-found') {
-          // The one case the old comment was right about: collected early by the
-          // lifecycle rule. Nothing is wrong and the poster is the honest answer.
-          return { kind: 'poster' };
-        }
-        return { kind: 'blocked', reason: describeStorageFailure(code) };
-      }
+      // The gate resolves on demand rather than storing a URL on the
+      // document: `getDownloadURL` runs storage.rules on the request, so
+      // access is decided when the video is fetched, and a URL written into
+      // Firestore would be a bearer token in a database row valid to anyone
+      // who ever read it.
+      //
+      // A refusal is answered, not thrown, and that distinction cost a
+      // release. This used to be a bare `catch {}` falling through to the
+      // poster, on the reasoning that a collected object and an absent one
+      // look the same to a viewer. They do — and that is exactly why the
+      // difference has to survive: every bucket read in the project was once
+      // denied, because the rules ask Firestore whether the viewer is
+      // approved and that cross-service call needs an IAM grant the deploy
+      // never made. Every uploaded clip showed a poster and an upload button,
+      // and every upload the button asked for was skipped as already done.
+      const resolved = await this.bucket.downloadUrl(clip.storagePath!);
+      if (resolved.url) return { kind: 'bucket', url: resolved.url };
+
+      // Collected early by the lifecycle rule. Nothing is wrong, and the
+      // poster is the honest answer.
+      if (resolved.refusal === 'missing') return { kind: 'poster' };
+
+      return {
+        kind: 'blocked',
+        reason: describeStorageFailure(resolved.code ?? 'storage/unknown'),
+      };
     }
 
     return { kind: 'poster' };
@@ -212,12 +211,6 @@ export class PlaybackService {
     if (index === -1) return null;
     return normalised.slice(index + 1);
   }
-}
-
-/** The `storage/…` code off a Firebase Storage error, when there is one. */
-function storageErrorCode(error: unknown): string {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === 'string' ? code : 'storage/unknown';
 }
 
 /**

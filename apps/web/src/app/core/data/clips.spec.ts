@@ -5,7 +5,6 @@ import {
   byDate,
   byVersion,
   clipMetricsSpec,
-  isAlreadyCollected,
   lineageSettlement,
   lineageSpec,
   reviewQueueSpec,
@@ -37,11 +36,6 @@ function clip(overrides: Partial<Clip> = {}): Clip {
 
 function snapshot(date: string): MetricSnapshot {
   return { id: `m-${date}`, clipId: 'clip-1', date } as MetricSnapshot;
-}
-
-/** A Firebase Storage error, which carries its reason in `code`. */
-function storageError(code: string): Error & { code: string } {
-  return Object.assign(new Error(code), { code });
 }
 
 describe('the review-queue query', () => {
@@ -151,24 +145,5 @@ describe('lineageSettlement', () => {
     // An undecided clip is the absence of a decision. There is nothing to
     // settle on the versions it was also about.
     expect(lineageSettlement('PENDING', 'now')).toBeNull();
-  });
-});
-
-describe('isAlreadyCollected', () => {
-  it('treats an object the lifecycle rule already removed as released', () => {
-    expect(isAlreadyCollected(storageError('storage/object-not-found'))).toBe(true);
-  });
-
-  it('keeps the pointer when the bucket refused the delete', () => {
-    // The bytes are still there. Clearing `storagePath` here would leave a
-    // document that says the copy is gone and a bucket that is still billing
-    // for it.
-    expect(isAlreadyCollected(storageError('storage/unauthorized'))).toBe(false);
-  });
-
-  it('keeps the pointer when the failure carries no code at all', () => {
-    expect(isAlreadyCollected(new Error('network request failed'))).toBe(false);
-    expect(isAlreadyCollected(null)).toBe(false);
-    expect(isAlreadyCollected(undefined)).toBe(false);
   });
 });

@@ -7,7 +7,7 @@ import type {
   ReviewState,
 } from '@clipforge/contracts';
 
-import { FirebaseService } from '../firebase';
+import { StorageGateway } from '../storage/gateway';
 import { FirestoreGateway, type Live } from '../firestore/gateway';
 import type { QuerySpec } from '../firestore/spec';
 
@@ -118,28 +118,13 @@ export function lineageSettlement(
   return null;
 }
 
-/**
- * Whether a failed delete still means the bucket copy is gone.
- *
- * Already collected is the common case and not a failure — the lifecycle rule
- * removes the object after the retention window and reports to nobody — so the
- * document should stop pointing at it either way. Anything else leaves the
- * pointer alone rather than lying about what is in the bucket.
- */
-export function isAlreadyCollected(error: unknown): boolean {
-  return (error as { code?: string } | null)?.code === 'storage/object-not-found';
-}
-
 // ── The repository ───────────────────────────────────────────────────────────
 
 @Injectable({ providedIn: 'root' })
 export class ClipsRepository {
   private readonly db = inject(FirestoreGateway);
-  /**
-   * Only for the bucket. The gate does not wrap Cloud Storage yet, and `review`
-   * is the one method here that deletes an object rather than a document.
-   */
-  private readonly firebase = inject(FirebaseService);
+  /** The bucket copy `review` releases. A separate service, and a separate gate. */
+  private readonly bucket = inject(StorageGateway);
 
   // ── Reading ────────────────────────────────────────────────────────────────
 
@@ -270,31 +255,13 @@ export class ClipsRepository {
       reviewedAt: new Date().toISOString(),
     };
 
-    if (storagePath && (await this.releaseBucketCopy(storagePath))) {
+    if (storagePath && (await this.bucket.remove(storagePath))) {
       changes['storagePath'] = null;
       changes['playbackExpiresAt'] = null;
     }
 
     await this.db.update('clips', clipId, changes);
     await this.settleLineage(clipId, review);
-  }
-
-  /**
-   * Delete the bucket copy, and say whether the document may stop pointing at
-   * it.
-   *
-   * Storage goes around the gate, which wraps Firestore and nothing else. The
-   * import stays dynamic, as it was in the store: a session that never reviews
-   * a clip with a bucket copy never loads the storage SDK at all.
-   */
-  private async releaseBucketCopy(storagePath: string): Promise<boolean> {
-    const { deleteObject, ref } = await import('firebase/storage');
-    try {
-      await deleteObject(ref(this.firebase.storage, storagePath));
-      return true;
-    } catch (error) {
-      return isAlreadyCollected(error);
-    }
   }
 
   /**
