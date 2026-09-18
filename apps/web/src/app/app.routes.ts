@@ -52,6 +52,17 @@ export const routes: Routes = [
     loadComponent: () => import('./features/insights/insights-page').then((m) => m.InsightsPage),
   },
   {
+    // `?run=` names a research run, the way `?tab=` names a list on Jobs.
+    path: 'trends',
+    title: 'Trends · ClipForge',
+    loadComponent: () => import('./features/trends/trends-page').then((m) => m.TrendsPage),
+  },
+  {
+    path: 'compile',
+    title: 'Compile · ClipForge',
+    loadComponent: () => import('./features/compile/compile-page').then((m) => m.CompilePage),
+  },
+  {
     path: 'settings',
     title: 'Settings · ClipForge',
     loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),

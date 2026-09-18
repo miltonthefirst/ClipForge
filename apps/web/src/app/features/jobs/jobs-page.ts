@@ -19,6 +19,7 @@ import {
   jobNote,
   jobTab,
   jobTabSpec,
+  jobTitle,
   queueFailure,
   stageProgress,
   type JobTab,
@@ -32,6 +33,8 @@ import { WorkerPanel } from './worker-panel';
 /** One card, with everything the template needs already worked out. */
 export interface JobRow {
   readonly job: Job;
+  /** The submission for a clip; the question for a research run; the theme for a compilation. */
+  readonly title: string;
   readonly progress: StageProgress;
   /** What the running stage — or the one that died — last said it was doing. */
   readonly note: string | null;
@@ -266,6 +269,7 @@ export class JobsPage implements OnDestroy {
       const progress = stageProgress(job);
       return {
         job,
+        title: jobTitle(job),
         progress,
         note: jobNote(job),
         // Mirrors firestore.rules: cancellation is the only transition a client

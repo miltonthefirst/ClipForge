@@ -14,6 +14,7 @@ holding the model for the next request.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from clipforge_contracts import (
@@ -207,27 +208,7 @@ class AnalyzeStage:
 
     def run(self, context: StageContext) -> StageOutcome:
         transcript, speech_spans, source_id = self._load(context)
-        client = self._build_client(context)
-
-        windows_read = 0
-
-        def propose(window: object) -> LlmClipResponse:
-            nonlocal windows_read
-            windows_read += 1
-            # A number with no total, because the windows are built inside
-            # `select_candidates` and this side does not know how many there
-            # are. A count that moves is still what separates "working" from
-            # "hung", which is the only question a long map step leaves open.
-            context.progress(f"Reading the transcript: window {windows_read}")
-            return client.generate_structured(
-                schema_model=LlmClipResponse,
-                system=SYSTEM_PROMPT,
-                prompt=build_prompt(
-                    window_text=render_window(window),  # type: ignore[arg-type]
-                    start_sec=window.start_sec,  # type: ignore[attr-defined]
-                    end_sec=window.end_sec,  # type: ignore[attr-defined]
-                ),
-            )
+        client = self.build_client(context)
 
         # The whole map step runs under one broker lease. Acquiring per window
         # would let Whisper reload between calls and thrash a 6 GB card.
@@ -237,38 +218,19 @@ class AnalyzeStage:
         # twenty-minute stage without a byte of work happening here.
         context.progress("Waiting for the GPU")
         with context.broker.acquire(f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
-            try:
-                selected = select_candidates(
-                    transcript,
-                    speech_spans,
-                    propose=propose,
-                    weights=self._weights,
-                    limit=self._limit,
-                )
-            except OllamaError as exc:
-                raise _as_stage_failure(exc) from exc
+            selected = self.propose_windows(
+                context, client, transcript, speech_spans, limit=self._limit
+            )
             peak = leased.observe()
 
-        now = datetime.now(UTC)
-        documents = [
-            Candidate(
-                id=uuid.uuid4().hex,
-                uid=context.job.uid,
-                source_id=source_id,
-                job_id=context.job.id,
-                start_sec=round(window.start_sec, 3),
-                end_sec=round(window.end_sec, 3),
-                sub_scores=window.sub_scores,
-                total=window.total,
-                hook=window.hook,
-                reason=window.reason,
-                transcript_excerpt=_excerpt(transcript, window.start_sec, window.end_sec),
-                model_version=f"ollama:{client.model}",
-                prompt_version=PROMPT_VERSION,
-                created_at=now,
-            )
-            for window in selected
-        ]
+        documents = self.to_candidates(
+            context,
+            selected,
+            transcript,
+            source_id,
+            model_version=f"ollama:{client.model}",
+            prompt_version=PROMPT_VERSION,
+        )
         self._candidates.replace_for_job(context.job.id, documents)
 
         stats = client.stats.summary()
@@ -291,6 +253,93 @@ class AnalyzeStage:
             ),
         )
 
+    # ── The selection, without the lease ─────────────────────────────────────
+    #
+    # Public so a COMPILE job's SELECT stage can run the same map-reduce over
+    # each of its sources under one lease of its own, rather than acquiring
+    # and releasing the card once per video.
+
+    def propose_windows(
+        self,
+        context: StageContext,
+        client: OllamaClient,
+        transcript: Transcript,
+        speech_spans: tuple[tuple[float, float], ...],
+        *,
+        limit: int,
+        theme: str | None = None,
+        min_duration_sec: float = 15.0,
+        max_duration_sec: float = 75.0,
+    ) -> list[ScoredWindow]:
+        """Window, map, reduce, snap, rank — the caller holds the broker lease."""
+        windows_read = 0
+
+        def propose(window: object) -> LlmClipResponse:
+            nonlocal windows_read
+            windows_read += 1
+            # A number with no total, because the windows are built inside
+            # `select_candidates` and this side does not know how many there
+            # are. A count that moves is still what separates "working" from
+            # "hung", which is the only question a long map step leaves open.
+            context.progress(f"Reading the transcript: window {windows_read}")
+            return client.generate_structured(
+                schema_model=LlmClipResponse,
+                system=SYSTEM_PROMPT,
+                prompt=build_prompt(
+                    window_text=render_window(window),  # type: ignore[arg-type]
+                    start_sec=window.start_sec,  # type: ignore[attr-defined]
+                    end_sec=window.end_sec,  # type: ignore[attr-defined]
+                    min_duration_sec=min_duration_sec,
+                    max_duration_sec=max_duration_sec,
+                    theme=theme,
+                ),
+            )
+
+        try:
+            return select_candidates(
+                transcript,
+                speech_spans,
+                propose=propose,
+                weights=self._weights,
+                limit=limit,
+                min_duration_sec=min_duration_sec,
+                max_duration_sec=max_duration_sec,
+            )
+        except OllamaError as exc:
+            raise _as_stage_failure(exc) from exc
+
+    def to_candidates(
+        self,
+        context: StageContext,
+        windows: Sequence[ScoredWindow],
+        transcript: Transcript,
+        source_id: str,
+        *,
+        model_version: str,
+        prompt_version: str,
+    ) -> list[Candidate]:
+        """The documents the review queue reads, stamped with what produced them."""
+        now = datetime.now(UTC)
+        return [
+            Candidate(
+                id=uuid.uuid4().hex,
+                uid=context.job.uid,
+                source_id=source_id,
+                job_id=context.job.id,
+                start_sec=round(window.start_sec, 3),
+                end_sec=round(window.end_sec, 3),
+                sub_scores=window.sub_scores,
+                total=window.total,
+                hook=window.hook,
+                reason=window.reason,
+                transcript_excerpt=_excerpt(transcript, window.start_sec, window.end_sec),
+                model_version=model_version,
+                prompt_version=prompt_version,
+                created_at=now,
+            )
+            for window in windows
+        ]
+
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _load(
@@ -312,7 +361,7 @@ class AnalyzeStage:
 
         raise TranscriptMissingError(f"job {context.job.id} reached ANALYZE with no transcript")
 
-    def _build_client(self, context: StageContext) -> OllamaClient:
+    def build_client(self, context: StageContext) -> OllamaClient:
         if self._client_factory is not None:
             return self._client_factory(context)  # type: ignore[operator, no-any-return]
         settings = context.settings

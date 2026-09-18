@@ -36,6 +36,9 @@ uv run clipforge-worker submit          # enqueue an ECHO job, prints its id
 uv run clipforge-worker run             # claim, run, heartbeat, reap; Ctrl-C to stop
 uv run clipforge-worker status <job-id> # the job document and its event log
 uv run clipforge-worker gpu             # what is currently holding VRAM
+uv run clipforge-worker research -t "premier league"   # what is trending, as a job
+uv run clipforge-worker trends <job-id>                 # its ranked list, once it has run
+uv run clipforge-worker compile URL1 URL2 --theme "…"   # one clip from several videos
 ```
 
 `clipforge-worker gpu` is the one-command answer to "why did my job refuse to

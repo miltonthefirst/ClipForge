@@ -1,4 +1,4 @@
-import type { Job, JobStatus, Stage } from '@clipforge/contracts';
+import type { CompileOptions, Job, JobStatus, Stage } from '@clipforge/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,6 +6,7 @@ import {
   isTerminal,
   jobNote,
   jobTab,
+  jobTitle,
   queueFailure,
   stageNote,
   stageProgress,
@@ -309,5 +310,36 @@ describe('queueFailure', () => {
   it('still says something when there is no message at all', () => {
     expect(queueFailure(null)).toBe('The queue could not be loaded, and gave no reason.');
     expect(queueFailure(new Error(''))).toBe('The queue could not be loaded, and gave no reason.');
+  });
+});
+
+describe('jobTitle', () => {
+  it('is the submission for a clip, as the queue has always shown', () => {
+    expect(jobTitle(job({ submission: 'https://youtu.be/x' }))).toBe('https://youtu.be/x');
+  });
+
+  it('falls back to the id when a clip somehow has no submission', () => {
+    expect(jobTitle(job({ id: 'job-9' }))).toBe('job-9');
+  });
+
+  it('names a research run by its topics, or by the absence of any', () => {
+    expect(jobTitle(job({ type: 'RESEARCH', researchOptions: { topics: ['f1', 'nba'] } }))).toBe(
+      'Research: f1, nba',
+    );
+    expect(jobTitle(job({ type: 'RESEARCH', researchOptions: {} }))).toBe(
+      'Research: whatever is trending',
+    );
+  });
+
+  it('names a compilation by its title, else its theme', () => {
+    const items: CompileOptions['items'] = [{ submission: 'a' }, { submission: 'b' }];
+    expect(
+      jobTitle(
+        job({ type: 'COMPILE', compileOptions: { theme: 'goals', title: 'Goals!', items } }),
+      ),
+    ).toBe('Compilation: Goals!');
+    expect(jobTitle(job({ type: 'COMPILE', compileOptions: { theme: 'goals', items } }))).toBe(
+      'Compilation: goals',
+    );
   });
 });

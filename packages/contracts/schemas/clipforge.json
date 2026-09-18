@@ -29,7 +29,12 @@
     "remakeOptions": { "$ref": "#/definitions/RemakeOptions" },
     "appliedRemake": { "$ref": "#/definitions/AppliedRemake" },
     "llmRemakeNote": { "$ref": "#/definitions/LlmRemakeNote" },
-    "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" }
+    "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" },
+    "trend": { "$ref": "#/definitions/Trend" },
+    "researchOptions": { "$ref": "#/definitions/ResearchOptions" },
+    "llmTrendVerdict": { "$ref": "#/definitions/LlmTrendVerdict" },
+    "compileOptions": { "$ref": "#/definitions/CompileOptions" },
+    "appliedCompile": { "$ref": "#/definitions/AppliedCompile" }
   },
 
   "definitions": {
@@ -42,9 +47,9 @@
 
     "JobType": {
       "title": "JobType",
-      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does.",
+      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it.",
       "type": "string",
-      "enum": ["ECHO", "CLIP", "PUBLISH", "MUSIC", "UPLOAD", "REMAKE"]
+      "enum": ["ECHO", "CLIP", "PUBLISH", "MUSIC", "UPLOAD", "REMAKE", "RESEARCH", "COMPILE"]
     },
 
     "StageStatus": {
@@ -56,7 +61,7 @@
 
     "StageName": {
       "title": "StageName",
-      "description": "Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied.",
+      "description": "Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip.",
       "type": "string",
       "enum": [
         "ECHO_ONE",
@@ -69,7 +74,12 @@
         "PUBLISH",
         "MUSIC",
         "UPLOAD",
-        "REMAKE"
+        "REMAKE",
+        "RESEARCH",
+        "CURATE",
+        "GATHER",
+        "SELECT",
+        "ASSEMBLE"
       ]
     },
 
@@ -1042,6 +1052,16 @@
           "default": null,
           "description": "What a REMAKE job should correct. Null for every other job type."
         },
+        "researchOptions": {
+          "anyOf": [{ "$ref": "#/definitions/ResearchOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "What a RESEARCH job should look for. Null for every other job type."
+        },
+        "compileOptions": {
+          "anyOf": [{ "$ref": "#/definitions/CompileOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "What a COMPILE job should make, and from what. Null for every other job type."
+        },
         "publishOptions": {
           "anyOf": [{ "$ref": "#/definitions/PublishOptions" }, { "type": "null" }],
           "default": null,
@@ -1586,6 +1606,11 @@
           "default": null,
           "description": "The correction that produced this clip, when it is one. Null on an ordinary render."
         },
+        "compile": {
+          "anyOf": [{ "$ref": "#/definitions/AppliedCompile" }, { "type": "null" }],
+          "default": null,
+          "description": "What this clip was stitched from, when it was stitched. Null on a clip cut from one source. A compilation has no single window and no single source, so `candidateId` and `sourceId` name the first segment's and the truth is here."
+        },
         "reviewNote": {
           "type": ["string", "null"],
           "maxLength": 2000,
@@ -2082,6 +2107,283 @@
       "required": ["clips"],
       "properties": {
         "clips": { "type": "array", "items": { "$ref": "#/definitions/LlmClipProposal" } }
+      }
+    },
+    "TrendSource": {
+      "title": "TrendSource",
+      "description": "Where a signal came from. GOOGLE_TRENDS is the daily trending-searches feed, which says what people are looking for and nothing about video. REDDIT is the top of a few subreddits over the last day, which says what people are sharing and very often links the video itself. YOUTUBE is a recency-sorted search, which says what has been uploaded about a topic and how fast it is being watched. No single one of these is a trend; agreement between them is.",
+      "type": "string",
+      "enum": ["GOOGLE_TRENDS", "REDDIT", "YOUTUBE"]
+    },
+
+    "TrendStatus": {
+      "title": "TrendStatus",
+      "description": "What a person decided about a trend. NEW is nothing yet. PROMOTED means at least one video from it was sent to the pipeline. DISMISSED is a considered no, kept so the next run does not offer the same thing again as though it were news.",
+      "type": "string",
+      "enum": ["NEW", "PROMOTED", "DISMISSED"]
+    },
+
+    "TrendSignal": {
+      "title": "TrendSignal",
+      "description": "One provider's evidence that a topic is moving.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "strength"],
+      "properties": {
+        "source": { "$ref": "#/definitions/TrendSource" },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "How strongly this provider vouches for the topic, on its own scale normalised to 0-1: search volume for Google Trends, upvotes for Reddit, views per hour for YouTube."
+        },
+        "detail": {
+          "type": ["string", "null"],
+          "maxLength": 200,
+          "default": null,
+          "description": "The provider's own words for the strength — '200K+ searches', 'r/videos · 14k upvotes' — so the number above can be checked against something a person understands."
+        },
+        "url": { "type": ["string", "null"], "default": null }
+      }
+    },
+
+    "TrendVideo": {
+      "title": "TrendVideo",
+      "description": "A video that carries a trend, found by a provider and scored for how well it would feed the pipeline. The URL is the only field the pipeline needs: promoting one is submitting it, exactly as a person would have pasted it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "externalId", "title", "score", "via"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "externalId": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "maxLength": 300 },
+        "channel": { "type": ["string", "null"], "default": null },
+        "durationSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "viewCount": { "type": ["integer", "null"], "minimum": 0, "default": null },
+        "uploadedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "thumbnailUrl": { "type": ["string", "null"], "default": null },
+        "viewsPerHour": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "default": null,
+          "description": "Views divided by hours since upload. The one number that separates a video that is being watched now from one that was watched once."
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "How well this video would feed the pipeline: velocity, recency, and whether its length is something the pipeline will accept at all. Computed in Python, never by a model."
+        },
+        "via": {
+          "$ref": "#/definitions/TrendSource",
+          "description": "Which provider surfaced it. A video that Reddit linked is one people chose to share; one a search returned is one that merely exists."
+        }
+      }
+    },
+
+    "Trend": {
+      "title": "Trend",
+      "description": "One thing the web is talking about, at trends/{trendId}, with the videos that carry it. Written by the RESEARCH stage, annotated by CURATE, decided on by a person. Every run writes its own set — keyed by jobId — so yesterday's list is still readable and today's cannot be mistaken for it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uid", "jobId", "topic", "rank", "score", "signals", "videos", "status", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "uid": { "type": "string", "minLength": 1 },
+        "jobId": { "type": "string", "minLength": 1 },
+        "topic": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "rank": { "type": "integer", "minimum": 1, "description": "Position in the run, 1 first. Rewritten by CURATE when it blends relevance in; the score keeps the unblended number." },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "The opportunity score: how many providers agree, how strongly, how recently, and whether there is any video to cut. Deterministic, so two runs over the same signals rank the same way."
+        },
+        "signals": { "type": "array", "items": { "$ref": "#/definitions/TrendSignal" }, "maxItems": 12 },
+        "videos": { "type": "array", "items": { "$ref": "#/definitions/TrendVideo" }, "maxItems": 20 },
+        "matchedTopics": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 80 },
+          "default": [],
+          "maxItems": 12,
+          "description": "Which of the run's own interests this trend matched, so a list built from twelve topics can say which one each row is about."
+        },
+        "angle": {
+          "type": ["string", "null"],
+          "maxLength": 300,
+          "default": null,
+          "description": "One sentence from the local model on what a clip about this would actually say. Null until CURATE runs, and null for ever if it could not."
+        },
+        "relevance": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 10,
+          "default": null,
+          "description": "The model's judgement of how much this belongs on a channel about the run's topics. Null when the run named no topics: with nothing to be relevant to, a number here would be invented."
+        },
+        "compilationTitle": {
+          "type": ["string", "null"],
+          "maxLength": 120,
+          "default": null,
+          "description": "A title for a video stitched from these, written by the model. The compile form is seeded from it."
+        },
+        "worthClipping": {
+          "type": ["boolean", "null"],
+          "default": null,
+          "description": "The model's yes or no on whether there is a clip in this. Null until CURATE runs. Kept beside `relevance` because the two disagree usefully: a topic can belong on the channel and still have no video worth cutting."
+        },
+        "curated": { "type": "boolean", "default": false },
+        "status": { "$ref": "#/definitions/TrendStatus", "default": "NEW" },
+        "decidedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "decidedBy": { "type": ["string", "null"], "default": null },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "ResearchOptions": {
+      "title": "ResearchOptions",
+      "description": "What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "topics": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "default": [],
+          "maxItems": 12,
+          "description": "What the channel is about, in the operator's words. Each one is searched on YouTube and used to judge relevance; with none, the run reports what is trending regardless."
+        },
+        "region": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$",
+          "default": "US",
+          "description": "ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US."
+        },
+        "lookbackHours": { "type": "integer", "minimum": 6, "maximum": 168, "default": 48 },
+        "videosPerTopic": { "type": "integer", "minimum": 1, "maximum": 10, "default": 5 },
+        "maxTrends": { "type": "integer", "minimum": 1, "maximum": 30, "default": 12 },
+        "sources": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/definitions/TrendSource" },
+          "default": null,
+          "maxItems": 3,
+          "description": "Which providers to ask. Null asks every one that is configured."
+        },
+        "subreddits": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9_]+$" },
+          "default": [],
+          "maxItems": 10,
+          "description": "Where on Reddit to look. Empty uses the worker's configured defaults."
+        },
+        "curate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to run the model over the ranked list. Off is faster and costs no GPU; the list is still ranked, just not explained."
+        }
+      }
+    },
+
+    "LlmTrendVerdict": {
+      "title": "LlmTrendVerdict",
+      "description": "What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["angle", "relevance", "worthClipping", "compilationTitle"],
+      "properties": {
+        "angle": { "type": "string", "maxLength": 300 },
+        "relevance": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "worthClipping": { "type": "boolean" },
+        "compilationTitle": { "type": "string", "maxLength": 120 }
+      }
+    },
+
+    "CompileTransition": {
+      "title": "CompileTransition",
+      "description": "How one segment hands over to the next. CUT is a hard join. FADE dips to black for a fraction of a second on either side of the join, which reads as deliberate where a cut between two unrelated shots reads as a glitch.",
+      "type": "string",
+      "enum": ["CUT", "FADE"]
+    },
+
+    "CompileItem": {
+      "title": "CompileItem",
+      "description": "One video going into a compilation. With a window it is cut exactly there; without one the SELECT stage picks the best moment for the theme.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["submission"],
+      "properties": {
+        "submission": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "A YouTube URL or a path on the worker, exactly as a CLIP job takes one." },
+        "startSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "endSec": { "type": ["number", "null"], "minimum": 0, "default": null },
+        "note": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "Why this one is here, for the person reviewing the result. Not read by anything." }
+      }
+    },
+
+    "CompileOptions": {
+      "title": "CompileOptions",
+      "description": "What a COMPILE job makes. The theme is the only thing that ties the items together, and it is what SELECT is told to look for in each of them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["theme", "items"],
+      "properties": {
+        "theme": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "title": { "type": ["string", "null"], "maxLength": 200, "default": null, "description": "What to call the finished clip. Null uses the theme." },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/CompileItem" }, "minItems": 2, "maxItems": 12 },
+        "targetDurationSec": { "type": "integer", "minimum": 20, "maximum": 180, "default": 60, "description": "How long the whole thing should run. Divided among the items, and each segment is capped by maxSegmentSec." },
+        "maxSegmentSec": { "type": "integer", "minimum": 5, "maximum": 60, "default": 20 },
+        "captions": { "type": "boolean", "default": true },
+        "titleCard": { "type": "boolean", "default": true, "description": "Open with two seconds of the theme on a plain card, so the video says what it is before the first segment does." },
+        "transition": { "$ref": "#/definitions/CompileTransition", "default": "FADE" },
+        "trendId": { "type": ["string", "null"], "default": null, "description": "The trend this was compiled from, when it was. Provenance only." }
+      }
+    },
+
+    "CompileSegment": {
+      "title": "CompileSegment",
+      "description": "One piece of a compilation, as cut: which source, which window, and what the source called itself. The list of these is the provenance of the finished clip.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "submission", "startSec", "endSec", "durationSec"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 },
+        "candidateId": { "type": ["string", "null"], "default": null },
+        "submission": { "type": "string" },
+        "url": { "type": ["string", "null"], "default": null },
+        "title": { "type": ["string", "null"], "default": null },
+        "channel": { "type": ["string", "null"], "default": null },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "durationSec": { "type": "number", "minimum": 0 },
+        "chosenBy": { "type": ["string", "null"], "default": null, "description": "'operator' when the window was given, 'model' when SELECT chose it. A compilation that came out wrong is easier to correct when it says which moments were its own idea." }
+      }
+    },
+
+    "CompileSkipped": {
+      "title": "CompileSkipped",
+      "description": "An item that did not make it into the finished clip, and why. A compilation of four with one dead link should still produce three — and say so, rather than silently producing three.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["submission", "reason"],
+      "properties": {
+        "submission": { "type": "string" },
+        "reason": { "type": "string", "maxLength": 300 }
+      }
+    },
+
+    "AppliedCompile": {
+      "title": "AppliedCompile",
+      "description": "What a compilation was actually made from, recorded on the clip. Provenance rather than configuration, like AppliedRemake: it answers 'what is in this video and where did each piece come from' after the job is gone.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["theme", "segments", "titleCard", "transition"],
+      "properties": {
+        "theme": { "type": "string", "maxLength": 200 },
+        "segments": { "type": "array", "items": { "$ref": "#/definitions/CompileSegment" }, "minItems": 1, "maxItems": 12 },
+        "skipped": { "type": "array", "items": { "$ref": "#/definitions/CompileSkipped" }, "default": [], "maxItems": 12 },
+        "titleCard": { "type": "boolean" },
+        "transition": { "$ref": "#/definitions/CompileTransition" },
+        "warnings": { "type": "array", "items": { "type": "string", "maxLength": 300 }, "default": [], "maxItems": 8 },
+        "trendId": { "type": ["string", "null"], "default": null }
       }
     }
   }

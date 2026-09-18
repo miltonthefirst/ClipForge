@@ -24,9 +24,11 @@ from clipforge.config import Settings
 from clipforge.stages.base import StageRegistry
 from clipforge.stages.pipeline import (
     CLIP_PIPELINE,
+    COMPILE_PIPELINE,
     MUSIC_PIPELINE,
     PUBLISH_PIPELINE,
     REMAKE_PIPELINE,
+    RESEARCH_PIPELINE,
     UPLOAD_PIPELINE,
     build_registry_factory,
 )
@@ -55,7 +57,11 @@ def factory() -> Callable[[JobType], StageRegistry]:
         clips=Stub(),  # type: ignore[arg-type]
         publications=Stub(),  # type: ignore[arg-type]
         blobs=Stub(),  # type: ignore[arg-type]
+        trends=Stub(),  # type: ignore[arg-type]
         channels=None,
+        # No providers: the research registry must wire up on a machine that
+        # will never be allowed to reach the internet, which is what CI is.
+        providers=[],
     )
 
 
@@ -65,6 +71,8 @@ PIPELINES: dict[JobType, tuple[tuple[StageName, Lane], ...]] = {
     JobType.MUSIC: MUSIC_PIPELINE,
     JobType.UPLOAD: UPLOAD_PIPELINE,
     JobType.REMAKE: REMAKE_PIPELINE,
+    JobType.RESEARCH: RESEARCH_PIPELINE,
+    JobType.COMPILE: COMPILE_PIPELINE,
 }
 
 # Hoisted and annotated rather than sorted inline: pytest types parametrize's
@@ -135,3 +143,26 @@ def test_remake_is_on_the_cpu_lane(factory: Callable[[JobType], StageRegistry]) 
     stage = factory(JobType.REMAKE).get(StageName.REMAKE)
     assert stage is not None
     assert stage.lane.value == "CPU"
+
+
+def test_research_touches_the_gpu_only_to_curate(
+    factory: Callable[[JobType], StageRegistry],
+) -> None:
+    """Gathering is somebody else's servers; only the model call needs the card.
+
+    A run with curation turned off must never wait behind a transcription,
+    which is what putting RESEARCH itself on the GPU lane would make it do.
+    """
+    registry = factory(JobType.RESEARCH)
+    assert registry.get(StageName.RESEARCH).lane is Lane.CPU
+    assert registry.get(StageName.CURATE).lane is Lane.GPU
+
+
+def test_compile_gathers_and_assembles_on_the_cpu(
+    factory: Callable[[JobType], StageRegistry],
+) -> None:
+    """Only SELECT — transcribing and judging — holds the card."""
+    registry = factory(JobType.COMPILE)
+    assert registry.get(StageName.GATHER).lane is Lane.CPU
+    assert registry.get(StageName.SELECT).lane is Lane.GPU
+    assert registry.get(StageName.ASSEMBLE).lane is Lane.CPU

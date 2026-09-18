@@ -273,6 +273,52 @@ seconds.
 the original; the clip stays the length you approved and the overrun is reported on it rather than
 absorbed. See [ADR-0013](docs/adr/0013-remake-as-a-job.md).
 
+### Finding what to make, and making one clip from several
+
+Everything above starts with a URL you already had. **Trends** finds them. Say what the channel is
+about — or say nothing — and press the button; the worker asks three places and comes back with a
+ranked list of what is moving and the videos that carry it:
+
+| Where it looks | What it knows | What it does not |
+| --- | --- | --- |
+| Google Trends' daily feed, per country | What people are searching for, with a rough volume | Anything about video |
+| The top of a few subreddits, over the last day | What people are sharing — and, often, the video itself | How many upvotes; the feed carries none |
+| A YouTube search sorted by views and filtered by date | What has been uploaded about a topic and how fast it is being watched | It is a search, so it always finds *something* |
+
+None of them needs an API key, and none of them is a trend on its own. **Agreement between them
+is**, and that is what the score weights most: how many sources agree, how loudly, how recently,
+and whether there is any video to cut. The ranking is arithmetic, so a row that ranked oddly can be
+explained by reading its parts; the local model is asked afterwards, per row, for the one thing
+arithmetic cannot supply — a sentence saying what a clip about this would actually *be*, and
+whether it belongs on a channel about your topics — and the list is still ranked without it.
+
+Each video on the list is one press from the pipeline. **Clip it** submits its URL exactly as if you
+had pasted it. **+ Compile** gathers it, and a few of those become a **compilation**: one vertical
+clip cut from the best moment of each video, for a theme, with the theme on a card in front and a
+dip to black between the pieces. The worker fetches every video as it would for a clip, transcribes
+each, asks the model for the moment that most belongs to the theme — not merely the strongest —
+and joins what it cut. The result is a clip like any other: it arrives in the review queue, plays on
+the phone, takes music, publishes. Its page lists every piece, the window that was cut, and whose
+idea each window was, so a compilation that came out wrong says which piece to change.
+
+**What it refuses to do.** Run on its own. Nothing here is scheduled, and nothing is published;
+the list is a proposal and every step from it is a press. A dead link among the pieces is left out
+and named rather than failing the lot; fewer than two pieces is a clip, not a compilation, and is
+refused as such. A compilation cannot be *remade* — there is no single source to re-cut from — and
+its page says so and points at the Compile page instead.
+
+**From a terminal:**
+
+```bash
+uv run --project apps/worker clipforge-worker research -t "premier league" -t "formula 1" --region GB
+uv run --project apps/worker clipforge-worker trends JOB_ID        # the ranked list, once it has run
+uv run --project apps/worker clipforge-worker compile URL1 URL2 URL3 --theme "best goals of the week"
+uv run --project apps/worker clipforge-worker compile "URL1@42-58" URL2 --theme "..."   # cut URL1 exactly there
+```
+
+See [ADR-0021](docs/adr/0021-trend-research-as-a-job.md) for why the providers are what they are
+and [ADR-0022](docs/adr/0022-compilation-as-a-job.md) for how several sources became one job.
+
 ### Publishing to YouTube (optional)
 
 Off by default, and meant to stay off until you have read

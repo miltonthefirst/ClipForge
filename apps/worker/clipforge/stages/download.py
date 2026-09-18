@@ -79,7 +79,15 @@ class DownloadStage:
         self._adapter_factory = adapter_factory or select_adapter
 
     def run(self, context: StageContext) -> StageOutcome:
-        submission = self._submission(context)
+        return self.ingest(context, self._submission(context))
+
+    def ingest(self, context: StageContext, submission: str) -> StageOutcome:
+        """One submission, into the workspace, exactly once.
+
+        Public because a COMPILE job ingests several: its GATHER stage calls
+        this once per item and keeps its own checkpoint of which ones landed.
+        The outcome's ``metadata["sourceId"]`` is the answer.
+        """
         settings = context.settings
 
         adapter: SourceAdapter = self._adapter_factory(

@@ -1,0 +1,369 @@
+<div class="flex flex-wrap items-baseline justify-between gap-3">
+  <h1 class="text-xl font-semibold">Trends</h1>
+  @if (basket.count()) {
+    <a
+      routerLink="/compile"
+      class="rounded-lg bg-forge-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-forge-700"
+      >{{ basket.count() }} in the compilation →</a
+    >
+  }
+</div>
+
+<p class="mt-2 max-w-prose text-sm text-ink-subtle">
+  What the web is talking about right now, and the videos that carry it. Nothing here runs on its
+  own: ask, read the list, and send what is worth it to the pipeline — one video at a time, or
+  several stitched into one.
+</p>
+
+<!-- ── The question ──────────────────────────────────────────────────────── -->
+<form class="mt-6 rounded-xl border border-line bg-panel p-4" (ngSubmit)="start()">
+  <label class="block text-sm">
+    <span class="text-ink-muted">What is this channel about?</span>
+    <textarea
+      class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+      rows="2"
+      name="topics"
+      placeholder="premier league, formula 1, nba — or leave it empty for whatever is trending"
+      [ngModel]="topicsText()"
+      (ngModelChange)="topicsText.set($event)"
+    ></textarea>
+    <span class="mt-1 block text-xs text-ink-subtle">
+      Up to twelve, separated by commas. Each one is searched, and the model judges every trend
+      against them.
+    </span>
+  </label>
+
+  <div class="mt-4 flex flex-wrap items-end gap-4">
+    <label class="block text-sm">
+      <span class="text-ink-muted">Where</span>
+      <select
+        class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+        name="region"
+        [ngModel]="region()"
+        (ngModelChange)="region.set($event)"
+      >
+        @for (option of regions; track option.code) {
+          <option [value]="option.code">{{ option.label }}</option>
+        }
+      </select>
+    </label>
+
+    <label class="block text-sm">
+      <span class="text-ink-muted">How recent</span>
+      <select
+        class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+        name="lookback"
+        [ngModel]="lookback()"
+        (ngModelChange)="lookback.set(+$event)"
+      >
+        @for (option of lookbacks; track option.hours) {
+          <option [ngValue]="option.hours">{{ option.label }}</option>
+        }
+      </select>
+    </label>
+
+    <label class="flex items-center gap-2 pb-2 text-sm">
+      <input type="checkbox" name="curate" [checked]="curate()" (change)="curate.set(!curate())" />
+      <span>
+        Ask the model for an angle
+        <span class="block text-xs text-ink-subtle">Slower, and needs the GPU for a minute.</span>
+      </span>
+    </label>
+
+    <button
+      type="submit"
+      class="ml-auto rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+      [disabled]="starting()"
+    >
+      {{ starting() ? 'Asking…' : "Find what's trending" }}
+    </button>
+  </div>
+</form>
+
+@if (error(); as message) {
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+  >
+    {{ message }}
+  </p>
+}
+
+<!-- ── Which run ─────────────────────────────────────────────────────────── -->
+@if (runs(); as past) {
+  @if (past.length > 1) {
+    <nav class="mt-6 flex flex-wrap gap-2" aria-label="Which run to show">
+      @for (job of past; track job.id) {
+        <a
+          [routerLink]="['/trends']"
+          [queryParams]="{ run: job.id }"
+          class="rounded-lg border px-3 py-1.5 text-sm"
+          [class]="
+            selectedRun()?.id === job.id
+              ? 'border-forge-500 bg-forge-600/10 text-ink'
+              : 'border-line-strong text-ink-muted hover:bg-line'
+          "
+          [attr.aria-current]="selectedRun()?.id === job.id ? 'page' : null"
+          [title]="label(job)"
+          >{{ when(job) }}</a
+        >
+      }
+    </nav>
+  }
+}
+
+<!-- ── The answer ────────────────────────────────────────────────────────── -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">The trends could not be read.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (runs() === null) {
+  <p class="py-16 text-center text-ink-subtle">Loading…</p>
+} @else if (!selectedRun()) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">Nothing has been asked yet.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">
+      Say what the channel is about above, or leave it empty, and press the button. The worker asks
+      Google Trends, Reddit and YouTube and comes back with a ranked list.
+    </p>
+  </div>
+} @else if (selectedRun(); as run) {
+  <div class="mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <h2 class="text-sm font-semibold">About {{ selectedLabel() }}</h2>
+    <span class="text-xs text-ink-subtle">{{ when(run) }}</span>
+    <a [routerLink]="['/jobs', run.id]" class="text-xs text-ink-subtle hover:text-ink-muted"
+      >the job</a
+    >
+    @if (dismissedCount(); as hidden) {
+      <button
+        type="button"
+        class="ml-auto text-xs text-ink-subtle hover:text-ink-muted"
+        (click)="showDismissed.set(!showDismissed())"
+      >
+        {{ showDismissed() ? 'Hide' : 'Show' }} {{ hidden }} dismissed
+      </button>
+    }
+  </div>
+
+  <!-- Still being written. The rows arrive when RESEARCH finishes and their
+       angles a minute later, and a person who just pressed the button is
+       looking at this while it happens. -->
+  @if (inProgress()) {
+    <p class="mt-3 rounded-lg bg-panel-soft px-4 py-3 text-sm text-ink-muted">
+      @if (run.status === 'QUEUED') {
+        Waiting for a worker to pick it up.
+      } @else if (progressNote(); as note) {
+        {{ note }}
+      } @else if (curation() === 'pending' && rows()?.length) {
+        Ranked. The model is writing an angle for each row.
+      } @else {
+        Looking…
+      }
+    </p>
+  } @else if (run.status === 'FAILED') {
+    <p
+      class="mt-3 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+    >
+      This run failed. {{ run.error?.message }}
+      <a [routerLink]="['/jobs', run.id]" class="underline">The job page</a> has the stage it
+      stopped at.
+    </p>
+  }
+
+  @if (visibleRows(); as list) {
+    @if (empty() && !inProgress()) {
+      <div class="py-16 text-center">
+        <p class="text-ink-muted">Nothing was moving in that window.</p>
+        <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">
+          Every provider answered and none of it clustered into a trend. Try a wider window, a
+          different region, or fewer topics.
+        </p>
+      </div>
+    } @else {
+      <ol class="mt-4 space-y-4">
+        @for (row of list; track row.trend.id) {
+          <li class="rounded-xl border border-line bg-panel p-4" [class.opacity-60]="row.dismissed">
+            <div class="flex items-start gap-3">
+              <span
+                class="w-7 shrink-0 text-right text-lg font-semibold tabular-nums text-ink-subtle"
+                >{{ row.trend.rank }}</span
+              >
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <h3 class="text-base font-medium text-ink">{{ row.trend.topic }}</h3>
+                  <span
+                    class="rounded-md bg-accent-soft px-2 py-0.5 text-xs font-semibold tabular-nums text-accent-ink"
+                    title="Opportunity score, out of 100: how many sources agree, how strongly, how recently, and whether there is video to cut"
+                    >{{ row.trend.score }}</span
+                  >
+                  @if (row.trend.relevance !== null && row.trend.relevance !== undefined) {
+                    <span
+                      class="text-xs text-ink-subtle"
+                      title="How much the model thinks this belongs on a channel about your topics"
+                      >relevance {{ row.trend.relevance }}/10</span
+                    >
+                  }
+                  @if (row.trend.worthClipping === false) {
+                    <span class="text-xs text-warn-ink"
+                      >the model doubts there is a clip in it</span
+                    >
+                  }
+                  @if (row.promoted) {
+                    <span class="rounded-md bg-ok-bg px-2 py-0.5 text-xs text-ok-ink-soft"
+                      >sent</span
+                    >
+                  }
+                </div>
+
+                <!-- The evidence. Each chip is one provider's own words. -->
+                <p class="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-ink-subtle">
+                  @for (signal of row.signals; track $index) {
+                    <span class="rounded bg-line-strong/40 px-1.5 py-0.5">{{ signal }}</span>
+                  }
+                  @for (topic of row.trend.matchedTopics ?? []; track topic) {
+                    <span class="rounded bg-forge-600/10 px-1.5 py-0.5 text-ink-muted">{{
+                      topic
+                    }}</span>
+                  }
+                </p>
+
+                @if (row.trend.angle; as angle) {
+                  <p class="mt-2 text-sm text-ink-muted">{{ angle }}</p>
+                }
+              </div>
+
+              <div class="flex shrink-0 flex-col items-end gap-1">
+                @if (row.trend.videos.length >= 2) {
+                  <button
+                    type="button"
+                    class="rounded-lg border border-line-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-line"
+                    [title]="
+                      row.trend.compilationTitle || 'Gather the best of these into one video'
+                    "
+                    (click)="compileTrend(row)"
+                  >
+                    Compile this
+                  </button>
+                }
+                @if (row.dismissed) {
+                  <button
+                    type="button"
+                    class="text-xs text-ink-subtle hover:text-ink-muted disabled:opacity-50"
+                    [disabled]="busy() === row.trend.id"
+                    (click)="decide(row, 'NEW')"
+                  >
+                    Bring back
+                  </button>
+                } @else {
+                  <button
+                    type="button"
+                    class="text-xs text-ink-subtle hover:text-danger-ink disabled:opacity-50"
+                    [disabled]="busy() === row.trend.id"
+                    (click)="decide(row, 'DISMISSED')"
+                  >
+                    Dismiss
+                  </button>
+                }
+              </div>
+            </div>
+
+            <!-- The videos. Each is one paste away from the pipeline, and the
+                 button does the pasting. -->
+            @if (row.videos.length) {
+              <ul class="mt-3 space-y-2 border-t border-line pt-3">
+                @for (item of row.videos; track item.video.externalId) {
+                  <li class="flex items-center gap-3">
+                    @if (item.video.thumbnailUrl; as thumb) {
+                      <img
+                        [src]="thumb"
+                        alt=""
+                        class="h-12 w-20 shrink-0 rounded-md bg-black object-cover"
+                        loading="lazy"
+                        referrerpolicy="no-referrer"
+                      />
+                    } @else {
+                      <div
+                        class="h-12 w-20 shrink-0 rounded-md bg-line-strong/40"
+                        aria-hidden="true"
+                      ></div>
+                    }
+                    <div class="min-w-0 flex-1">
+                      <a
+                        [href]="item.video.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="line-clamp-2 text-sm text-ink hover:text-accent-ink"
+                        >{{ item.video.title }}</a
+                      >
+                      <p class="mt-0.5 flex flex-wrap gap-x-2 text-xs text-ink-subtle">
+                        <span
+                          class="font-semibold tabular-nums text-ink-muted"
+                          title="How well this video would feed the pipeline, out of 100"
+                          >{{ item.video.score }}</span
+                        >
+                        @if (item.video.channel) {
+                          <span class="truncate">{{ item.video.channel }}</span>
+                        }
+                        @if (item.views) {
+                          <span>{{ item.views }} views</span>
+                        }
+                        @if (item.age) {
+                          <span>{{ item.age }}</span>
+                        }
+                        @if (item.length) {
+                          <span>{{ item.length }}</span>
+                        }
+                        @if (item.video.via === 'REDDIT') {
+                          <span
+                            title="Somebody chose to share this, rather than a search finding it"
+                            >shared</span
+                          >
+                        }
+                      </p>
+                    </div>
+                    <div class="flex shrink-0 gap-1">
+                      <button
+                        type="button"
+                        class="rounded-lg px-2.5 py-1 text-xs"
+                        [class]="
+                          item.inBasket
+                            ? 'bg-forge-600 text-white hover:bg-forge-700'
+                            : 'border border-line-strong text-ink-muted hover:bg-line'
+                        "
+                        [title]="
+                          item.inBasket
+                            ? 'Take it out of the compilation'
+                            : 'Add it to the compilation'
+                        "
+                        (click)="toggleBasket(row, item.video)"
+                      >
+                        {{ item.inBasket ? 'In' : '+ Compile' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-lg border border-line-strong px-2.5 py-1 text-xs text-ink-muted hover:bg-line disabled:opacity-50"
+                        [disabled]="item.queued || busy() === item.video.url"
+                        (click)="clipIt(row, item.video)"
+                      >
+                        {{ item.queued ? 'Queued' : 'Clip it' }}
+                      </button>
+                    </div>
+                  </li>
+                }
+              </ul>
+            } @else if (!inProgress()) {
+              <p class="mt-3 border-t border-line pt-3 text-xs text-ink-subtle">
+                No video found for this yet. It is a thing people are searching for, not a thing
+                anyone has filmed.
+              </p>
+            }
+          </li>
+        }
+      </ol>
+    }
+  } @else if (inProgress()) {
+    <p class="py-8 text-center text-xs text-ink-subtle">
+      The list arrives when the first stage finishes.
+    </p>
+  }
+}

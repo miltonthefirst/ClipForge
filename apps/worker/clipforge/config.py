@@ -214,6 +214,19 @@ class Settings(BaseSettings):
     # one failure it most needs to be able to explain.
     agent_log_file: Path = Path("~/.clipforge/agent.log")
 
+    # ── Research ─────────────────────────────────────────────────────────────
+    # Where a RESEARCH job looks, and how it introduces itself. None of the
+    # providers needs a key: Google Trends and Reddit publish feeds, and
+    # YouTube is searched through yt-dlp. Each can be turned off here for an
+    # install that would rather not ask one of them at all.
+    research_user_agent: str = "ClipForge/0.2 (+https://github.com/miltonthefirst/ClipForge)"
+    # Comma-separated. What a run asks for when it names no subreddits.
+    research_subreddits: str = "videos,popular"
+    research_timeout_seconds: float = Field(default=20.0, ge=1.0)
+    research_google_trends: bool = True
+    research_reddit: bool = True
+    research_youtube: bool = True
+
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "console"
@@ -274,6 +287,10 @@ class Settings(BaseSettings):
                 "CLIPFORGE_YOUTUBE_CLIENT_SECRETS to point at a Google OAuth client file"
             )
         return self
+
+    @property
+    def research_subreddit_list(self) -> tuple[str, ...]:
+        return tuple(name.strip() for name in self.research_subreddits.split(",") if name.strip())
 
     @property
     def local_server_origin(self) -> str:

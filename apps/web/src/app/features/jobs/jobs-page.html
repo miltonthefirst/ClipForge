@@ -93,7 +93,7 @@
               [routerLink]="['/jobs', row.job.id]"
               class="truncate text-sm text-ink-muted after:absolute after:inset-0 hover:text-ink focus-visible:outline-none focus-visible:after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-forge-500"
             >
-              {{ row.job.submission ?? row.job.id }}
+              {{ row.title }}
             </a>
             <p class="mt-1 text-xs text-ink-subtle">
               {{ row.progress.done }} of {{ row.progress.total }} stages

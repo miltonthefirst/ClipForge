@@ -1,0 +1,203 @@
+<h1 class="text-xl font-semibold">Compile</h1>
+<p class="mt-2 max-w-prose text-sm text-ink-subtle">
+  Several videos become one vertical clip: the worker fetches each, picks the moment that best fits
+  the theme, and stitches them with the theme on a card in front. The result goes to the review
+  queue like any other clip, with the list of pieces on its page.
+</p>
+
+<div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+  <!-- ── The pieces ─────────────────────────────────────────────────────── -->
+  <section class="rounded-xl border border-line bg-panel p-4">
+    <div class="flex items-baseline justify-between gap-3">
+      <h2 class="text-sm font-semibold">Videos</h2>
+      <span class="text-xs text-ink-subtle">{{ basket.count() }} of {{ limit }}</span>
+    </div>
+
+    @if (basket.items().length === 0) {
+      <p class="mt-3 text-sm text-ink-muted">Nothing gathered yet.</p>
+      <p class="mt-1 text-xs text-ink-subtle">
+        Pick videos on the <a routerLink="/trends" class="text-accent-ink underline">Trends</a>
+        page, or paste links below. Two is the minimum.
+      </p>
+    } @else {
+      <ol class="mt-3 space-y-2">
+        @for (item of basket.items(); track item.url) {
+          <li class="flex items-center gap-3 rounded-lg bg-panel-soft px-3 py-2">
+            <span class="w-5 shrink-0 text-right text-xs tabular-nums text-ink-subtle">{{
+              $index + 1
+            }}</span>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm text-ink">{{ item.title || item.url }}</p>
+              @if (item.title) {
+                <p class="truncate text-xs text-ink-subtle">
+                  {{ item.channel ? item.channel + ' · ' : '' }}{{ item.url }}
+                </p>
+              }
+            </div>
+            <button
+              type="button"
+              class="shrink-0 text-xs text-ink-subtle hover:text-danger-ink"
+              (click)="remove(item.url)"
+            >
+              Remove
+            </button>
+          </li>
+        }
+      </ol>
+    }
+
+    <form class="mt-4 flex gap-2" (ngSubmit)="addPasted()">
+      <input
+        class="min-w-0 flex-1 rounded-lg border border-line-strong bg-canvas px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+        type="text"
+        name="pasted"
+        placeholder="Paste a YouTube URL, or a file path on the worker"
+        autocomplete="off"
+        [ngModel]="pasted()"
+        (ngModelChange)="pasted.set($event)"
+      />
+      <button
+        type="submit"
+        class="rounded-lg border border-line-strong px-3 py-2 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+        [disabled]="!pasted().trim() || basket.full()"
+      >
+        Add
+      </button>
+    </form>
+  </section>
+
+  <!-- ── The shape ──────────────────────────────────────────────────────── -->
+  <form class="space-y-4 rounded-xl border border-line bg-panel p-4" (ngSubmit)="make()">
+    <label class="block text-sm">
+      <span class="text-ink-muted">Theme</span>
+      <input
+        class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+        type="text"
+        name="theme"
+        maxlength="200"
+        placeholder="best goals of the week"
+        [ngModel]="basket.theme()"
+        (ngModelChange)="basket.setTheme($event)"
+      />
+      <span class="mt-1 block text-xs text-ink-subtle">
+        What ties them together. The model is told to prefer the moment in each video that belongs
+        to this.
+      </span>
+    </label>
+
+    <label class="block text-sm">
+      <span class="text-ink-muted">Title</span>
+      <input
+        class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+        type="text"
+        name="title"
+        maxlength="200"
+        placeholder="Leave empty to use the theme"
+        [ngModel]="basket.title()"
+        (ngModelChange)="basket.setTitle($event)"
+      />
+    </label>
+
+    <div class="grid grid-cols-2 gap-3">
+      <label class="block text-sm">
+        <span class="text-ink-muted">Length, seconds</span>
+        <input
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+          type="number"
+          name="length"
+          min="20"
+          max="180"
+          step="5"
+          [ngModel]="length()"
+          (ngModelChange)="length.set(+$event)"
+        />
+      </label>
+      <label class="block text-sm">
+        <span class="text-ink-muted">Longest piece</span>
+        <input
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+          type="number"
+          name="maxSegment"
+          min="5"
+          max="60"
+          step="1"
+          [ngModel]="maxSegment()"
+          (ngModelChange)="maxSegment.set(+$event)"
+        />
+      </label>
+    </div>
+    @if (perSegment(); as each) {
+      <p class="text-xs text-ink-subtle">About {{ each }}s from each video.</p>
+    }
+
+    <label class="flex items-start gap-2 text-sm">
+      <input
+        type="checkbox"
+        class="mt-0.5"
+        name="titleCard"
+        [checked]="titleCard()"
+        (change)="titleCard.set(!titleCard())"
+      />
+      <span>
+        Open with a title card
+        <span class="block text-xs text-ink-subtle"
+          >Two seconds of the theme, before the first piece.</span
+        >
+      </span>
+    </label>
+
+    <label class="flex items-start gap-2 text-sm">
+      <input
+        type="checkbox"
+        class="mt-0.5"
+        name="captions"
+        [checked]="captions()"
+        (change)="captions.set(!captions())"
+      />
+      <span>
+        Captions
+        <span class="block text-xs text-ink-subtle"
+          >Each piece's own words, burned in as a clip's would be.</span
+        >
+      </span>
+    </label>
+
+    <label class="block text-sm">
+      <span class="text-ink-muted">Between pieces</span>
+      <select
+        class="mt-1 block w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+        name="transition"
+        [ngModel]="transition()"
+        (ngModelChange)="transition.set($event)"
+      >
+        <option value="FADE">Dip to black</option>
+        <option value="CUT">Hard cut</option>
+      </select>
+    </label>
+
+    @if (error(); as message) {
+      <p
+        class="rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-xs text-danger-ink"
+      >
+        {{ message }}
+      </p>
+    }
+
+    <button
+      type="submit"
+      class="w-full rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+      [disabled]="!canMake()"
+    >
+      {{ making() ? 'Queuing…' : 'Make the compilation' }}
+    </button>
+    @if (!basket.ready()) {
+      <p class="text-xs text-ink-subtle">
+        @if (basket.count() < 2) {
+          Add at least two videos.
+        } @else {
+          Give it a theme.
+        }
+      </p>
+    }
+  </form>
+</div>

@@ -9,9 +9,10 @@
  */
 
 /**
- * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does.
+ * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it.
  */
-export type JobType = 'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC' | 'UPLOAD' | 'REMAKE';
+export type JobType =
+  'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC' | 'UPLOAD' | 'REMAKE' | 'RESEARCH' | 'COMPILE';
 /**
  * Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.
  */
@@ -61,11 +62,19 @@ export type ObscureFound = 'AUTO' | 'MANUAL' | 'REMEMBERED';
  */
 export type VoiceCaptions1 = 'REBUILD' | 'KEEP' | 'REMOVE';
 /**
+ * Where a signal came from. GOOGLE_TRENDS is the daily trending-searches feed, which says what people are looking for and nothing about video. REDDIT is the top of a few subreddits over the last day, which says what people are sharing and very often links the video itself. YOUTUBE is a recency-sorted search, which says what has been uploaded about a topic and how fast it is being watched. No single one of these is a trend; agreement between them is.
+ */
+export type TrendSource = 'GOOGLE_TRENDS' | 'REDDIT' | 'YOUTUBE';
+/**
+ * How one segment hands over to the next. CUT is a hard join. FADE dips to black for a fraction of a second on either side of the join, which reads as deliberate where a cut between two unrelated shots reads as a glitch.
+ */
+export type CompileTransition = 'CUT' | 'FADE';
+/**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
 /**
- * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied.
+ * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip.
  */
 export type StageName =
   | 'ECHO_ONE'
@@ -78,7 +87,12 @@ export type StageName =
   | 'PUBLISH'
   | 'MUSIC'
   | 'UPLOAD'
-  | 'REMAKE';
+  | 'REMAKE'
+  | 'RESEARCH'
+  | 'CURATE'
+  | 'GATHER'
+  | 'SELECT'
+  | 'ASSEMBLE';
 /**
  * Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).
  */
@@ -127,6 +141,10 @@ export type IngestErrorCode =
  */
 export type ClipLocation = 'LOCAL' | 'REMOTE';
 export type ReviewState = 'PENDING' | 'APPROVED' | 'REJECTED';
+/**
+ * How one segment hands over to the next. CUT is a hard join. FADE dips to black for a fraction of a second on either side of the join, which reads as deliberate where a cut between two unrelated shots reads as a glitch.
+ */
+export type CompileTransition1 = 'CUT' | 'FADE';
 /**
  * Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.
  */
@@ -231,6 +249,14 @@ export type UnsupportedAsk =
   | 'REORDER_OR_CUT_MIDDLE'
   | 'COLOUR_OR_GRADE'
   | 'SOMETHING_ELSE';
+/**
+ * Where a signal came from. GOOGLE_TRENDS is the daily trending-searches feed, which says what people are looking for and nothing about video. REDDIT is the top of a few subreddits over the last day, which says what people are sharing and very often links the video itself. YOUTUBE is a recency-sorted search, which says what has been uploaded about a topic and how fast it is being watched. No single one of these is a trend; agreement between them is.
+ */
+export type TrendSource1 = 'GOOGLE_TRENDS' | 'REDDIT' | 'YOUTUBE';
+/**
+ * What a person decided about a trend. NEW is nothing yet. PROMOTED means at least one video from it was sent to the pipeline. DISMISSED is a considered no, kept so the next run does not offer the same thing again as though it were news.
+ */
+export type TrendStatus = 'NEW' | 'PROMOTED' | 'DISMISSED';
 
 /**
  * The complete ClipForge wire protocol. The PWA and the worker are two independent implementations of the types defined here; both are generated from this file, so neither can drift from it. See docs/adr/0005-single-source-contracts.md. Every timestamp is an ISO 8601 date-time string, NOT a Firestore Timestamp: the store adapters convert at the boundary, which keeps this document language-neutral and lets the unit tier compare documents as plain JSON with no emulator running.
@@ -260,6 +286,11 @@ export interface ClipForgeContracts {
   appliedRemake?: AppliedRemake;
   llmRemakeNote?: LlmRemakeNote;
   llmClipResponse?: LlmClipResponse;
+  trend?: Trend;
+  researchOptions?: ResearchOptions;
+  llmTrendVerdict?: LlmTrendVerdict;
+  compileOptions?: CompileOptions;
+  appliedCompile?: AppliedCompile;
 }
 /**
  * One pipeline run over one source. Stored at jobs/{jobId}.
@@ -292,6 +323,14 @@ export interface Job {
    * What a REMAKE job should correct. Null for every other job type.
    */
   remakeOptions?: RemakeOptions | null;
+  /**
+   * What a RESEARCH job should look for. Null for every other job type.
+   */
+  researchOptions?: ResearchOptions | null;
+  /**
+   * What a COMPILE job should make, and from what. Null for every other job type.
+   */
+  compileOptions?: CompileOptions | null;
   /**
    * Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
    */
@@ -534,6 +573,193 @@ export interface ObscureRegion {
    * For an AUTO region: how static and how distinct it was. Recorded rather than thresholded away, because a low-confidence find that turns out to be right is the evidence for loosening the threshold, and one that is wrong is the evidence for the reviewer to drag the box instead.
    */
   confidence?: number | null;
+}
+/**
+ * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
+ */
+export interface ResearchOptions {
+  /**
+   * What the channel is about, in the operator's words. Each one is searched on YouTube and used to judge relevance; with none, the run reports what is trending regardless.
+   *
+   * @maxItems 12
+   */
+  topics?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string, string]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ];
+  /**
+   * ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US.
+   */
+  region?: string;
+  lookbackHours?: number;
+  videosPerTopic?: number;
+  maxTrends?: number;
+  /**
+   * Which providers to ask. Null asks every one that is configured.
+   *
+   * @maxItems 3
+   */
+  sources?:
+    | []
+    | [TrendSource]
+    | [TrendSource, TrendSource]
+    | [TrendSource, TrendSource, TrendSource]
+    | null;
+  /**
+   * Where on Reddit to look. Empty uses the worker's configured defaults.
+   *
+   * @maxItems 10
+   */
+  subreddits?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string];
+  /**
+   * Whether to run the model over the ranked list. Off is faster and costs no GPU; the list is still ranked, just not explained.
+   */
+  curate?: boolean;
+}
+/**
+ * What a COMPILE job makes. The theme is the only thing that ties the items together, and it is what SELECT is told to look for in each of them.
+ */
+export interface CompileOptions {
+  theme: string;
+  /**
+   * What to call the finished clip. Null uses the theme.
+   */
+  title?: string | null;
+  /**
+   * @minItems 2
+   * @maxItems 12
+   */
+  items:
+    | [CompileItem, CompileItem]
+    | [CompileItem, CompileItem, CompileItem]
+    | [CompileItem, CompileItem, CompileItem, CompileItem]
+    | [CompileItem, CompileItem, CompileItem, CompileItem, CompileItem]
+    | [CompileItem, CompileItem, CompileItem, CompileItem, CompileItem, CompileItem]
+    | [CompileItem, CompileItem, CompileItem, CompileItem, CompileItem, CompileItem, CompileItem]
+    | [
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem
+      ]
+    | [
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem
+      ]
+    | [
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem
+      ]
+    | [
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem
+      ]
+    | [
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem,
+        CompileItem
+      ];
+  /**
+   * How long the whole thing should run. Divided among the items, and each segment is capped by maxSegmentSec.
+   */
+  targetDurationSec?: number;
+  maxSegmentSec?: number;
+  captions?: boolean;
+  /**
+   * Open with two seconds of the theme on a plain card, so the video says what it is before the first segment does.
+   */
+  titleCard?: boolean;
+  transition?: CompileTransition;
+  /**
+   * The trend this was compiled from, when it was. Provenance only.
+   */
+  trendId?: string | null;
+}
+/**
+ * One video going into a compilation. With a window it is cut exactly there; without one the SELECT stage picks the best moment for the theme.
+ */
+export interface CompileItem {
+  /**
+   * A YouTube URL or a path on the worker, exactly as a CLIP job takes one.
+   */
+  submission: string;
+  startSec?: number | null;
+  endSec?: number | null;
+  /**
+   * Why this one is here, for the person reviewing the result. Not read by anything.
+   */
+  note?: string | null;
 }
 /**
  * What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
@@ -917,6 +1143,10 @@ export interface Clip {
    */
   remake?: AppliedRemake | null;
   /**
+   * What this clip was stitched from, when it was stitched. Null on a clip cut from one source. A compilation has no single window and no single source, so `candidateId` and `sourceId` name the first segment's and the truth is here.
+   */
+  compile?: AppliedCompile | null;
+  /**
    * What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
    */
   reviewNote?: string | null;
@@ -1048,6 +1278,227 @@ export interface AppliedVoice {
    * How long the narration runs. Compared against the clip's own duration by the UI: narration that overruns the picture is the most common way a translated clip goes wrong, and it is invisible until someone watches the end.
    */
   speechDurationSec?: number | null;
+}
+/**
+ * What a compilation was actually made from, recorded on the clip. Provenance rather than configuration, like AppliedRemake: it answers 'what is in this video and where did each piece come from' after the job is gone.
+ */
+export interface AppliedCompile {
+  theme: string;
+  /**
+   * @minItems 1
+   * @maxItems 12
+   */
+  segments:
+    | [CompileSegment]
+    | [CompileSegment, CompileSegment]
+    | [CompileSegment, CompileSegment, CompileSegment]
+    | [CompileSegment, CompileSegment, CompileSegment, CompileSegment]
+    | [CompileSegment, CompileSegment, CompileSegment, CompileSegment, CompileSegment]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ]
+    | [
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment,
+        CompileSegment
+      ];
+  /**
+   * @maxItems 12
+   */
+  skipped?:
+    | []
+    | [CompileSkipped]
+    | [CompileSkipped, CompileSkipped]
+    | [CompileSkipped, CompileSkipped, CompileSkipped]
+    | [CompileSkipped, CompileSkipped, CompileSkipped, CompileSkipped]
+    | [CompileSkipped, CompileSkipped, CompileSkipped, CompileSkipped, CompileSkipped]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ]
+    | [
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped,
+        CompileSkipped
+      ];
+  titleCard: boolean;
+  transition: CompileTransition1;
+  /**
+   * @maxItems 8
+   */
+  warnings?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string];
+  trendId?: string | null;
+}
+/**
+ * One piece of a compilation, as cut: which source, which window, and what the source called itself. The list of these is the provenance of the finished clip.
+ */
+export interface CompileSegment {
+  sourceId: string;
+  candidateId?: string | null;
+  submission: string;
+  url?: string | null;
+  title?: string | null;
+  channel?: string | null;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  /**
+   * 'operator' when the window was given, 'model' when SELECT chose it. A compilation that came out wrong is easier to correct when it says which moments were its own idea.
+   */
+  chosenBy?: string | null;
+}
+/**
+ * An item that did not make it into the finished clip, and why. A compilation of four with one dead link should still produce three — and say so, rather than silently producing three.
+ */
+export interface CompileSkipped {
+  submission: string;
+  reason: string;
 }
 /**
  * What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.
@@ -1598,4 +2049,412 @@ export interface LlmClipProposal {
   subScores: SubScores;
   hook: string;
   reason: string;
+}
+/**
+ * One thing the web is talking about, at trends/{trendId}, with the videos that carry it. Written by the RESEARCH stage, annotated by CURATE, decided on by a person. Every run writes its own set — keyed by jobId — so yesterday's list is still readable and today's cannot be mistaken for it.
+ */
+export interface Trend {
+  id: string;
+  uid: string;
+  jobId: string;
+  topic: string;
+  /**
+   * Position in the run, 1 first. Rewritten by CURATE when it blends relevance in; the score keeps the unblended number.
+   */
+  rank: number;
+  /**
+   * The opportunity score: how many providers agree, how strongly, how recently, and whether there is any video to cut. Deterministic, so two runs over the same signals rank the same way.
+   */
+  score: number;
+  /**
+   * @maxItems 12
+   */
+  signals:
+    | []
+    | [TrendSignal]
+    | [TrendSignal, TrendSignal]
+    | [TrendSignal, TrendSignal, TrendSignal]
+    | [TrendSignal, TrendSignal, TrendSignal, TrendSignal]
+    | [TrendSignal, TrendSignal, TrendSignal, TrendSignal, TrendSignal]
+    | [TrendSignal, TrendSignal, TrendSignal, TrendSignal, TrendSignal, TrendSignal]
+    | [TrendSignal, TrendSignal, TrendSignal, TrendSignal, TrendSignal, TrendSignal, TrendSignal]
+    | [
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal
+      ]
+    | [
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal
+      ]
+    | [
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal
+      ]
+    | [
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal
+      ]
+    | [
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal,
+        TrendSignal
+      ];
+  /**
+   * @maxItems 20
+   */
+  videos:
+    | []
+    | [TrendVideo]
+    | [TrendVideo, TrendVideo]
+    | [TrendVideo, TrendVideo, TrendVideo]
+    | [TrendVideo, TrendVideo, TrendVideo, TrendVideo]
+    | [TrendVideo, TrendVideo, TrendVideo, TrendVideo, TrendVideo]
+    | [TrendVideo, TrendVideo, TrendVideo, TrendVideo, TrendVideo, TrendVideo]
+    | [TrendVideo, TrendVideo, TrendVideo, TrendVideo, TrendVideo, TrendVideo, TrendVideo]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ]
+    | [
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo,
+        TrendVideo
+      ];
+  /**
+   * Which of the run's own interests this trend matched, so a list built from twelve topics can say which one each row is about.
+   *
+   * @maxItems 12
+   */
+  matchedTopics?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string, string]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ];
+  /**
+   * One sentence from the local model on what a clip about this would actually say. Null until CURATE runs, and null for ever if it could not.
+   */
+  angle?: string | null;
+  /**
+   * The model's judgement of how much this belongs on a channel about the run's topics. Null when the run named no topics: with nothing to be relevant to, a number here would be invented.
+   */
+  relevance?: number | null;
+  /**
+   * A title for a video stitched from these, written by the model. The compile form is seeded from it.
+   */
+  compilationTitle?: string | null;
+  /**
+   * The model's yes or no on whether there is a clip in this. Null until CURATE runs. Kept beside `relevance` because the two disagree usefully: a topic can belong on the channel and still have no video worth cutting.
+   */
+  worthClipping?: boolean | null;
+  curated?: boolean;
+  status: TrendStatus;
+  decidedAt?: string | null;
+  decidedBy?: string | null;
+  createdAt: string;
+}
+/**
+ * One provider's evidence that a topic is moving.
+ */
+export interface TrendSignal {
+  source: TrendSource;
+  /**
+   * How strongly this provider vouches for the topic, on its own scale normalised to 0-1: search volume for Google Trends, upvotes for Reddit, views per hour for YouTube.
+   */
+  strength: number;
+  /**
+   * The provider's own words for the strength — '200K+ searches', 'r/videos · 14k upvotes' — so the number above can be checked against something a person understands.
+   */
+  detail?: string | null;
+  url?: string | null;
+}
+/**
+ * A video that carries a trend, found by a provider and scored for how well it would feed the pipeline. The URL is the only field the pipeline needs: promoting one is submitting it, exactly as a person would have pasted it.
+ */
+export interface TrendVideo {
+  url: string;
+  externalId: string;
+  title: string;
+  channel?: string | null;
+  durationSec?: number | null;
+  viewCount?: number | null;
+  uploadedAt?: string | null;
+  thumbnailUrl?: string | null;
+  /**
+   * Views divided by hours since upload. The one number that separates a video that is being watched now from one that was watched once.
+   */
+  viewsPerHour?: number | null;
+  /**
+   * How well this video would feed the pipeline: velocity, recency, and whether its length is something the pipeline will accept at all. Computed in Python, never by a model.
+   */
+  score: number;
+  via: TrendSource1;
+}
+/**
+ * What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.
+ */
+export interface LlmTrendVerdict {
+  angle: string;
+  relevance: number;
+  worthClipping: boolean;
+  compilationTitle: string;
 }

@@ -13,9 +13,21 @@ from __future__ import annotations
 
 from clipforge.analysis.ranking import RUBRIC_MAXIMA
 
-__all__ = ["PROMPT_VERSION", "SYSTEM_PROMPT", "build_prompt"]
+__all__ = ["PROMPT_VERSION", "SYSTEM_PROMPT", "THEMED_PROMPT_VERSION", "build_prompt"]
 
 PROMPT_VERSION = "v1"
+
+# A COMPILE job tells the model what the compilation is about, which changes
+# what it selects — so those candidates are stamped with their own version and
+# never compared against a harvest's under the same label.
+THEMED_PROMPT_VERSION = "v1-theme"
+
+_THEME_TEMPLATE = """
+
+This clip is going into a compilation about: {theme}
+Prefer the moment that most belongs in that compilation. A moment that is \
+strong on its own but has nothing to do with the theme should score lower \
+here than it otherwise would."""
 
 SYSTEM_PROMPT = """\
 You select moments from a video transcript that would work as standalone \
@@ -73,8 +85,9 @@ def build_prompt(
     max_candidates: int = 3,
     min_duration_sec: float = 15.0,
     max_duration_sec: float = 75.0,
+    theme: str | None = None,
 ) -> str:
-    return USER_TEMPLATE.format(
+    prompt = USER_TEMPLATE.format(
         window=window_text,
         max_candidates=max_candidates,
         min_duration=min_duration_sec,
@@ -83,3 +96,6 @@ def build_prompt(
         end=end_sec,
         rubric=_RUBRIC,
     )
+    if theme:
+        prompt += _THEME_TEMPLATE.format(theme=theme.strip()[:200])
+    return prompt

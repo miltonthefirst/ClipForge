@@ -19,12 +19,14 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from clipforge_contracts import (
+    CompileOptions,
     Job,
     JobStatus,
     JobType,
     Lane,
     MusicOptions,
     RemakeOptions,
+    ResearchOptions,
     StageName,
     StageStatus,
 )
@@ -34,6 +36,7 @@ from clipforge.config import Settings
 from clipforge.media.speech import SpeechSynth
 from clipforge.media.workspace import Workspace
 from clipforge.publish.youtube import YouTubeClient
+from clipforge.research.signals import TrendProvider, VideoFinder
 from clipforge.stages.analyze import AnalyzeStage
 from clipforge.stages.base import Stage, StageRegistry
 from clipforge.stages.download import DownloadStage
@@ -49,26 +52,33 @@ from clipforge.store.firestore import (
     PreferenceStore,
     PublicationStore,
     SourceStore,
+    TrendStore,
 )
 from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
 __all__ = [
     "CLIP_PIPELINE",
+    "COMPILE_PIPELINE",
     "MUSIC_PIPELINE",
     "PUBLISH_PIPELINE",
     "REMAKE_PIPELINE",
+    "RESEARCH_PIPELINE",
     "UPLOAD_PIPELINE",
     "build_clip_registry",
     "build_clip_stages",
+    "build_compile_registry",
     "build_publish_registry",
     "build_registry_factory",
     "build_remake_registry",
+    "build_research_registry",
     "build_upload_registry",
     "clip_stages",
     "new_clip_job",
+    "new_compile_job",
     "new_music_job",
     "new_publish_job",
     "new_remake_job",
+    "new_research_job",
     "new_upload_job",
 ]
 
@@ -107,6 +117,24 @@ UPLOAD_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.UPLOAD, Lane.C
 # seconds of a job that is otherwise minutes of ffmpeg, and occupying the GPU
 # lane for the whole of it would block a transcription for no reason.
 REMAKE_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.REMAKE, Lane.CPU),)
+
+# Research is two stages because they cost different things: the first is
+# somebody else's servers and the second is the local model. Keeping them apart
+# means a run with curation turned off never touches the GPU lane at all.
+RESEARCH_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
+    (StageName.RESEARCH, Lane.CPU),
+    (StageName.CURATE, Lane.GPU),
+)
+
+# A compilation is the CLIP pipeline folded over several sources — ingest
+# them all, choose from each, join the results — and it is its own job type
+# for the reason D10 gives: a job's stage list is authoritative for its whole
+# life, and a harvest must not carry stages it can never run.
+COMPILE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
+    (StageName.GATHER, Lane.CPU),
+    (StageName.SELECT, Lane.GPU),
+    (StageName.ASSEMBLE, Lane.CPU),
+)
 
 
 def build_clip_stages(
@@ -498,6 +526,145 @@ def build_publish_registry(
     return registry
 
 
+def build_research_registry(
+    *,
+    settings: Settings,
+    trends: TrendStore,
+    providers: Sequence[TrendProvider] | None = None,
+    finder: VideoFinder | None = None,
+) -> StageRegistry:
+    """The two-stage registry for RESEARCH jobs.
+
+    The providers default to whatever the settings enable. Tests pass their
+    own, which is the whole reason the port exists: nothing in this registry
+    can tell a fixture from the internet.
+    """
+    from clipforge.research.providers import YouTubeSearchProvider, iter_default_providers
+    from clipforge.stages.research import CurateStage, ResearchStage
+
+    if providers is None:
+        providers = iter_default_providers(
+            user_agent=settings.research_user_agent,
+            subreddits=settings.research_subreddit_list,
+            timeout_s=settings.research_timeout_seconds,
+            google_trends=settings.research_google_trends,
+            reddit=settings.research_reddit,
+            youtube=settings.research_youtube,
+        )
+        # The finder is the YouTube provider, whether or not it is also asked
+        # as a provider: a trending search with no videos is a row nobody can
+        # act on.
+        if finder is None and settings.research_youtube:
+            finder = next(
+                (p for p in providers if isinstance(p, YouTubeSearchProvider)),
+                YouTubeSearchProvider(),
+            )
+
+    registry = StageRegistry()
+    registry.register(ResearchStage(trends=trends, providers=providers, finder=finder))
+    registry.register(CurateStage(trends=trends))
+    return registry
+
+
+def new_research_job(
+    *,
+    uid: str,
+    options: ResearchOptions,
+    job_id: str | None = None,
+    max_attempts: int = 2,
+) -> Job:
+    """Build a RESEARCH job. Two attempts: the failures worth retrying are network ones."""
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.RESEARCH,
+        status=JobStatus.QUEUED,
+        research_options=options,
+        stages=clip_stages(RESEARCH_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def build_compile_registry(
+    *,
+    settings: Settings,
+    sources: SourceStore,
+    workspace: Workspace,
+    transcripts: TranscriptStore,
+    archive: TranscriptArchive,
+    candidates: CandidateStore,
+    clips: ClipStore,
+    blobs: BlobStore,
+) -> StageRegistry:
+    """The three-stage registry for COMPILE jobs.
+
+    Built from the same DownloadStage, TranscribeStage and AnalyzeStage the
+    CLIP pipeline runs, so a compilation ingests, transcribes and judges
+    exactly as a harvest does — with the theme added to the judging.
+    """
+    from clipforge.stages.compile import AssembleStage, GatherStage, SelectStage
+
+    del settings
+    download = DownloadStage(sources=sources, workspace=workspace)
+    transcribe = TranscribeStage(
+        sources=sources, transcripts=transcripts, archive=archive, workspace=workspace
+    )
+    analyze = AnalyzeStage(sources=sources, candidates=candidates, archive=archive)
+
+    registry = StageRegistry()
+    registry.register(GatherStage(download=download))
+    registry.register(
+        SelectStage(
+            transcribe=transcribe,
+            analyze=analyze,
+            archive=archive,
+            candidates=candidates,
+            sources=sources,
+        )
+    )
+    registry.register(
+        AssembleStage(
+            sources=sources, clips=clips, archive=archive, workspace=workspace, blobs=blobs
+        )
+    )
+    assert tuple((s.name, s.lane) for s in registry._stages.values()) == COMPILE_PIPELINE, (  # noqa: S101
+        "COMPILE_PIPELINE and build_compile_registry disagree about the pipeline"
+    )
+    return registry
+
+
+def new_compile_job(
+    *,
+    uid: str,
+    options: CompileOptions,
+    job_id: str | None = None,
+    max_attempts: int = 2,
+) -> Job:
+    """Build a COMPILE job.
+
+    Two attempts rather than three. GATHER keeps what it fetched across a
+    retry and TRANSCRIBE is cached by content hash, so a second attempt is
+    cheap — but a third would only re-run the model over the same inputs.
+    """
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.COMPILE,
+        status=JobStatus.QUEUED,
+        compile_options=options,
+        stages=clip_stages(COMPILE_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def build_registry_factory(
     *,
     settings: Settings,
@@ -509,8 +676,10 @@ def build_registry_factory(
     clips: ClipStore,
     publications: PublicationStore,
     blobs: BlobStore,
+    trends: TrendStore,
     channels: ChannelStore | None = None,
     preferences: PreferenceStore | None = None,
+    providers: Sequence[TrendProvider] | None = None,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -555,6 +724,19 @@ def build_registry_factory(
         preferences=preferences,
     )
 
+    research = build_research_registry(settings=settings, trends=trends, providers=providers)
+
+    compile_ = build_compile_registry(
+        settings=settings,
+        sources=sources,
+        workspace=workspace,
+        transcripts=transcripts,
+        archive=archive,
+        candidates=candidates,
+        clips=clips,
+        blobs=blobs,
+    )
+
     def factory(job_type: JobType) -> StageRegistry:
         if job_type is JobType.ECHO:
             return echo_registry()
@@ -568,6 +750,10 @@ def build_registry_factory(
             return upload
         if job_type is JobType.REMAKE:
             return remake
+        if job_type is JobType.RESEARCH:
+            return research
+        if job_type is JobType.COMPILE:
+            return compile_
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")
 
     return factory

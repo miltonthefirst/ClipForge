@@ -432,6 +432,119 @@ service cloud.firestore {
                 );
     }
 
+    // What a RESEARCH job may ask for. Every field is optional — an empty
+    // object means "whatever is trending" — but each one that is present is
+    // bounded, because every topic is a search against somebody else's server
+    // and the worst case has to be a known number of requests.
+    function researchOptionsOk() {
+      let options = request.resource.data.get('researchOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['topics', 'region', 'lookbackHours', 'videosPerTopic', 'maxTrends',
+                   'sources', 'subreddits', 'curate'])
+             && (options.get('topics', null) == null
+                 || (options.topics is list && options.topics.size() <= 12))
+             && (options.get('region', null) == null
+                 || (options.region is string && options.region.matches('^[A-Z]{2}$')))
+             && (options.get('lookbackHours', null) == null
+                 || (options.lookbackHours is int
+                     && options.lookbackHours >= 6 && options.lookbackHours <= 168))
+             && (options.get('videosPerTopic', null) == null
+                 || (options.videosPerTopic is int
+                     && options.videosPerTopic >= 1 && options.videosPerTopic <= 10))
+             && (options.get('maxTrends', null) == null
+                 || (options.maxTrends is int
+                     && options.maxTrends >= 1 && options.maxTrends <= 30))
+             && (options.get('sources', null) == null
+                 || (options.sources is list
+                     && options.sources.size() <= 3
+                     && options.sources.hasOnly(['GOOGLE_TRENDS', 'REDDIT', 'YOUTUBE'])))
+             && (options.get('subreddits', null) == null
+                 || (options.subreddits is list
+                     && options.subreddits.size() <= 10
+                     && subredditsOk(options.subreddits)))
+             && (options.get('curate', null) == null || options.curate is bool);
+    }
+
+    // A subreddit name is joined into a URL on the worker, so it has to be a
+    // name and not a path. Checked positionally, as obscureRegionsOk is.
+    function subredditOk(name) {
+      return name is string && name.size() > 0 && name.size() <= 40
+             && name.matches('^[A-Za-z0-9_]+$');
+    }
+
+    function subredditsOk(names) {
+      return (names.size() < 1 || subredditOk(names[0]))
+             && (names.size() < 2 || subredditOk(names[1]))
+             && (names.size() < 3 || subredditOk(names[2]))
+             && (names.size() < 4 || subredditOk(names[3]))
+             && (names.size() < 5 || subredditOk(names[4]))
+             && (names.size() < 6 || subredditOk(names[5]))
+             && (names.size() < 7 || subredditOk(names[6]))
+             && (names.size() < 8 || subredditOk(names[7]))
+             && (names.size() < 9 || subredditOk(names[8]))
+             && (names.size() < 10 || subredditOk(names[9]));
+    }
+
+    // What a COMPILE job may ask for. Each item reaches yt-dlp exactly as a
+    // CLIP submission does, and the window numbers reach ffmpeg, so the same
+    // bounds apply. Two items minimum: one is a clip, not a compilation.
+    function compileItemOk(item) {
+      return item.keys().hasOnly(['submission', 'startSec', 'endSec', 'note'])
+             && item.submission is string
+             && item.submission.size() > 0
+             && item.submission.size() <= 2048
+             && (item.get('startSec', null) == null
+                 || (item.startSec is number && item.startSec >= 0))
+             && (item.get('endSec', null) == null
+                 || (item.endSec is number && item.endSec >= 0))
+             && (item.get('note', null) == null
+                 || (item.note is string && item.note.size() <= 300));
+    }
+
+    function compileItemsOk(items) {
+      // Positional, as obscureRegionsOk is: rules have no map over a list.
+      return items.size() >= 2 && items.size() <= 12
+             && compileItemOk(items[0])
+             && compileItemOk(items[1])
+             && (items.size() < 3 || compileItemOk(items[2]))
+             && (items.size() < 4 || compileItemOk(items[3]))
+             && (items.size() < 5 || compileItemOk(items[4]))
+             && (items.size() < 6 || compileItemOk(items[5]))
+             && (items.size() < 7 || compileItemOk(items[6]))
+             && (items.size() < 8 || compileItemOk(items[7]))
+             && (items.size() < 9 || compileItemOk(items[8]))
+             && (items.size() < 10 || compileItemOk(items[9]))
+             && (items.size() < 11 || compileItemOk(items[10]))
+             && (items.size() < 12 || compileItemOk(items[11]));
+    }
+
+    function compileOptionsOk() {
+      let options = request.resource.data.get('compileOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['theme', 'title', 'items', 'targetDurationSec', 'maxSegmentSec',
+                   'captions', 'titleCard', 'transition', 'trendId'])
+             && options.theme is string
+             && options.theme.size() > 0
+             && options.theme.size() <= 200
+             && (options.get('title', null) == null
+                 || (options.title is string && options.title.size() <= 200))
+             && options.items is list
+             && compileItemsOk(options.items)
+             && (options.get('targetDurationSec', null) == null
+                 || (options.targetDurationSec is int
+                     && options.targetDurationSec >= 20 && options.targetDurationSec <= 180))
+             && (options.get('maxSegmentSec', null) == null
+                 || (options.maxSegmentSec is int
+                     && options.maxSegmentSec >= 5 && options.maxSegmentSec <= 60))
+             && (options.get('captions', null) == null || options.captions is bool)
+             && (options.get('titleCard', null) == null || options.titleCard is bool)
+             && (options.get('transition', null) == null
+                 || options.transition in ['CUT', 'FADE'])
+             && (options.get('trendId', null) == null || options.trendId is string);
+    }
+
     // ── Jobs ─────────────────────────────────────────────────────────────────
     match /jobs/{jobId} {
       allow read: if isApproved();
@@ -494,7 +607,15 @@ service cloud.firestore {
                               && exists(/databases/$(database)/documents/clips/$(request.resource.data.clipId))
                               && remakeOptionsOk()
                             )
-                       );
+                       )
+                    // A RESEARCH job names no clip and no source. It asks the
+                    // worker a question, and the only thing to check is that
+                    // the question is one the worker can bound.
+                    && (request.resource.data.type != 'RESEARCH' || researchOptionsOk())
+                    // A COMPILE job is several submissions and a theme. Like
+                    // CLIP it needs nothing to exist yet; unlike CLIP its
+                    // options are a document, and that document is checked.
+                    && (request.resource.data.type != 'COMPILE' || compileOptionsOk());
 
       // The only state transition a user may drive is cancellation. Everything
       // else — claiming, progress, stage results — belongs to the worker.
@@ -596,6 +717,25 @@ service cloud.firestore {
     }
 
     // ── Clips ────────────────────────────────────────────────────────────────
+    // ── Trends ───────────────────────────────────────────────────────────────
+    // What a RESEARCH run found, one row per topic. Written by the worker:
+    // the score, the rank, the videos and what the model said are all
+    // evidence, and a client that could rewrite them could make the list say
+    // anything. What a person owns is the decision — promoted, dismissed, or
+    // not yet — and that is the only thing a client may change, under its own
+    // name. Deleting is allowed for the same reason a job may be deleted: a
+    // stale list is clutter, and there are no files behind it.
+    match /trends/{trendId} {
+      allow read: if isApproved();
+      allow create: if false;
+      allow update: if isApproved()
+                    && changed().hasOnly(['status', 'decidedAt', 'decidedBy'])
+                    && request.resource.data.status in ['NEW', 'PROMOTED', 'DISMISSED']
+                    && (request.resource.data.get('decidedBy', null) == null
+                        || request.resource.data.decidedBy == request.auth.uid);
+      allow delete: if isApproved();
+    }
+
     // ── Preferences ──────────────────────────────────────────────────────────
     //
     // What the system has worked out about a reviewer from their corrections,

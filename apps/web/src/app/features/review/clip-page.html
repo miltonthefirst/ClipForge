@@ -689,19 +689,83 @@
         </section>
       }
 
+      <!-- ── Compiled from ────────────────────────────────────────────────
+           The provenance of a stitched clip: which videos, which moments, and
+           whose idea each moment was. A compilation that came out wrong is
+           easier to fix when it says which pieces were the model's choice. -->
+      @if (clip.compile; as made) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold">Compiled from {{ made.segments.length }} videos</h2>
+          <p class="mt-1 text-xs text-ink-subtle">About “{{ made.theme }}”.</p>
+          <ol class="mt-3 space-y-2">
+            @for (piece of made.segments; track $index) {
+              <li class="text-sm">
+                <span class="text-ink-subtle">{{ $index + 1 }}.</span>
+                @if (piece.url) {
+                  <a
+                    [href]="piece.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="text-ink hover:text-accent-ink"
+                    >{{ piece.title || piece.submission }}</a
+                  >
+                } @else {
+                  <span class="text-ink">{{ piece.title || piece.submission }}</span>
+                }
+                <span class="text-xs text-ink-subtle">
+                  {{ piece.startSec | number: '1.0-0' }}s–{{ piece.endSec | number: '1.0-0' }}s
+                  @if (piece.chosenBy === 'model') {
+                    · the model's pick
+                  } @else if (piece.chosenBy === 'fallback') {
+                    · nothing stood out, so the middle
+                  } @else if (piece.chosenBy === 'operator') {
+                    · your window
+                  }
+                </span>
+              </li>
+            }
+          </ol>
+          @if (made.skipped?.length) {
+            <ul class="mt-2 space-y-1 rounded-lg bg-danger-bg p-2 text-xs text-danger-ink">
+              @for (left of made.skipped; track left.submission) {
+                <li>· Left out {{ left.submission }}: {{ left.reason }}</li>
+              }
+            </ul>
+          }
+          @if (made.warnings?.length) {
+            <ul class="mt-2 space-y-1 rounded-lg bg-panel-soft p-2 text-xs text-ink-muted">
+              @for (warning of made.warnings; track warning) {
+                <li>· {{ warning }}</li>
+              }
+            </ul>
+          }
+        </section>
+      }
+
       <section class="rounded-xl border border-line bg-panel p-4">
         <div class="flex items-center justify-between gap-3">
           <h2 class="text-sm font-semibold">Not right? Remake it</h2>
-          <button
-            type="button"
-            class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line"
-            (click)="showRemake.set(!showRemake())"
-          >
-            {{ showRemake() ? 'Cancel' : 'Remake' }}
-          </button>
+          @if (!clip.compile) {
+            <button
+              type="button"
+              class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line"
+              (click)="showRemake.set(!showRemake())"
+            >
+              {{ showRemake() ? 'Cancel' : 'Remake' }}
+            </button>
+          }
         </div>
 
-        @if (!showRemake()) {
+        @if (clip.compile) {
+          <!-- No single source to re-cut from, so the correction channel is
+               the Compile page: change the pieces and make it again. -->
+          <p class="mt-2 text-xs text-ink-subtle">
+            A compilation is cut from several sources, so it cannot be remade the way a clip can.
+            Change the pieces on the
+            <a routerLink="/compile" class="text-accent-ink underline">Compile</a>
+            page and make it again; this one stays as it is.
+          </p>
+        } @else if (!showRemake()) {
           <p class="mt-2 text-xs text-ink-subtle">
             Say what is wrong and get a new version. The clip you are watching is left as it is.
           </p>

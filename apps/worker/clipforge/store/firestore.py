@@ -48,6 +48,7 @@ from clipforge_contracts import (
     SourceProvider,
     StageStatus,
     TranscriptRef,
+    Trend,
     WorkerHeartbeat,
 )
 from google.api_core import exceptions as gcloud_exceptions
@@ -74,6 +75,7 @@ PUBLICATIONS = "publications"
 EVENTS = "events"
 METRICS = "metrics"
 CALIBRATIONS = "calibrations"
+TRENDS = "trends"
 
 
 def firestore_client(settings: Settings) -> firestore.Client:
@@ -107,7 +109,8 @@ def _to_document(
     | Preference
     | Publication
     | MetricSnapshot
-    | CalibrationReport,
+    | CalibrationReport
+    | Trend,
 ) -> dict[str, Any]:
     """Model to Firestore document.
 
@@ -791,6 +794,87 @@ class CandidateStore:
                 _to_document(candidate),
             )
         batch.commit()
+
+
+class TrendStore:
+    """What the web is talking about, at ``trends/{trendId}``, one set per run.
+
+    Keyed by the RESEARCH job that produced it rather than by date: two runs on
+    one day with different topics are two lists, and a person promoting from
+    one must not find rows from the other mixed in.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def get(self, trend_id: str) -> Trend | None:
+        snapshot = self._db.collection(TRENDS).document(trend_id).get()
+        if not snapshot.exists:
+            return None
+        return _read(Trend, snapshot.to_dict() or {})
+
+    def for_job(self, job_id: str) -> list[Trend]:
+        """One run's list, in rank order."""
+        query = self._db.collection(TRENDS).where(
+            filter=firestore.FieldFilter("jobId", "==", job_id)
+        )
+        found = [_read(Trend, doc.to_dict() or {}) for doc in query.stream()]
+        return sorted(found, key=lambda trend: trend.rank)
+
+    def replace_for_job(self, job_id: str, trends: list[Trend]) -> None:
+        """Write this run's list, removing whatever a previous attempt wrote.
+
+        Replace rather than append, as candidates are: RESEARCH is idempotent
+        and a retry must not leave the page showing two generations of the
+        same run.
+        """
+        batch = self._db.batch()
+        for existing in self.for_job(job_id):
+            batch.delete(self._db.collection(TRENDS).document(existing.id))
+        for trend in trends:
+            batch.set(self._db.collection(TRENDS).document(trend.id), _to_document(trend))
+        batch.commit()
+
+    def annotate(
+        self,
+        trend_id: str,
+        *,
+        angle: str | None,
+        relevance: int | None,
+        worth_clipping: bool | None,
+        compilation_title: str | None,
+    ) -> None:
+        """What CURATE learned about one row. Touches nothing the person owns."""
+        try:
+            self._db.collection(TRENDS).document(trend_id).update(
+                {
+                    "angle": angle,
+                    "relevance": relevance,
+                    "worthClipping": worth_clipping,
+                    "compilationTitle": compilation_title,
+                    "curated": True,
+                }
+            )
+        except gcloud_exceptions.NotFound:
+            # Deleted from the page while the model was thinking about it.
+            log.info("trends.annotate_gone", trend_id=trend_id)
+
+    def rerank(self, ranks: Sequence[tuple[str, int]]) -> None:
+        """Rewrite positions after curation. `score` is left as it was."""
+        if not ranks:
+            return
+        batch = self._db.batch()
+        for trend_id, rank in ranks:
+            batch.update(self._db.collection(TRENDS).document(trend_id), {"rank": rank})
+        try:
+            batch.commit()
+        except gcloud_exceptions.NotFound:
+            for trend_id, rank in ranks:
+                try:
+                    self._db.collection(TRENDS).document(trend_id).update({"rank": rank})
+                except gcloud_exceptions.NotFound:
+                    log.info("trends.rerank_gone", trend_id=trend_id)
 
 
 class ClipStore:

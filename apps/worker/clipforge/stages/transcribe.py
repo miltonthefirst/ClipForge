@@ -60,7 +60,15 @@ class TranscribeStage:
         self._transcriber_factory = transcriber_factory
 
     def run(self, context: StageContext) -> StageOutcome:
-        source_id = self._source_id(context)
+        return self.transcribe_source(context, self._source_id(context))
+
+    def transcribe_source(self, context: StageContext, source_id: str) -> StageOutcome:
+        """Transcribe one source, or reuse what the archive already has.
+
+        Public for the same reason `DownloadStage.ingest` is: a COMPILE job has
+        several sources and its SELECT stage transcribes each of them through
+        this, one lease at a time.
+        """
         source = self._sources.get(source_id)
         if source is None:
             raise SourceNotIngestedError(f"source {source_id} does not exist")

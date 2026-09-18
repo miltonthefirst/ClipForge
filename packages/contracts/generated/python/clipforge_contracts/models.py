@@ -30,7 +30,7 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     """
-    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does.
+    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it.
     """
 
     ECHO = "ECHO"
@@ -39,6 +39,8 @@ class JobType(StrEnum):
     MUSIC = "MUSIC"
     UPLOAD = "UPLOAD"
     REMAKE = "REMAKE"
+    RESEARCH = "RESEARCH"
+    COMPILE = "COMPILE"
 
 
 class StageStatus(StrEnum):
@@ -55,7 +57,7 @@ class StageStatus(StrEnum):
 
 class StageName(StrEnum):
     """
-    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied.
+    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip.
     """
 
     ECHO_ONE = "ECHO_ONE"
@@ -69,6 +71,11 @@ class StageName(StrEnum):
     MUSIC = "MUSIC"
     UPLOAD = "UPLOAD"
     REMAKE = "REMAKE"
+    RESEARCH = "RESEARCH"
+    CURATE = "CURATE"
+    GATHER = "GATHER"
+    SELECT = "SELECT"
+    ASSEMBLE = "ASSEMBLE"
 
 
 class Lane(StrEnum):
@@ -1620,6 +1627,314 @@ class LlmClipResponse(BaseModel):
     clips: list[LlmClipProposal]
 
 
+class TrendSource(StrEnum):
+    """
+    Where a signal came from. GOOGLE_TRENDS is the daily trending-searches feed, which says what people are looking for and nothing about video. REDDIT is the top of a few subreddits over the last day, which says what people are sharing and very often links the video itself. YOUTUBE is a recency-sorted search, which says what has been uploaded about a topic and how fast it is being watched. No single one of these is a trend; agreement between them is.
+    """
+
+    GOOGLE_TRENDS = "GOOGLE_TRENDS"
+    REDDIT = "REDDIT"
+    YOUTUBE = "YOUTUBE"
+
+
+class TrendStatus(StrEnum):
+    """
+    What a person decided about a trend. NEW is nothing yet. PROMOTED means at least one video from it was sent to the pipeline. DISMISSED is a considered no, kept so the next run does not offer the same thing again as though it were news.
+    """
+
+    NEW = "NEW"
+    PROMOTED = "PROMOTED"
+    DISMISSED = "DISMISSED"
+
+
+class TrendSignal(BaseModel):
+    """
+    One provider's evidence that a topic is moving.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    source: TrendSource
+    strength: float = Field(..., ge=0.0, le=1.0)
+    """
+    How strongly this provider vouches for the topic, on its own scale normalised to 0-1: search volume for Google Trends, upvotes for Reddit, views per hour for YouTube.
+    """
+    detail: str | None = Field(None, max_length=200)
+    """
+    The provider's own words for the strength — '200K+ searches', 'r/videos · 14k upvotes' — so the number above can be checked against something a person understands.
+    """
+    url: str | None = None
+
+
+class TrendVideo(BaseModel):
+    """
+    A video that carries a trend, found by a provider and scored for how well it would feed the pipeline. The URL is the only field the pipeline needs: promoting one is submitting it, exactly as a person would have pasted it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    url: str = Field(..., min_length=1)
+    external_id: str = Field(..., alias="externalId", min_length=1)
+    title: str = Field(..., max_length=300)
+    channel: str | None = None
+    duration_sec: float | None = Field(None, alias="durationSec", ge=0.0)
+    view_count: int | None = Field(None, alias="viewCount", ge=0)
+    uploaded_at: AwareDatetime | None = Field(None, alias="uploadedAt")
+    thumbnail_url: str | None = Field(None, alias="thumbnailUrl")
+    views_per_hour: float | None = Field(None, alias="viewsPerHour", ge=0.0)
+    """
+    Views divided by hours since upload. The one number that separates a video that is being watched now from one that was watched once.
+    """
+    score: int = Field(..., ge=0, le=100)
+    """
+    How well this video would feed the pipeline: velocity, recency, and whether its length is something the pipeline will accept at all. Computed in Python, never by a model.
+    """
+    via: TrendSource
+    """
+    Which provider surfaced it. A video that Reddit linked is one people chose to share; one a search returned is one that merely exists.
+    """
+
+
+class MatchedTopic(RootModel[str]):
+    root: str = Field(..., max_length=80)
+
+
+class Trend(BaseModel):
+    """
+    One thing the web is talking about, at trends/{trendId}, with the videos that carry it. Written by the RESEARCH stage, annotated by CURATE, decided on by a person. Every run writes its own set — keyed by jobId — so yesterday's list is still readable and today's cannot be mistaken for it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    job_id: str = Field(..., alias="jobId", min_length=1)
+    topic: str = Field(..., max_length=200, min_length=1)
+    rank: int = Field(..., ge=1)
+    """
+    Position in the run, 1 first. Rewritten by CURATE when it blends relevance in; the score keeps the unblended number.
+    """
+    score: int = Field(..., ge=0, le=100)
+    """
+    The opportunity score: how many providers agree, how strongly, how recently, and whether there is any video to cut. Deterministic, so two runs over the same signals rank the same way.
+    """
+    signals: list[TrendSignal] = Field(..., max_length=12)
+    videos: list[TrendVideo] = Field(..., max_length=20)
+    matched_topics: list[MatchedTopic] | None = Field(
+        [], alias="matchedTopics", max_length=12, validate_default=True
+    )
+    """
+    Which of the run's own interests this trend matched, so a list built from twelve topics can say which one each row is about.
+    """
+    angle: str | None = Field(None, max_length=300)
+    """
+    One sentence from the local model on what a clip about this would actually say. Null until CURATE runs, and null for ever if it could not.
+    """
+    relevance: int | None = Field(None, ge=0, le=10)
+    """
+    The model's judgement of how much this belongs on a channel about the run's topics. Null when the run named no topics: with nothing to be relevant to, a number here would be invented.
+    """
+    compilation_title: str | None = Field(
+        None, alias="compilationTitle", max_length=120
+    )
+    """
+    A title for a video stitched from these, written by the model. The compile form is seeded from it.
+    """
+    worth_clipping: bool | None = Field(None, alias="worthClipping")
+    """
+    The model's yes or no on whether there is a clip in this. Null until CURATE runs. Kept beside `relevance` because the two disagree usefully: a topic can belong on the channel and still have no video worth cutting.
+    """
+    curated: bool | None = False
+    status: TrendStatus
+    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
+    decided_by: str | None = Field(None, alias="decidedBy")
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+
+
+class Topic(RootModel[str]):
+    root: str = Field(..., max_length=80, min_length=1)
+
+
+class Subreddit(RootModel[str]):
+    root: str = Field(..., max_length=40, min_length=1, pattern="^[A-Za-z0-9_]+$")
+
+
+class ResearchOptions(BaseModel):
+    """
+    What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    topics: list[Topic] | None = Field([], max_length=12, validate_default=True)
+    """
+    What the channel is about, in the operator's words. Each one is searched on YouTube and used to judge relevance; with none, the run reports what is trending regardless.
+    """
+    region: str | None = Field("US", pattern="^[A-Z]{2}$")
+    """
+    ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US.
+    """
+    lookback_hours: int | None = Field(48, alias="lookbackHours", ge=6, le=168)
+    videos_per_topic: int | None = Field(5, alias="videosPerTopic", ge=1, le=10)
+    max_trends: int | None = Field(12, alias="maxTrends", ge=1, le=30)
+    sources: list[TrendSource] | None = Field(None, max_length=3)
+    """
+    Which providers to ask. Null asks every one that is configured.
+    """
+    subreddits: list[Subreddit] | None = Field([], max_length=10, validate_default=True)
+    """
+    Where on Reddit to look. Empty uses the worker's configured defaults.
+    """
+    curate: bool | None = True
+    """
+    Whether to run the model over the ranked list. Off is faster and costs no GPU; the list is still ranked, just not explained.
+    """
+
+
+class LlmTrendVerdict(BaseModel):
+    """
+    What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    angle: str = Field(..., max_length=300)
+    relevance: int = Field(..., ge=0, le=10)
+    worth_clipping: bool = Field(..., alias="worthClipping")
+    compilation_title: str = Field(..., alias="compilationTitle", max_length=120)
+
+
+class CompileTransition(StrEnum):
+    """
+    How one segment hands over to the next. CUT is a hard join. FADE dips to black for a fraction of a second on either side of the join, which reads as deliberate where a cut between two unrelated shots reads as a glitch.
+    """
+
+    CUT = "CUT"
+    FADE = "FADE"
+
+
+class CompileItem(BaseModel):
+    """
+    One video going into a compilation. With a window it is cut exactly there; without one the SELECT stage picks the best moment for the theme.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    submission: str = Field(..., max_length=2048, min_length=1)
+    """
+    A YouTube URL or a path on the worker, exactly as a CLIP job takes one.
+    """
+    start_sec: float | None = Field(None, alias="startSec", ge=0.0)
+    end_sec: float | None = Field(None, alias="endSec", ge=0.0)
+    note: str | None = Field(None, max_length=300)
+    """
+    Why this one is here, for the person reviewing the result. Not read by anything.
+    """
+
+
+class CompileOptions(BaseModel):
+    """
+    What a COMPILE job makes. The theme is the only thing that ties the items together, and it is what SELECT is told to look for in each of them.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    theme: str = Field(..., max_length=200, min_length=1)
+    title: str | None = Field(None, max_length=200)
+    """
+    What to call the finished clip. Null uses the theme.
+    """
+    items: list[CompileItem] = Field(..., max_length=12, min_length=2)
+    target_duration_sec: int | None = Field(
+        60, alias="targetDurationSec", ge=20, le=180
+    )
+    """
+    How long the whole thing should run. Divided among the items, and each segment is capped by maxSegmentSec.
+    """
+    max_segment_sec: int | None = Field(20, alias="maxSegmentSec", ge=5, le=60)
+    captions: bool | None = True
+    title_card: bool | None = Field(True, alias="titleCard")
+    """
+    Open with two seconds of the theme on a plain card, so the video says what it is before the first segment does.
+    """
+    transition: CompileTransition | None = "FADE"
+    trend_id: str | None = Field(None, alias="trendId")
+    """
+    The trend this was compiled from, when it was. Provenance only.
+    """
+
+
+class CompileSegment(BaseModel):
+    """
+    One piece of a compilation, as cut: which source, which window, and what the source called itself. The list of these is the provenance of the finished clip.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    source_id: str = Field(..., alias="sourceId", min_length=1)
+    candidate_id: str | None = Field(None, alias="candidateId")
+    submission: str
+    url: str | None = None
+    title: str | None = None
+    channel: str | None = None
+    start_sec: float = Field(..., alias="startSec", ge=0.0)
+    end_sec: float = Field(..., alias="endSec", ge=0.0)
+    duration_sec: float = Field(..., alias="durationSec", ge=0.0)
+    chosen_by: str | None = Field(None, alias="chosenBy")
+    """
+    'operator' when the window was given, 'model' when SELECT chose it. A compilation that came out wrong is easier to correct when it says which moments were its own idea.
+    """
+
+
+class CompileSkipped(BaseModel):
+    """
+    An item that did not make it into the finished clip, and why. A compilation of four with one dead link should still produce three — and say so, rather than silently producing three.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    submission: str
+    reason: str = Field(..., max_length=300)
+
+
+class AppliedCompile(BaseModel):
+    """
+    What a compilation was actually made from, recorded on the clip. Provenance rather than configuration, like AppliedRemake: it answers 'what is in this video and where did each piece come from' after the job is gone.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    theme: str = Field(..., max_length=200)
+    segments: list[CompileSegment] = Field(..., max_length=12, min_length=1)
+    skipped: list[CompileSkipped] | None = Field(
+        [], max_length=12, validate_default=True
+    )
+    title_card: bool = Field(..., alias="titleCard")
+    transition: CompileTransition
+    warnings: list[Warning] | None = Field([], max_length=8, validate_default=True)
+    trend_id: str | None = Field(None, alias="trendId")
+
+
 class AppliedMusic(BaseModel):
     """
     What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.
@@ -1924,6 +2239,10 @@ class Clip(BaseModel):
     """
     The correction that produced this clip, when it is one. Null on an ordinary render.
     """
+    compile: AppliedCompile | None = None
+    """
+    What this clip was stitched from, when it was stitched. Null on a clip cut from one source. A compilation has no single window and no single source, so `candidateId` and `sourceId` name the first segment's and the truth is here.
+    """
     review_note: str | None = Field(None, alias="reviewNote", max_length=2000)
     """
     What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
@@ -1966,6 +2285,14 @@ class Job(BaseModel):
     remake_options: RemakeOptions | None = Field(None, alias="remakeOptions")
     """
     What a REMAKE job should correct. Null for every other job type.
+    """
+    research_options: ResearchOptions | None = Field(None, alias="researchOptions")
+    """
+    What a RESEARCH job should look for. Null for every other job type.
+    """
+    compile_options: CompileOptions | None = Field(None, alias="compileOptions")
+    """
+    What a COMPILE job should make, and from what. Null for every other job type.
     """
     publish_options: PublishOptions | None = Field(None, alias="publishOptions")
     """
@@ -2033,3 +2360,8 @@ class ClipForgeContracts(BaseModel):
     applied_remake: AppliedRemake | None = Field(None, alias="appliedRemake")
     llm_remake_note: LlmRemakeNote | None = Field(None, alias="llmRemakeNote")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")
+    trend: Trend | None = None
+    research_options: ResearchOptions | None = Field(None, alias="researchOptions")
+    llm_trend_verdict: LlmTrendVerdict | None = Field(None, alias="llmTrendVerdict")
+    compile_options: CompileOptions | None = Field(None, alias="compileOptions")
+    applied_compile: AppliedCompile | None = Field(None, alias="appliedCompile")

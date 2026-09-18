@@ -169,6 +169,9 @@
             @if (card.clip.music; as music) {
               · <span [title]="music.trackTitle || music.source">music</span>
             }
+            @if (card.clip.compile; as made) {
+              · <span [title]="made.theme">compiled from {{ made.segments.length }}</span>
+            }
             @if (card.source.kind === 'poster') {
               · <span class="text-warn-ink">no cloud copy</span>
             } @else if (card.source.kind === 'blocked') {

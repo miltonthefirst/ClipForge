@@ -59,6 +59,7 @@ def run(
         PreferenceStore,
         PublicationStore,
         SourceStore,
+        TrendStore,
         WorkerStore,
         firestore_client,
     )
@@ -91,6 +92,9 @@ def run(
             clips=ClipStore(client, settings),
             publications=PublicationStore(client, settings),
             blobs=build_blob_store(settings),
+            # Where a RESEARCH run writes its ranked list, and what CURATE reads
+            # back to explain it.
+            trends=TrendStore(client, settings),
             # Read by the PUBLISH stage for a channel's standing defaults. The
             # same store the local API writes them through, so what the settings
             # page saved is what the next publish uses.
@@ -445,6 +449,139 @@ def remake(
         raise typer.Exit(code=2)
 
     job = new_remake_job(uid=uid, clip_id=clip_id, options=options)
+    JobStore(firestore_client(settings), settings).create(job)
+    typer.echo(job.id)
+
+
+@app.command()
+def research(
+    topic: list[str] = typer.Option(  # noqa: B008 - typer's declared-default idiom
+        [], "--topic", "-t", help="What the channel is about. Repeatable; none means 'anything'."
+    ),
+    region: str = typer.Option("US", help="Two-letter country code for the trend feeds."),
+    hours: int = typer.Option(48, help="How far back counts as 'now', 6-168."),
+    videos: int = typer.Option(5, help="How many videos to look up per topic, 1-10."),
+    limit: int = typer.Option(12, help="How many trends to keep, 1-30."),
+    subreddit: list[str] = typer.Option(  # noqa: B008
+        [], "--subreddit", help="Where on Reddit to look. Repeatable; empty uses the defaults."
+    ),
+    curate: bool = typer.Option(
+        default=True, help="Put the ranked list to the local model for an angle per row."
+    ),
+    uid: str = typer.Option("cli", help="Who is asking. Recorded on the job."),
+) -> None:
+    """Queue a trend run: what is the web talking about, and which videos carry it.
+
+    The same job the Trends page creates. It touches no media and nothing in it
+    runs on its own — the result is a ranked list to pick from, on the Trends
+    page or with `clipforge-worker trends JOB_ID`.
+    """
+    from clipforge_contracts import ResearchOptions
+    from pydantic import ValidationError
+
+    from clipforge.stages.pipeline import new_research_job
+    from clipforge.store.firestore import JobStore, firestore_client
+
+    settings = get_settings()
+    try:
+        options = ResearchOptions(
+            topics=[t.strip() for t in topic if t.strip()],
+            region=region.upper(),
+            lookback_hours=hours,
+            videos_per_topic=videos,
+            max_trends=limit,
+            subreddits=[s.strip().removeprefix("r/") for s in subreddit if s.strip()],
+            curate=curate,
+        )
+    except ValidationError as exc:
+        typer.echo(f"those options are out of range: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+
+    job = new_research_job(uid=uid, options=options)
+    JobStore(firestore_client(settings), settings).create(job)
+    typer.echo(job.id)
+
+
+@app.command()
+def trends(job_id: str = typer.Argument(..., help="The RESEARCH job whose list to print.")) -> None:
+    """Print a research run's ranked list, with the videos behind each row."""
+    from clipforge.store.firestore import TrendStore, firestore_client
+
+    settings = get_settings()
+    rows = TrendStore(firestore_client(settings), settings).for_job(job_id)
+    if not rows:
+        typer.echo("no trends recorded for that job (has it finished?)")
+        raise typer.Exit(code=1)
+    for trend in rows:
+        sources = ", ".join(sorted({s.source.value.lower() for s in trend.signals}))
+        typer.echo(f"{trend.rank:>2}. [{trend.score:>3}] {trend.topic}  ({sources})")
+        if trend.angle:
+            typer.echo(f"      {trend.angle}")
+        for video in trend.videos[:3]:
+            views = f"{video.view_count:,} views" if video.view_count is not None else "views ?"
+            typer.echo(f"      - [{video.score:>3}] {video.title[:70]}  {views}  {video.url}")
+
+
+@app.command()
+def compile(  # noqa: A001 - the verb is the command
+    items: list[str] = typer.Argument(  # noqa: B008
+        ..., help="Two or more YouTube URLs or local files, in the order they should appear."
+    ),
+    theme: str = typer.Option(..., help="What ties them together. The model looks for it."),
+    title: str = typer.Option("", help="What to call the result. Defaults to the theme."),
+    length: int = typer.Option(60, help="Target length in seconds, 20-180."),
+    max_segment: int = typer.Option(20, help="Longest any one segment may be, 5-60."),
+    captions: bool = typer.Option(default=True, help="Burn each segment's own captions."),
+    title_card: bool = typer.Option(default=True, help="Open with the theme on a card."),
+    fade: bool = typer.Option(default=True, help="Dip to black between segments."),
+    uid: str = typer.Option("cli", help="Who is asking. Recorded on the job."),
+) -> None:
+    """Queue a compilation: one vertical clip cut from the best moment of each video.
+
+    Give a window for an item as URL@START-END, e.g. `https://youtu.be/x@42-58`,
+    to cut exactly there and skip the model for that one.
+    """
+    from clipforge_contracts import CompileItem, CompileOptions, CompileTransition
+    from pydantic import ValidationError
+
+    from clipforge.stages.pipeline import new_compile_job
+    from clipforge.store.firestore import JobStore, firestore_client
+
+    settings = get_settings()
+    parsed: list[CompileItem] = []
+    for raw in items:
+        submission, _, window = raw.rpartition("@") if "@" in raw else ("", "", "")
+        if submission and "-" in window:
+            start_text, _, end_text = window.partition("-")
+            try:
+                parsed.append(
+                    CompileItem(
+                        submission=submission,
+                        start_sec=float(start_text),
+                        end_sec=float(end_text),
+                    )
+                )
+                continue
+            except ValueError:
+                pass
+        parsed.append(CompileItem(submission=raw))
+
+    try:
+        options = CompileOptions(
+            theme=theme.strip(),
+            title=title.strip() or None,
+            items=parsed,
+            target_duration_sec=length,
+            max_segment_sec=max_segment,
+            captions=captions,
+            title_card=title_card,
+            transition=CompileTransition.FADE if fade else CompileTransition.CUT,
+        )
+    except ValidationError as exc:
+        typer.echo(f"that compilation cannot be made: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+
+    job = new_compile_job(uid=uid, options=options)
     JobStore(firestore_client(settings), settings).create(job)
     typer.echo(job.id)
 

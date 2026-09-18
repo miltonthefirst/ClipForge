@@ -15,7 +15,7 @@ import type { Clip, Job, JobEvent, Source, Stage, StageStatus } from '@clipforge
 import { JobsRepository } from '../../core/data/jobs';
 import { SourcesRepository } from '../../core/data/sources';
 import type { Live } from '../../core/firestore/gateway';
-import { isTerminal, stageNote } from '../../core/job-list';
+import { isTerminal, jobTitle, stageNote } from '../../core/job-list';
 
 /**
  * One job, in enough detail to answer "why is it not moving?"
@@ -299,6 +299,16 @@ export class JobPage implements OnDestroy {
   /** What a stage says it is doing, when that is still true of it. */
   protected note(stage: Stage): string | null {
     return stageNote(stage);
+  }
+
+  /** The submission, the question, or the theme — whichever this job carries. */
+  protected title(job: Job): string {
+    return jobTitle(job);
+  }
+
+  /** Whether a research run has written its list yet. */
+  protected researched(job: Job): boolean {
+    return job.stages.some((stage: Stage) => stage.name === 'RESEARCH' && stage.status === 'DONE');
   }
 
   /**

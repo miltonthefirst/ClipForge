@@ -66,6 +66,8 @@ export class App {
       { path: '/review', label: 'Review' },
       { path: '/publish', label: 'Publish' },
       { path: '/insights', label: 'Insights' },
+      { path: '/trends', label: 'Trends' },
+      { path: '/compile', label: 'Compile' },
       { path: '/jobs', label: 'Jobs' },
       { path: '/sources', label: 'Sources' },
       { path: '/settings', label: 'Settings' },

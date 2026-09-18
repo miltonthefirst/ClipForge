@@ -78,6 +78,26 @@ export function jobTabSpec(key: JobTab): JobTabSpec {
 }
 
 /**
+ * What to call a job on a card.
+ *
+ * A CLIP job is its submission, which is what the queue has always shown. The
+ * two job types that carry no submission — a research run is a question and a
+ * compilation is a theme over several — would otherwise show a document id,
+ * which tells the person who created them nothing about which one this is.
+ */
+export function jobTitle(job: Job): string {
+  if (job.type === 'RESEARCH') {
+    const topics = job.researchOptions?.topics ?? [];
+    return topics.length ? `Research: ${topics.join(', ')}` : 'Research: whatever is trending';
+  }
+  if (job.type === 'COMPILE') {
+    const options = job.compileOptions;
+    return options ? `Compilation: ${options.title || options.theme}` : 'Compilation';
+  }
+  return job.submission ?? job.id;
+}
+
+/**
  * Whether this job has stopped for good.
  *
  * The gate on Delete, and the reason it is a gate: deleting a job the worker

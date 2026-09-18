@@ -4,8 +4,8 @@
 > hardware, cut high-potential vertical clips, review them from your phone, publish, and learn from
 > what actually performed.
 
-**Status** (2026-09-14): M0, M1 and M2 complete · M3 — Phases 8, 8b–8f and 9 built; `v0.2.0`
-waits on one real upload
+**Status** (2026-09-19): M0, M1 and M2 complete · M3 — Phases 8, 8b–8f and 9 built; `v0.2.0`
+waits on one real upload · M4 — Phases 10 and 10b built, `v0.3.0` waits on a real run
 **Target of record:** v0.2.0, with **v0.1.0 tagged 2026-09-14** · **Owner:** @miltonthefirst
 **Supersedes:** [`initial-plan.md`](../initial-plan.md) (kept for provenance)
 
@@ -264,7 +264,7 @@ minutes it took to download and transcribe.
 | **M1 — Pipeline** | 3, 4, 5, 6 | URL in, rendered vertical clip on disk. No UI |
 | **M2 — Product** | 7 | **v0.1.0** — the phone review loop |
 | **M3 — Feedback loop** | 8, 8b, 8c, 8d, 8e, 8f, 9 | **v0.2.0** — publish, correct and measure |
-| **M4 — Autonomy** | 10, 12 | **v0.3.0** — trend-driven sourcing, then **v0.4.0** — several channels |
+| **M4 — Autonomy** | 10, 10b, 12 | **v0.3.0** — trend-driven sourcing and compilations, then **v0.4.0** — several channels |
 | **M5 — Release** | 11 | Public open-source launch |
 | **M6 — Synthesis** | 13, 14 | **v0.6.0** — an idea becomes a finished video |
 | **M7 — Reach** | 15 | **v0.7.0** — every platform, correctly labelled |
@@ -1392,6 +1392,62 @@ scorer just produces bad clips faster.
 **Exit criteria.** A manual trend run produces a ranked opportunity list; promoting one creates a normal
 job; quota consumption is bounded and displayed; nothing runs without a human trigger.
 
+**Delivered** (2026-09-19). A `RESEARCH` job type of two stages — `RESEARCH` on the CPU lane asks
+the providers and ranks; `CURATE` on the GPU lane puts each row to the local model for an angle and
+a relevance score, and degrades to `SKIPPED` without one — and a `trends/` collection the worker
+writes and a person decides about. The Trends page asks, lists, and offers two actions per video:
+*Clip it* creates an ordinary `CLIP` job from the URL, and *+ Compile* gathers it for Phase 10b.
+See [ADR-0021](adr/0021-trend-research-as-a-job.md).
+
+Two divergences from the scope above, both deliberate. **No YouTube Data API.** It needs a key and
+draws on the quota publishing already budgets; the three providers built — Google Trends' daily
+RSS feed, Reddit's Atom feeds, and a view-sorted, date-filtered YouTube search through yt-dlp —
+need no key at all, and each sits behind one `TrendProvider` port so the Data API is one adapter if
+a key is ever worth asking for. **"Channel size" is recorded, not scored.** Follower counts arrive
+from the full YouTube lookup and are kept on the hit; the score weights agreement between providers,
+strength, recency, and whether there is video to cut. Channel size has no evidence behind it yet as
+a predictor, and Phase 9's posture applies. The exit criteria hold as written: the run is manual, the
+list is ranked, promoting creates a normal job, and the worst case is a bounded number of requests
+— twelve topics, ten lookups each, thirty rows — reported per provider on the stage's checkpoint.
+
+The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
+honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
+does not automate the scorer; it feeds it.
+
+---
+
+#### Phase 10b — Compilation → *toward v0.3.0*
+
+**Goal.** Several videos about one thing become one clip, with the best moment of each.
+
+**In scope.** A `COMPILE` job type — `GATHER`, `SELECT`, `ASSEMBLE` — that ingests every item
+through the CLIP pipeline's own ingest, transcribes each, asks the model for one moment per source
+*for the theme*, renders each moment exactly as `RENDER` would, and joins them behind a two-second
+title card. A basket on the Trends page and a Compile page that turns it into the job. Provenance
+on the clip: every piece, its window, and whose idea the window was.
+
+**Explicitly out of scope.** Narration over the compilation (the synthesis track's business);
+remaking a compilation (there is no single source to re-cut from — the Compile page is the
+correction channel); any transition fancier than a dip to black.
+
+**Exit criteria.**
+
+1. Two sources that differ in frame rate and sample rate join into one 1080×1920 file.
+2. The result enters the review queue, plays, takes music, and publishes with no change to those
+   stages.
+3. A dead link among four produces three, and the clip says which was left out and why.
+4. A crash after `GATHER` resumes without re-fetching; a crash inside `SELECT` resumes without
+   re-transcribing.
+5. Candidates chosen for a theme are stamped with their own prompt version and never rescored
+   against a harvest's.
+
+**Delivered** (2026-09-19). All five, the first four verified by test — criterion 1 in
+`tests/integration/test_compile_assemble.py` against generated 25 fps/44.1 kHz and 30 fps/48 kHz
+sources — and the fifth by construction (`THEMED_PROMPT_VERSION`). Criterion 2 is verified for the
+queue and playback by the e2e and clip-page changes, and for music and publish by those stages
+operating on the file and nothing else; **a real compilation through a real MUSIC and PUBLISH job
+has not yet been run.** See [ADR-0022](adr/0022-compilation-as-a-job.md).
+
 ---
 
 #### Phase 12 — Many channels → *toward v0.4.0*
@@ -1847,8 +1903,8 @@ The `unit`, `integration` and `e2e` tiers must run with **no GPU and no network*
 
 ## 8. Immediate next actions
 
-**Milestones M0, M1 and M2 are complete; M3 is built and waiting on evidence** (2026-09-14). Phases 0 through 8f
-have met their exit criteria and Phase 9 has met four of its five, with five items consolidated into Phase 11 — three of which the
+**Milestones M0, M1 and M2 are complete; M3 is built and waiting on evidence; M4's first two phases are built**
+(2026-09-19). Phases 0 through 8f have met their exit criteria and Phase 9 has met four of its five, with five items consolidated into Phase 11 — three of which the
 deployment work has since unblocked (see the table there). The pipeline runs end to end: a YouTube
 URL becomes a transcript, a ranked set of candidates, a rendered vertical clip with captions and a
 written title, a phone review with **video that plays on the phone**, a recorded rights basis, and
@@ -1876,16 +1932,16 @@ Recorded here rather than retrofitted into a phase it did not belong to:
 Two of those were corrections rather than additions, and both are worth keeping visible: the service
 worker had been signed off without existing, and FCM still has not been built.
 
-Current test coverage (2026-09-14), all runnable from a clean clone with no GPU and no network except
+Current test coverage (2026-09-19), all runnable from a clean clone with no GPU and no network except
 where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 846 | nothing |
-| Worker integration | 114 | Firestore emulator |
-| Security rules | 203 | Auth + Firestore + Storage emulators |
-| Web unit | 59 | nothing |
-| Playwright E2E | 47 | Auth + Firestore emulators, stubbed worker |
+| Worker unit | 1050 | nothing |
+| Worker integration | 119 | Firestore emulator; the five ASSEMBLE tests need only ffmpeg |
+| Security rules | 233 | Auth + Firestore + Storage emulators |
+| Web unit | 279 | nothing |
+| Playwright E2E | 70 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 
@@ -1971,9 +2027,11 @@ scores; Phase 9 finds out whether they predicted anything. Three notes for whoev
    `promptVersion` precisely so a score can be attributed to the thing that produced it. A
    recalibration that overwrites past scores destroys the only evidence the phase exists to gather.
 
-Deliberately **not** doing now: trend-driven sourcing (Phase 10 is gated on Phase 9 producing
-evidence, not on it merely running), and any additional publishing platform — TikTok and Instagram
-both need app review with materially harder approval paths and are scoped separately.
+Deliberately **not** doing now: any additional publishing platform — TikTok and Instagram both need
+app review with materially harder approval paths and are scoped separately. Trend-driven sourcing
+*was* gated here on Phase 9 producing evidence; it was built on 2026-09-19 once it was clear that
+Phase 9's evidence is months of volume away and that a trend list is how the volume arrives — see
+Phase 10's "Delivered" note for the reasoning.
 
 One correction carried forward from Phase 8: a stage that exists is not a stage that runs.
 `RenderStage` was implemented, unit-tested and never registered, and `submit` built job documents
