@@ -250,25 +250,59 @@ export class ReviewPage implements OnDestroy {
     }
   }
 
+  /**
+   * What each clip's card needed, kept between deliveries.
+   *
+   * A poster, a candidate and a playback URL are facts about one clip, and the
+   * clip does not change — but the queue listener re-delivers its whole result
+   * set whenever a worker touches any row in it, and a lease renewed every
+   * thirty seconds is enough to do that. Rebuilding from scratch each time cost
+   * three round trips per card, every time, on a phone that had them all
+   * already.
+   *
+   * Keyed by clip id and pruned to what is on screen, so a queue worked through
+   * over an hour does not accumulate the cards it has finished with.
+   */
+  private readonly built = new Map<string, ReviewCard>();
+
   private async buildCards(clips: Clip[]): Promise<void> {
     // Read untracked. This runs inside the delivering effect, and the probe in
     // the constructor answers a moment after the page opens: a tracked read
     // would make that answer re-run the effect and rebuild every card, paying
     // for a poster and a candidate per row a second time.
     const local = untracked(() => this.localAvailable());
-    this.cards.set(
-      await Promise.all(
-        this.latestOfEachLineage(clips).map(async (clip) => ({
-          clip,
-          source: await this.playback.resolve(clip, local),
-          // Fetched per card rather than with the list: the poster is ~50 KB of
-          // base64, and the queue listener re-delivers its whole result set on
-          // every reconnect.
-          preview: await this.clips.loadPreview(clip.id).catch(() => null),
-          candidate: await this.clips.loadCandidate(clip.candidateId).catch(() => null),
-        })),
-      ),
-    );
+    const wanted = this.latestOfEachLineage(clips);
+
+    // Only what is new. The rest are already in hand and cost nothing.
+    const missing = wanted.filter((clip) => !this.built.has(clip.id));
+    const fresh = await Promise.all(missing.map((clip) => this.buildCard(clip, local)));
+    for (const card of fresh) this.built.set(card.clip.id, card);
+
+    // The clip object itself may have moved on — a title edited, a decision
+    // recorded — so the row takes the newest one and keeps the fetched parts.
+    const cards = wanted.map((clip) => ({ ...this.built.get(clip.id)!, clip }));
+
+    const onScreen = new Set(wanted.map((clip) => clip.id));
+    for (const id of [...this.built.keys()]) {
+      if (!onScreen.has(id)) this.built.delete(id);
+    }
+
+    this.cards.set(cards);
+  }
+
+  private async buildCard(clip: Clip, local: boolean): Promise<ReviewCard> {
+    // Together rather than in sequence: three independent answers, and on a
+    // phone each one is a round trip. Awaiting them one after another made a
+    // card take as long as the three of them added up.
+    const [source, preview, candidate] = await Promise.all([
+      this.playback.resolve(clip, local),
+      // Fetched per card rather than with the list: the poster is ~50 KB of
+      // base64, and the queue listener re-delivers its whole result set on
+      // every reconnect.
+      this.clips.loadPreview(clip.id).catch(() => null),
+      this.clips.loadCandidate(clip.candidateId).catch(() => null),
+    ]);
+    return { clip, source, preview, candidate };
   }
 
   protected posterSrc(card: ReviewCard): string | null {
