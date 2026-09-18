@@ -67,6 +67,7 @@ export class App {
       { path: '/publish', label: 'Publish' },
       { path: '/insights', label: 'Insights' },
       { path: '/jobs', label: 'Jobs' },
+      { path: '/sources', label: 'Sources' },
       { path: '/settings', label: 'Settings' },
       { path: '/settings/storage', label: 'Storage' },
       { path: '/settings/worker', label: 'Worker' },

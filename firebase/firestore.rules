@@ -557,6 +557,15 @@ service cloud.firestore {
         allow read: if isApproved();
         allow write: if false;
       }
+
+      // The thumbnail on the Sources page. A subcollection for the same reason
+      // a clip's poster is one: listing the library must not drag an image per
+      // row. Produced by the worker on ingest, from a file only the worker can
+      // reach, so a client may look and never write.
+      match /preview/{previewId} {
+        allow read: if isApproved();
+        allow write: if false;
+      }
     }
 
     // ── Channels ─────────────────────────────────────────────────────────────

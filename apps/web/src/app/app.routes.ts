@@ -62,6 +62,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/worker/worker-page').then((m) => m.WorkerPage),
   },
   {
+    path: 'sources',
+    title: 'Sources · ClipForge',
+    loadComponent: () => import('./features/sources/sources-page').then((m) => m.SourcesPage),
+  },
+  {
     path: 'settings/storage',
     title: 'Storage · ClipForge',
     loadComponent: () => import('./features/settings/storage-page').then((m) => m.StoragePage),

@@ -1141,6 +1141,30 @@ class ClipLocation(StrEnum):
     REMOTE = "REMOTE"
 
 
+class SourcePreview(BaseModel):
+    """
+    A thumbnail for one source, at sources/{sourceId}/preview/poster.
+
+    The same shape and the same reasoning as ClipPreview: base64 in a subcollection, so the Sources list can query forty rows without dragging forty images with them, and so a phone can see the library at all — the files themselves are on the worker and a browser cannot reach them.
+
+    For a video it is a frame. For a music track it is the cover art embedded in the file, when there is one; a track without art simply has no preview, and the list says so rather than showing a broken image.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    source_id: str = Field(..., alias="sourceId", min_length=1)
+    poster_base64: str = Field(..., alias="posterBase64", min_length=1)
+    """
+    JPEG, base64-encoded without a data: prefix.
+    """
+    width_px: int = Field(..., alias="widthPx", ge=1)
+    height_px: int = Field(..., alias="heightPx", ge=1)
+    byte_size: int | None = Field(None, alias="byteSize", ge=0)
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+
+
 class ClipPreview(BaseModel):
     """
     What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.
@@ -1991,6 +2015,7 @@ class ClipForgeContracts(BaseModel):
     candidate: Candidate | None = None
     clip: Clip | None = None
     clip_preview: ClipPreview | None = Field(None, alias="clipPreview")
+    source_preview: SourcePreview | None = Field(None, alias="sourcePreview")
     publication: Publication | None = None
     metric_snapshot: MetricSnapshot | None = Field(None, alias="metricSnapshot")
     calibration_report: CalibrationReport | None = Field(

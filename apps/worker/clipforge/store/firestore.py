@@ -44,6 +44,7 @@ from clipforge_contracts import (
     ReviewState,
     Source,
     SourceKind,
+    SourcePreview,
     SourceProvider,
     StageStatus,
     TranscriptRef,
@@ -102,6 +103,7 @@ def _to_document(
     | Candidate
     | Clip
     | ClipPreview
+    | SourcePreview
     | Preference
     | Publication
     | MetricSnapshot
@@ -615,6 +617,20 @@ class SourceStore:
 
     def save(self, source: Source) -> None:
         self._db.collection(SOURCES).document(source.id).set(_to_document(source))
+
+    def save_preview(self, preview: SourcePreview) -> None:
+        """The thumbnail, in a subcollection beside the source.
+
+        Separate from the source document so listing the library does not drag
+        an image per row — the same shape and the same reason as ClipPreview.
+        """
+        (
+            self._db.collection(SOURCES)
+            .document(preview.source_id)
+            .collection(PREVIEW)
+            .document("poster")
+            .set(_to_document(preview))
+        )
 
     def touch(self, source_id: str, *, now: datetime | None = None) -> None:
         """Record that a stage read the file, for least-recently-used eviction.

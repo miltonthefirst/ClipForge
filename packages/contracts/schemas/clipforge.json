@@ -16,6 +16,7 @@
     "candidate": { "$ref": "#/definitions/Candidate" },
     "clip": { "$ref": "#/definitions/Clip" },
     "clipPreview": { "$ref": "#/definitions/ClipPreview" },
+    "sourcePreview": { "$ref": "#/definitions/SourcePreview" },
     "publication": { "$ref": "#/definitions/Publication" },
     "metricSnapshot": { "$ref": "#/definitions/MetricSnapshot" },
     "calibrationReport": { "$ref": "#/definitions/CalibrationReport" },
@@ -1591,6 +1592,26 @@
           "default": null,
           "description": "What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh."
         },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "SourcePreview": {
+      "title": "SourcePreview",
+      "description": "A thumbnail for one source, at sources/{sourceId}/preview/poster.\n\nThe same shape and the same reasoning as ClipPreview: base64 in a subcollection, so the Sources list can query forty rows without dragging forty images with them, and so a phone can see the library at all — the files themselves are on the worker and a browser cannot reach them.\n\nFor a video it is a frame. For a music track it is the cover art embedded in the file, when there is one; a track without art simply has no preview, and the list says so rather than showing a broken image.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "posterBase64", "widthPx", "heightPx", "createdAt"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 },
+        "posterBase64": {
+          "type": "string",
+          "minLength": 1,
+          "description": "JPEG, base64-encoded without a data: prefix."
+        },
+        "widthPx": { "type": "integer", "minimum": 1 },
+        "heightPx": { "type": "integer", "minimum": 1 },
+        "byteSize": { "type": ["integer", "null"], "minimum": 0, "default": null },
         "createdAt": { "type": "string", "format": "date-time" }
       }
     },

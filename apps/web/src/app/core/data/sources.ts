@@ -1,5 +1,5 @@
 import { Injectable, computed, inject } from '@angular/core';
-import type { ObscureOptions, Source, SourceKind } from '@clipforge/contracts';
+import type { ObscureOptions, Source, SourceKind, SourcePreview } from '@clipforge/contracts';
 
 import { FirestoreGateway, type Live } from '../firestore/gateway';
 import type { QuerySpec } from '../firestore/spec';
@@ -115,6 +115,17 @@ export class SourcesRepository {
       error: all.error,
       release: all.release,
     };
+  }
+
+  /**
+   * A source's thumbnail, fetched per row rather than with the list.
+   *
+   * The same shape as a clip's poster and the same reason: ~20 KB of base64
+   * each, and a listener that carried them would pay for every one of them
+   * again on every reconnect. The list arrives first and the pictures fill in.
+   */
+  async loadPreview(sourceId: string): Promise<SourcePreview | null> {
+    return this.db.onceDoc<SourcePreview>(`sources/${sourceId}/preview`, 'poster');
   }
 
   /** What a job's submission resolved to, once ingestion has worked it out. */

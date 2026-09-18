@@ -246,6 +246,7 @@ export interface ClipForgeContracts {
   candidate?: Candidate;
   clip?: Clip;
   clipPreview?: ClipPreview;
+  sourcePreview?: SourcePreview;
   publication?: Publication;
   metricSnapshot?: MetricSnapshot;
   calibrationReport?: CalibrationReport;
@@ -1061,6 +1062,24 @@ export interface ClipPreview {
    * Four frames tiled into one JPEG, so a reviewer gets a sense of motion rather than a single still.
    */
   filmstripBase64?: string | null;
+  widthPx: number;
+  heightPx: number;
+  byteSize?: number | null;
+  createdAt: string;
+}
+/**
+ * A thumbnail for one source, at sources/{sourceId}/preview/poster.
+ *
+ * The same shape and the same reasoning as ClipPreview: base64 in a subcollection, so the Sources list can query forty rows without dragging forty images with them, and so a phone can see the library at all — the files themselves are on the worker and a browser cannot reach them.
+ *
+ * For a video it is a frame. For a music track it is the cover art embedded in the file, when there is one; a track without art simply has no preview, and the list says so rather than showing a broken image.
+ */
+export interface SourcePreview {
+  sourceId: string;
+  /**
+   * JPEG, base64-encoded without a data: prefix.
+   */
+  posterBase64: string;
   widthPx: number;
   heightPx: number;
   byteSize?: number | null;

@@ -1,0 +1,129 @@
+<div class="flex flex-wrap items-baseline justify-between gap-3">
+  <h1 class="text-xl font-semibold">Sources</h1>
+  @if (footprint(); as total) {
+    <p class="text-sm text-ink-subtle">{{ total }} on the worker's disk</p>
+  }
+</div>
+
+<p class="mt-2 max-w-prose text-sm text-ink-subtle">
+  What has been downloaded to this machine, most-used first. Anything used more than once is kept;
+  the rest can be reclaimed when the workspace runs short, and re-downloaded if it is still there to
+  download.
+</p>
+
+<nav class="mt-6 flex flex-wrap gap-2" aria-label="Which sources to show">
+  @for (item of tabs; track item.key) {
+    <a
+      [routerLink]="['/sources']"
+      [queryParams]="{ tab: item.key }"
+      class="rounded-lg border px-3 py-1.5 text-sm"
+      [class]="
+        selected() === item.key
+          ? 'border-forge-500 bg-forge-600/10 text-ink'
+          : 'border-line-strong text-ink-muted hover:bg-line'
+      "
+      [attr.aria-current]="selected() === item.key ? 'page' : null"
+      >{{ item.label }}</a
+    >
+  }
+</nav>
+
+<!-- Three states. A failed query replaces the list, because it is about the
+     list — a banner above one that still says "Loading…" describes neither. -->
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">The library could not be read.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (rows() === null) {
+  <p class="py-16 text-center text-ink-subtle">Reading the library…</p>
+} @else if (empty()) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">Nothing downloaded yet.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">
+      Submit a video on the Jobs page, or add music to a clip, and what it fetches turns up here.
+    </p>
+  </div>
+} @else {
+  <ul class="mt-6 space-y-3">
+    @for (row of rows(); track row.source.id) {
+      <li class="flex gap-4 rounded-xl border border-line bg-panel p-4">
+        <!-- The picture, or a letter. A generated waveform would identify
+             nothing while looking as though it did. -->
+        @if (row.poster) {
+          <img
+            [src]="row.poster"
+            alt=""
+            class="h-16 w-28 shrink-0 rounded-lg object-cover"
+            loading="lazy"
+          />
+        } @else {
+          <div
+            class="flex h-16 w-28 shrink-0 items-center justify-center rounded-lg bg-line-strong/40 text-xl font-semibold text-ink-subtle"
+            aria-hidden="true"
+          >
+            {{ row.letter }}
+          </div>
+        }
+
+        <div class="min-w-0 flex-1">
+          <p class="truncate font-medium text-ink">
+            {{ row.source.title ?? row.source.externalId ?? 'Untitled' }}
+          </p>
+
+          <p class="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-ink-subtle">
+            <span>{{ row.use }}</span>
+            @if (row.source.channel) {
+              <span aria-hidden="true">·</span>
+              <span class="truncate">{{ row.source.channel }}</span>
+            }
+            @if (row.length) {
+              <span aria-hidden="true">·</span>
+              <span>{{ row.length }}</span>
+            }
+            @if (row.size) {
+              <span aria-hidden="true">·</span>
+              <span>{{ row.size }}</span>
+            }
+          </p>
+
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            @if (row.source.kind === 'music') {
+              <span class="rounded-md bg-line-strong/40 px-2 py-0.5 text-xs text-ink-muted"
+                >music</span
+              >
+            }
+            <!-- Why it is still here, or why it may not be. The collector is
+                 otherwise invisible, and a library you cannot predict is one
+                 you keep re-downloading. -->
+            @if (row.kept) {
+              <span class="rounded-md bg-ok-bg px-2 py-0.5 text-xs text-ok-ink-soft"
+                >kept{{ row.source.pinned ? ' · pinned' : '' }}</span
+              >
+            } @else {
+              <span class="text-xs text-ink-subtle">may be reclaimed if space runs short</span>
+            }
+          </div>
+        </div>
+
+        <!-- Opening the original is the one action a browser can honestly
+             offer: the file itself is on the worker and out of its reach. -->
+        @if (row.source.url) {
+          <a
+            [href]="row.source.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="self-start text-xs text-ink-subtle hover:text-ink-muted"
+            >Open ↗</a
+          >
+        }
+      </li>
+    }
+  </ul>
+
+  <p class="mt-6 max-w-prose text-xs text-ink-subtle">
+    Removing a file means deleting bytes on the worker, which a browser cannot reach — the Storage
+    page in the desktop app is where that happens, and it moves them to the bin rather than deleting
+    them outright.
+  </p>
+}

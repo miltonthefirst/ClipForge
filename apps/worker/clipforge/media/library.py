@@ -56,6 +56,7 @@ def remember_music(
     path: Path,
     title: str | None,
     now: datetime | None = None,
+    ffmpeg_bin: str | None = None,
 ) -> str | None:
     """Record that a track was used, and return its source id.
 
@@ -94,6 +95,22 @@ def remember_music(
                 created_at=now,
             )
         )
+        # The track's own cover art, once, when the record is made. Never on a
+        # repeat use: the picture cannot have changed and re-reading it would
+        # put an ffmpeg call in the path of every remake that carries music.
+        if ffmpeg_bin:
+            from clipforge.media.thumbnails import build_source_preview
+
+            preview = build_source_preview(
+                source_id,
+                kind=SourceKind.MUSIC,
+                path=path,
+                duration_sec=None,
+                work_dir=path.parent,
+                ffmpeg_bin=ffmpeg_bin,
+            )
+            if preview is not None:
+                sources.save_preview(preview)  # type: ignore[attr-defined]
         return source_id
     except Exception as exc:  # noqa: BLE001 - bookkeeping never fails the job
         log.warning("library.music_not_recorded", reference=reference[:120], error=str(exc)[:200])

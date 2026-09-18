@@ -228,6 +228,7 @@ class MusicStage:
                 reference=options.source,
                 path=result.track_path,
                 title=result.track_title,
+                ffmpeg_bin=self._settings.ffmpeg_bin,
             )
 
         # ── What is left of the parent's record ──────────────────────────────

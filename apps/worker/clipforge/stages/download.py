@@ -27,7 +27,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from clipforge_contracts import IngestErrorCode, Lane, Source, SourceProvider, StageName
+from clipforge_contracts import (
+    IngestErrorCode,
+    Lane,
+    Source,
+    SourceKind,
+    SourceProvider,
+    StageName,
+)
 
 from clipforge.media.sources import (
     FetchedSource,
@@ -37,6 +44,7 @@ from clipforge.media.sources import (
     SourceIdentity,
     select_adapter,
 )
+from clipforge.media.thumbnails import build_source_preview
 from clipforge.media.workspace import EvictionCandidate, Workspace
 from clipforge.observability import get_logger
 from clipforge.stages.base import StageContext, StageOutcome
@@ -232,6 +240,19 @@ class DownloadStage:
             created_at=now,
         )
         self._sources.save(source)
+        # A picture for the Sources page. After the save and never in front of
+        # it: the source is recorded whether or not ffmpeg can find a frame, and
+        # an ingest that worked must not be reported as failed over a thumbnail.
+        preview = build_source_preview(
+            source.id,
+            kind=SourceKind.VIDEO,
+            path=fetched.path,
+            duration_sec=fetched.media.duration_sec,
+            work_dir=self._workspace.tmp_dir,
+            ffmpeg_bin=context.settings.ffmpeg_bin,
+        )
+        if preview is not None:
+            self._sources.save_preview(preview)
         log.info(
             "ingest.recorded",
             source_id=source.id,
