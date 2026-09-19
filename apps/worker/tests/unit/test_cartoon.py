@@ -11,7 +11,7 @@ import hashlib
 
 import pytest
 from clipforge.media.cartoon import Canvas, draw_frame, frame_count
-from clipforge.synth.scenes import TimedScene
+from clipforge.synth.scenes import Line, TimedLine, TimedScene
 from clipforge_contracts import SceneMood, StickActor, StickMood, StickPose, StickProp
 
 pytestmark = pytest.mark.unit
@@ -31,13 +31,18 @@ def scene(
 ) -> TimedScene:
     return TimedScene(
         index=index,
-        line="A line.",
+        lines=(Line("figure 0", "A line."),),
         actors=tuple(StickActor(name=f"figure {i}", pose=pose, mood=mood) for i in range(actors)),
         props=props,
         mood=tone,
         label=label,
         start_sec=0.0,
         end_sec=3.0,
+        timed_lines=(
+            TimedLine(
+                "figure 0", "A line.", scene=index, voice="af_heart", start_sec=1.0, end_sec=2.0
+            ),
+        ),
     )
 
 
@@ -93,3 +98,13 @@ def test_frame_count_rounds_to_whole_frames_and_never_to_none() -> None:
     assert frame_count(3.0, 30) == 90
     assert frame_count(0.01, 30) == 1
     assert frame_count(2.55, 24) == 61
+
+
+def test_the_figure_whose_line_is_playing_is_drawn_talking() -> None:
+    talking = digest(scene(actors=2), 1.5)
+    silent = digest(scene(actors=2), 0.5)
+    assert talking != silent
+    # Which figure talks is the line's speaker, not the pose: a figure in a
+    # TALK pose with no line playing draws the same closed mouth twice.
+    quiet = scene(pose=StickPose.TALK, actors=1)
+    assert digest(quiet, 0.2) != digest(quiet, 1.5)

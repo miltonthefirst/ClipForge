@@ -3,20 +3,23 @@
 Five stages, and the shape of them is the point.
 
 **SCRIPT** holds the GPU for one model call: given a topic, an angle and the
-facts a trend carried, it writes the narration as scenes; given a script a
-person wrote, it only stages it. **NARRATE** speaks the script with the local
-voice on the CPU. **ALIGN** holds the GPU again, briefly, to listen back to
-that narration with Whisper and recover word timings — the same trick a
-remake uses, and it is what puts each scene and each caption where the voice
-is. **DRAW** renders every scene as stick-figure cartoon frames on the CPU,
-where the time actually goes. **ASSEMBLE** joins them behind a title card,
-lays the voice over, burns the captions, and writes a clip like any other.
+facts a trend carried, it writes a conversation — a cast, and scenes of
+lines each said by a named character; given dialogue a person wrote, it only
+casts and stages it. **NARRATE** speaks every line on the CPU in that
+character's own voice and joins them, which is also what times the whole
+video: each line's start and end are known exactly. **ALIGN** holds the GPU
+again, briefly, to listen back with Whisper for the word timings the
+captions want. **DRAW** renders every scene as stick-figure cartoon frames on
+the CPU, where the time actually goes, with the figure whose line is playing
+doing the talking. **ASSEMBLE** joins them behind a title card, lays the
+voices over, burns the captions, and writes a clip like any other.
 
 Everything the model contributes is a choice from a vocabulary — a pose, a
-mood, a prop — and everything the renderer draws is a function of the scene,
-the seed and the clock. So a composed clip is reproducible from its own
-record, which no cut clip is, and nothing in it can resemble a real person,
-which is a rule of the visual mode and not a hope about the prompt.
+mood, a prop, a kind of voice — and everything the renderer draws is a
+function of the scene, the seed and the clock. So a composed clip is
+reproducible from its own record, which no cut clip is, and nothing in it
+can resemble a real person, which is a rule of the visual mode and not a
+hope about the prompt.
 See docs/adr/0027-drawn-cartoons-as-the-first-visual-mode.md.
 """
 
@@ -25,17 +28,21 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
+import wave
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+import numpy as np
 from clipforge_contracts import (
     AppliedCompose,
     Clip,
     ClipLocation,
     ClipPreview,
     CompileTransition,
+    ComposeCharacter,
+    ComposeLine,
     ComposeOptions,
     ComposeScene,
     ComposeStyle,
@@ -50,6 +57,7 @@ from clipforge_contracts import (
     StickProp,
     Transcript,
     TranscriptWord,
+    VoiceKind,
 )
 
 from clipforge.media.assemble import (
@@ -63,7 +71,13 @@ from clipforge.media.cartoon import render_scene
 from clipforge.media.poster import PosterError, extract_poster
 from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, escape_filter_path
-from clipforge.media.speech import DEFAULT_VOICES, SpeechError, SpeechSynth, kokoro_language
+from clipforge.media.speech import (
+    DEFAULT_VOICES,
+    SpeechError,
+    SpeechSynth,
+    kokoro_language,
+    write_wav,
+)
 from clipforge.media.workspace import Workspace
 from clipforge.models.ollama import OllamaClient, OllamaError
 from clipforge.observability import get_logger
@@ -72,15 +86,20 @@ from clipforge.stages.base import StageContext, StageOutcome
 from clipforge.store.blobs import BlobStore
 from clipforge.store.firestore import ClipStore
 from clipforge.synth.scenes import (
+    Line,
     SceneSpec,
+    TimedLine,
     TimedScene,
+    actors_for,
+    cast_from_response,
     full_script,
+    parse_dialogue,
     scenes_from_response,
-    split_sentences,
     time_scenes,
     word_count,
 )
 from clipforge.synth.script import SCRIPT_PROMPT_VERSION, write_script
+from clipforge.synth.voices import assign_voices, is_narrator, voice_kind_for_name
 
 log = get_logger(__name__)
 
@@ -93,6 +112,12 @@ __all__ = [
     "ScriptStage",
     "compose_dir",
 ]
+
+#: The beat between two lines of one scene, and the longer one between scenes.
+LINE_GAP_SEC = 0.35
+SCENE_GAP_SEC = 0.6
+#: Silence after the last line, so the video does not end on the last syllable.
+TAIL_SEC = 0.6
 
 
 class ComposeError(RuntimeError):
@@ -147,7 +172,7 @@ def _checkpoint_of(context: StageContext, stage: StageName) -> dict[str, Any]:
 def _scene_dict(scene: SceneSpec) -> dict[str, Any]:
     return {
         "index": scene.index,
-        "line": scene.line,
+        "lines": [{"speaker": line.speaker, "text": line.text} for line in scene.lines],
         "actors": [
             {"name": actor.name, "pose": actor.pose.value, "mood": actor.mood.value}
             for actor in scene.actors
@@ -164,7 +189,13 @@ def _scenes_from(checkpoint: dict[str, Any]) -> list[SceneSpec]:
         scenes.append(
             SceneSpec(
                 index=int(raw.get("index", index)),
-                line=str(raw.get("line") or ""),
+                lines=tuple(
+                    Line(
+                        speaker=str(item.get("speaker") or "Narrator"),
+                        text=str(item.get("text") or ""),
+                    )
+                    for item in raw.get("lines") or []
+                ),
                 actors=tuple(
                     StickActor(
                         name=str(a.get("name") or "someone"),
@@ -181,6 +212,28 @@ def _scenes_from(checkpoint: dict[str, Any]) -> list[SceneSpec]:
     return scenes
 
 
+def _cast_from(checkpoint: dict[str, Any]) -> list[tuple[str, VoiceKind]]:
+    return [
+        (str(member.get("name") or ""), VoiceKind(member.get("kind") or "WOMAN_US"))
+        for member in checkpoint.get("cast") or []
+        if member.get("name")
+    ]
+
+
+def _timeline_from(checkpoint: dict[str, Any]) -> list[TimedLine]:
+    return [
+        TimedLine(
+            speaker=str(item.get("speaker") or "Narrator"),
+            text=str(item.get("text") or ""),
+            scene=int(item.get("scene") or 0),
+            voice=str(item.get("voice") or ""),
+            start_sec=float(item.get("startSec") or 0.0),
+            end_sec=float(item.get("endSec") or 0.0),
+        )
+        for item in checkpoint.get("lines") or []
+    ]
+
+
 def _words_from(checkpoint: dict[str, Any]) -> list[TranscriptWord]:
     return [
         TranscriptWord(
@@ -192,25 +245,40 @@ def _words_from(checkpoint: dict[str, Any]) -> list[TranscriptWord]:
     ]
 
 
-def _plain_scenes(sentences: Sequence[str]) -> list[SceneSpec]:
-    """A script with no model to stage it: one figure, talking, per sentence."""
-    return [
-        SceneSpec(
-            index=index,
-            line=line,
-            actors=(StickActor(name="the narrator", pose=StickPose.TALK, mood=StickMood.NEUTRAL),),
-            props=(),
-            mood=SceneMood.CALM,
+def _plain_scenes(lines: Sequence[Line]) -> list[SceneSpec]:
+    """Dialogue with no model to stage it: two lines a scene, the speakers on screen."""
+    scenes: list[SceneSpec] = []
+    for start in range(0, len(lines), 2):
+        chunk = lines[start : start + 2]
+        scenes.append(
+            SceneSpec(
+                index=len(scenes),
+                lines=tuple(chunk),
+                actors=actors_for([line.speaker for line in chunk], ()),
+                props=(),
+                mood=SceneMood.CALM,
+            )
         )
-        for index, line in enumerate(sentences)
-    ]
+    return scenes
+
+
+def _plain_cast(lines: Sequence[Line]) -> list[tuple[str, VoiceKind]]:
+    cast: list[tuple[str, VoiceKind]] = []
+    seen: set[str] = set()
+    for line in lines:
+        key = line.speaker.casefold()
+        if key in seen or is_narrator(line.speaker):
+            continue
+        cast.append((line.speaker, voice_kind_for_name(line.speaker, len(cast))))
+        seen.add(key)
+    return cast
 
 
 # ── SCRIPT ────────────────────────────────────────────────────────────────────
 
 
 class ScriptStage:
-    """Write the narration and stage it, or stage the narration given."""
+    """Write the conversation and stage it, or stage the conversation given."""
 
     name = StageName.SCRIPT
     lane = Lane.GPU
@@ -222,13 +290,13 @@ class ScriptStage:
 
     def run(self, context: StageContext) -> StageOutcome:
         options = _options(context)
-        sentences = split_sentences(options.script) if options.script else None
-        if sentences is not None and not sentences:
+        given = parse_dialogue(options.script) if options.script else None
+        if given is not None and not given:
             raise ComposeError("the script given has no words in it", code="COMPOSE_EMPTY_SCRIPT")
 
         client = self._build_client(context)
         available = client.is_available()
-        if not available and sentences is None:
+        if not available and given is None:
             raise ComposeError(
                 "no model is reachable to write the script; start Ollama, or give the words "
                 "yourself and the video will be drawn without it",
@@ -237,42 +305,44 @@ class ScriptStage:
             )
 
         title = options.topic.strip()[:80]
-        author = ScriptAuthor.OPERATOR if sentences is not None else ScriptAuthor.MODEL
+        author = ScriptAuthor.OPERATOR if given is not None else ScriptAuthor.MODEL
         model_version: str | None = None
         prompt_version: str | None = None
         llm: dict[str, Any] = {}
         peak: int | None = None
         scenes: list[SceneSpec]
+        cast: list[tuple[str, VoiceKind]]
 
         if available:
             context.progress("Waiting for the GPU")
             with context.broker.acquire(f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
-                context.progress("Staging the script" if sentences else "Writing the script")
+                context.progress("Staging the dialogue" if given else "Writing the conversation")
                 response = None
                 try:
-                    response = write_script(client, options, sentences=sentences)
+                    response = write_script(client, options, lines=given)
                 except OllamaError as exc:
                     if exc.retryable:
                         raise ComposeError(str(exc), retryable=True, code="COMPOSE_MODEL") from exc
-                    if sentences is None:
+                    if given is None:
                         raise ComposeError(
                             f"the model could not write a usable script: {exc}",
                             code="COMPOSE_MODEL",
                         ) from exc
-                    # The words were given; the model only had to stage them
-                    # and could not. Stage them plainly rather than fail.
                     log.warning("compose.staging_failed", error=str(exc)[:200])
                 peak = leased.observe()
             llm = dict(client.stats.summary())
             if response is not None:
-                scenes = scenes_from_response(response, script=options.script)
+                scenes = scenes_from_response(response, script=given)
+                cast = cast_from_response(response, scenes)
                 title = response.title.strip()[:80] or title
                 model_version = f"ollama:{client.model}"
                 prompt_version = SCRIPT_PROMPT_VERSION
             else:
-                scenes = _plain_scenes(sentences or [])
+                scenes = _plain_scenes(given or [])
+                cast = _plain_cast(given or [])
         else:
-            scenes = _plain_scenes(sentences or [])
+            scenes = _plain_scenes(given or [])
+            cast = _plain_cast(given or [])
 
         if not scenes:
             raise ComposeError("the model returned no scenes", code="COMPOSE_MODEL")
@@ -281,6 +351,7 @@ class ScriptStage:
             checkpoint={
                 "title": title,
                 "script": script,
+                "cast": [{"name": name, "kind": kind.value} for name, kind in cast],
                 "scenes": [_scene_dict(scene) for scene in scenes],
                 "scriptBy": author.value,
                 "modelVersion": model_version,
@@ -288,8 +359,8 @@ class ScriptStage:
                 "llm": llm,
             },
             peak_vram_mb=peak or None,
-            detail=f"{len(scenes)} scenes, {word_count(script)} words"
-            + (" from the script given" if sentences else ""),
+            detail=f"{len(scenes)} scenes, {len(cast)} characters, {word_count(script)} words"
+            + (" from the dialogue given" if given else ""),
         )
 
     def _build_client(self, context: StageContext) -> OllamaClient:
@@ -304,8 +375,25 @@ class ScriptStage:
 # ── NARRATE ───────────────────────────────────────────────────────────────────
 
 
+def _read_wav(path: Path) -> tuple[np.ndarray, int]:
+    """A mono 16-bit file back as float samples, the way `write_wav` made it."""
+    with wave.open(str(path), "rb") as handle:
+        rate = handle.getframerate()
+        frames = handle.readframes(handle.getnframes())
+        channels = handle.getnchannels()
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32767.0
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    return samples, rate
+
+
 class NarrateStage:
-    """Speak the script with the local voice. CPU, like every narration."""
+    """Speak every line in its character's voice, and join them into one track.
+
+    Line by line rather than all at once, for two reasons that both matter:
+    each character gets a voice of their own, and each line's start and end
+    are then known exactly, which is what times the scenes and the talking.
+    """
 
     name = StageName.NARRATE
     lane = Lane.CPU
@@ -321,40 +409,101 @@ class NarrateStage:
 
     def run(self, context: StageContext) -> StageOutcome:
         options = _options(context)
-        script = str(_checkpoint_of(context, StageName.SCRIPT).get("script") or "").strip()
-        if not script:
-            raise ComposeError("SCRIPT left no script to speak", code="COMPOSE_NO_SCRIPT")
+        script_cp = _checkpoint_of(context, StageName.SCRIPT)
+        scenes = _scenes_from(script_cp)
+        if not any(scene.lines for scene in scenes):
+            raise ComposeError("SCRIPT left no lines to speak", code="COMPOSE_NO_SCRIPT")
 
         folder = compose_dir(self._workspace, context.job.id)
         folder.mkdir(parents=True, exist_ok=True)
         language = options.language or "en-us"
-        voice = options.voice or DEFAULT_VOICES.get(
+        narrator = options.voice or DEFAULT_VOICES.get(
             kokoro_language(language), context.settings.speech_default_voice
         )
+        cast = _cast_from(script_cp)
+        voices = assign_voices(cast, narrator_voice=narrator, seed=options.seed or 0)
         synth = self._build_synth(context)
-        context.progress(f"Speaking the script in {voice}")
-        try:
-            spoken = synth.speak(
-                script,
-                voice=voice,
-                language=language,
-                speed=1.0,
-                destination=folder / "narration.wav",
-            )
-        except SpeechError as exc:
-            raise ComposeError(
-                f"the narration could not be spoken: {exc}", code="COMPOSE_SPEECH"
-            ) from exc
+
+        pieces: list[np.ndarray] = []
+        timeline: list[dict[str, Any]] = []
+        rate: int | None = None
+        cursor = 0.0
+        spoken_lines = 0
+        total_lines = sum(len(scene.lines) for scene in scenes)
+        for scene in scenes:
+            for index, line in enumerate(scene.lines):
+                voice = (
+                    narrator
+                    if is_narrator(line.speaker)
+                    else voices.get(line.speaker.casefold(), narrator)
+                )
+                spoken_lines += 1
+                context.progress(f"Speaking line {spoken_lines} of {total_lines} as {line.speaker}")
+                try:
+                    spoken = synth.speak(
+                        line.text,
+                        voice=voice,
+                        language=language,
+                        speed=1.0,
+                        destination=folder / f"line-{scene.index:02d}-{index:02d}.wav",
+                    )
+                except SpeechError as exc:
+                    raise ComposeError(
+                        f"{line.speaker}'s line could not be spoken: {exc}", code="COMPOSE_SPEECH"
+                    ) from exc
+                samples, sample_rate = _read_wav(spoken.path)
+                if rate is None:
+                    rate = sample_rate
+                elif sample_rate != rate:
+                    raise ComposeError(
+                        f"the voices do not agree on a sample rate ({sample_rate} vs {rate})",
+                        code="COMPOSE_SPEECH",
+                    )
+                gap = 0.0
+                if pieces:
+                    gap = LINE_GAP_SEC if index > 0 else SCENE_GAP_SEC
+                if gap:
+                    pieces.append(np.zeros(int(gap * rate), dtype=np.float32))
+                    cursor += gap
+                start = cursor
+                pieces.append(samples)
+                cursor += len(samples) / rate
+                timeline.append(
+                    {
+                        "scene": scene.index,
+                        "index": index,
+                        "speaker": line.speaker,
+                        "text": line.text,
+                        "voice": voice,
+                        "startSec": round(start, 3),
+                        "endSec": round(cursor, 3),
+                    }
+                )
+        if rate is None or not pieces:
+            raise ComposeError("nothing was spoken", code="COMPOSE_SPEECH")
+        pieces.append(np.zeros(int(TAIL_SEC * rate), dtype=np.float32))
+        duration = write_wav(
+            np.concatenate(pieces), sample_rate=rate, destination=folder / "narration.wav"
+        )
         return StageOutcome(
             checkpoint={
-                "path": str(spoken.path),
-                "durationSec": round(spoken.duration_sec, 3),
-                "voice": spoken.voice,
-                "engine": spoken.engine,
-                "language": spoken.language,
-                "characters": len(script),
+                "path": str(folder / "narration.wav"),
+                "durationSec": round(duration, 3),
+                "voice": narrator,
+                "engine": synth.engine,
+                "language": language,
+                "cast": [
+                    {
+                        "name": name,
+                        "kind": kind.value,
+                        "voice": voices.get(name.casefold(), narrator),
+                    }
+                    for name, kind in cast
+                ],
+                "lines": timeline,
+                "characters": sum(len(line.text) for scene in scenes for line in scene.lines),
             },
-            detail=f"{spoken.duration_sec:.0f}s of narration in {spoken.voice}",
+            detail=f"{duration:.0f}s of dialogue in {len(set(voices.values())) or 1} voices",
         )
 
     def _build_synth(self, context: StageContext) -> SpeechSynth:
@@ -373,10 +522,11 @@ class NarrateStage:
 
 
 class AlignStage:
-    """Listen back to the narration, so the scenes and captions follow the voice.
+    """Listen back to the dialogue, so the captions follow the voices word by word.
 
-    Best-effort by design. Without a transcriber the video is still drawn,
-    timed by word count, without captions — and the stage says so.
+    Best-effort by design. Without a transcriber the video is still drawn —
+    the scenes are timed from the lines regardless — but without captions,
+    and the stage says so.
     """
 
     name = StageName.ALIGN
@@ -400,18 +550,17 @@ class AlignStage:
         if transcriber is None:
             return StageOutcome(
                 skipped=True,
-                detail="no transcriber on this worker: scenes are timed by word count "
-                "and the captions are left off",
+                detail="no transcriber on this worker: the captions are left off",
             )
-        context.progress("Listening back to the narration")
+        context.progress("Listening back to the dialogue")
         try:
             result = transcriber.transcribe(path, source_id=f"compose-{context.job.id}")
         except Exception as exc:  # noqa: BLE001 - alignment is best-effort
             log.warning("compose.align_failed", error=str(exc)[:200])
             return StageOutcome(
                 skipped=True,
-                detail=f"the narration could not be aligned ({str(exc)[:160]}): scenes are "
-                "timed by word count and the captions are left off",
+                detail=f"the dialogue could not be aligned ({str(exc)[:160]}): the captions "
+                "are left off",
             )
         words = [w for s in result.transcript.segments for w in (s.words or [])]
         return StageOutcome(
@@ -470,8 +619,7 @@ class DrawStage:
         total = float(narration.get("durationSec") or 0.0)
         if total <= 0:
             raise ComposeError("NARRATE recorded no duration", code="COMPOSE_NO_SCRIPT")
-        words = _words_from(_checkpoint_of(context, StageName.ALIGN)) or None
-        timed = time_scenes(scenes, words=words, total_sec=total)
+        timed = time_scenes(scenes, lines=_timeline_from(narration), total_sec=total)
 
         folder = compose_dir(self._workspace, context.job.id)
         folder.mkdir(parents=True, exist_ok=True)
@@ -525,14 +673,28 @@ class DrawStage:
 
 
 def _timed_dict(scene: TimedScene) -> dict[str, Any]:
-    return {**_scene_dict(scene), "startSec": scene.start_sec, "endSec": scene.end_sec}
+    return {
+        **_scene_dict(scene),
+        "startSec": scene.start_sec,
+        "endSec": scene.end_sec,
+        "spoken": [
+            {
+                "speaker": line.speaker,
+                "text": line.text,
+                "voice": line.voice,
+                "startSec": line.start_sec,
+                "endSec": line.end_sec,
+            }
+            for line in scene.timed_lines
+        ],
+    }
 
 
 # ── ASSEMBLE ──────────────────────────────────────────────────────────────────
 
 
 class ComposeAssembleStage:
-    """Join the scenes behind a card, lay the voice over, burn the captions, write the clip."""
+    """Join the scenes behind a card, lay the voices over, burn the captions, write the clip."""
 
     name = StageName.ASSEMBLE
     lane = Lane.CPU
@@ -616,9 +778,9 @@ class ComposeAssembleStage:
                             build_ass(cues, style=profile.captions), encoding="utf-8", newline="\n"
                         )
                 else:
-                    warnings.append("captions were left off: the narration was not aligned")
+                    warnings.append("captions were left off: the dialogue was not aligned")
 
-            context.progress("Laying the voice over the pictures")
+            context.progress("Laying the voices over the pictures")
             final = _mux(
                 silent.path,
                 narration_path,
@@ -646,10 +808,27 @@ class ComposeAssembleStage:
             )
 
             now = datetime.now(UTC)
-            timed = draw_cp.get("timed") or []
+            cast_record = [
+                ComposeCharacter(
+                    name=str(member.get("name") or "")[:40],
+                    kind=VoiceKind(member["kind"]) if member.get("kind") else None,
+                    voice=str(member.get("voice") or "")[:40],
+                )
+                for member in (narration_cp.get("cast") or [])[:5]
+                if member.get("name")
+            ]
             scenes_record = [
                 ComposeScene(
-                    line=str(s.get("line") or "")[:300],
+                    lines=[
+                        ComposeLine(
+                            speaker=str(line.get("speaker") or "")[:40],
+                            text=str(line.get("text") or "")[:300],
+                            voice=str(line.get("voice") or "")[:40],
+                            start_sec=round(float(line.get("startSec") or 0.0) + offset, 3),
+                            end_sec=round(float(line.get("endSec") or 0.0) + offset, 3),
+                        )
+                        for line in (s.get("spoken") or [])[:6]
+                    ],
                     start_sec=round(float(s.get("startSec") or 0.0) + offset, 3),
                     end_sec=round(float(s.get("endSec") or 0.0) + offset, 3),
                     actors=[
@@ -664,13 +843,11 @@ class ComposeAssembleStage:
                     mood=SceneMood(s.get("mood") or "CALM"),
                     label=(s.get("label") or None),
                 )
-                for s in timed[:16]
+                for s in (draw_cp.get("timed") or [])[:16]
             ]
             clip = Clip(
                 id=clip_id,
                 uid=context.job.uid,
-                # No candidate and no source: the job is the only thing this
-                # clip came from, and the record below is the whole story.
                 candidate_id=f"compose-{context.job.id}",
                 source_id=None,
                 job_id=context.job.id,
@@ -691,17 +868,18 @@ class ComposeAssembleStage:
                 size_bytes=ref.size_bytes,
                 render_profile=profile.identifier,
                 title=title,
-                description=_describe(options, script)[:2000],
+                description=_describe(options, script, cast_record)[:2000],
                 tags=_tags(options.topic),
                 review=ReviewState.PENDING,
                 compose=AppliedCompose(
                     topic=options.topic[:200],
                     title=title,
-                    script=script[:2400],
+                    script=script[:3000],
+                    cast=cast_record,
                     scenes=scenes_record
                     or [
                         ComposeScene(
-                            line=script[:300],
+                            lines=[],
                             start_sec=offset,
                             end_sec=round(final.duration_sec, 3),
                             actors=[],
@@ -766,7 +944,7 @@ def _mux(
     ffmpeg_bin: str,
     timeout_s: float = 900.0,
 ) -> AssembledClip:
-    """The silent join plus the voice, delayed past the card, with captions burned in."""
+    """The silent join plus the voices, delayed past the card, with captions burned in."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.with_suffix(destination.suffix + ".partial")
     delay_ms = max(0, round(offset_sec * 1000))
@@ -801,10 +979,10 @@ def _mux(
             argv, capture_output=True, timeout=timeout_s, check=False
         )
     except subprocess.TimeoutExpired as exc:
-        raise RenderError(f"laying the voice over took longer than {timeout_s:.0f}s") from exc
+        raise RenderError(f"laying the voices over took longer than {timeout_s:.0f}s") from exc
     if completed.returncode != 0:
         raise RenderError(
-            "ffmpeg failed laying the voice over: "
+            "ffmpeg failed laying the voices over: "
             + completed.stderr.decode(errors="replace")[-800:]
         )
     staging.replace(destination)
@@ -817,11 +995,13 @@ def _mux(
     )
 
 
-def _describe(options: ComposeOptions, script: str) -> str:
+def _describe(options: ComposeOptions, script: str, cast: Sequence[ComposeCharacter]) -> str:
     lines = [options.topic.strip()]
     if options.angle:
         lines += ["", options.angle.strip()]
-    lines += ["", "Narration:", script.strip()]
+    if cast:
+        lines += ["", "Cast: " + ", ".join(f"{member.name} ({member.voice})" for member in cast)]
+    lines += ["", script.strip()]
     lines += ["", "Drawn as stick-figure cartoons by ClipForge. No real person is depicted."]
     return "\n".join(lines)
 

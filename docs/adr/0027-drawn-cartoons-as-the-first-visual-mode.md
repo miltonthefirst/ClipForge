@@ -56,6 +56,19 @@ where its first word is spoken, by count rather than by text, so a word Whisper 
 word at a boundary rather than a scene out of step. Without a transcriber the video is still made,
 timed by word count, without captions, and the stage says so.
 
+**Amended the next day: dialogue, not voice-over.** The first videos narrated a description
+over figures who stood there, and the operator said what they were: a slideshow with a
+commentary. So the script is now a *conversation*. `LlmScriptResponse` carries a cast — two or
+three characters, each with a `VoiceKind` — and scenes of lines, each line said by a named
+character; a narrator is allowed only for what no character could say. `NARRATE` speaks every
+line separately in that character's own Kokoro voice (a distinct voice per character of the kind
+the model chose, never the narrator's) and joins them with a beat between, which also yields an
+exact timeline, so scenes are timed from the lines rather than guessed from word counts. The
+renderer reads that timeline: the figure whose line is playing moves its mouth, gets a speech
+bubble and a lit name tag; the rest keep their pose. A person's own dialogue is written one row
+per line as `Name: words` and spoken verbatim. Captions still come from Whisper over the joined
+track. The prompt is `script-v2`.
+
 **Consequences.**
 
 - The plan's Phase 13 gate is lifted for this slice only. Stock gathering, generated stills and the

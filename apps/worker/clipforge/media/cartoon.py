@@ -19,6 +19,10 @@ buys is that a new pose is thirty lines here and one word in the contract's
 enum, and that the model chooses from a vocabulary rather than describing a
 picture nobody could draw.
 
+**The talking is the voice's.** Which figure's mouth moves is decided by the
+line playing at that moment, not by its pose: the timeline `NARRATE` built is
+what the renderer reads, so the picture and the sound cannot disagree.
+
 **No likeness.** A figure has a head, a face with a mood, and a name under its
 feet. The name is a role or a first name from the script. Nothing here can draw
 a real person, and that is the rule of the visual mode rather than a limit of
@@ -44,7 +48,7 @@ from clipforge.media.assemble import AssembledClip, output_args
 from clipforge.media.profiles import OUTPUT_HEIGHT, OUTPUT_WIDTH, RenderProfile
 from clipforge.media.render import RenderError
 from clipforge.observability import get_logger
-from clipforge.synth.scenes import Palette, TimedScene, palette_for
+from clipforge.synth.scenes import Palette, TimedScene, palette_for, speaking_at
 
 log = get_logger(__name__)
 
@@ -441,9 +445,18 @@ def _draw_figure(
     t: float,
     ink: RGB,
     accent: RGB,
+    speaking: bool = False,
 ) -> None:
     height = canvas.figure_height
     posture = _posture(actor.pose, phase, t)
+    # The mouth follows the voice, not the pose: a TALK pose with no line
+    # playing gestures with its mouth shut, and any pose speaks when its
+    # line is on.
+    mouth_open = posture.mouth_open if actor.pose is StickPose.CELEBRATE else 0.0
+    if speaking:
+        mouth_open = 0.12 + 0.72 * max(0.0, math.sin(t * 11.0)) * (
+            0.6 + 0.4 * abs(math.sin(t * 2.3))
+        )
     stroke = height * 0.032
     feet_y = canvas.ground_y - posture.lift * height
 
@@ -500,7 +513,9 @@ def _draw_figure(
         pen.circle(hand, stroke * 0.9, fill=ink, outline=None)
     # Head and face.
     pen.circle(head, head_r, fill=(255, 250, 240), outline=ink, width=stroke)
-    _draw_face(pen, head, head_r, actor.mood, ink=ink, mouth_open=posture.mouth_open, facing=facing)
+    _draw_face(pen, head, head_r, actor.mood, ink=ink, mouth_open=mouth_open, facing=facing)
+    if speaking:
+        _draw_bubble(pen, head, head_r, facing=facing, t=t, ink=ink)
     # Name, under the feet, on a small tag.
     label = actor.name
     size = height * 0.085
@@ -509,11 +524,44 @@ def _draw_figure(
     pen.rect(
         (x - width / 2, tag_y - size * 0.75),
         (x + width / 2, tag_y + size * 0.75),
-        fill=accent,
-        outline=None,
+        fill=(255, 255, 255) if speaking else accent,
+        outline=accent if speaking else None,
+        width=size * 0.12,
         radius=size * 0.4,
     )
-    pen.text((x, tag_y), label, size=size, colour=(255, 255, 255))
+    pen.text((x, tag_y), label, size=size, colour=accent if speaking else (255, 255, 255))
+
+
+def _draw_bubble(pen: _Pen, head: Point, head_r: float, *, facing: int, t: float, ink: RGB) -> None:
+    """A speech bubble with three dots that take turns, over the figure that is talking."""
+    hx, hy = head
+    cx = hx + facing * head_r * 1.6
+    cy = hy - head_r * 2.4
+    rx, ry = head_r * 1.7, head_r * 1.05
+    pen.polygon(
+        [
+            (cx - facing * rx * 0.25, cy + ry * 0.8),
+            (hx + facing * head_r * 0.5, hy - head_r * 1.05),
+            (cx + facing * rx * 0.15, cy + ry * 0.85),
+        ],
+        fill=(255, 255, 255),
+        outline=ink,
+        width=head_r * 0.08,
+    )
+    pen._draw.ellipse(  # the pen has no ellipse of its own
+        [
+            pen.at((cx - rx, cy - ry)),
+            pen.at((cx + rx, cy + ry)),
+        ],
+        fill=(255, 255, 255),
+        outline=ink,
+        width=max(1, round(pen.px(head_r * 0.08))),
+    )
+    for k in range(3):
+        bounce = max(0.0, math.sin(t * 6.0 - k * 1.1)) * ry * 0.25
+        pen.circle(
+            (cx - rx * 0.45 + k * rx * 0.45, cy - bounce), head_r * 0.16, fill=ink, outline=None
+        )
 
 
 def _positions(count: int, canvas: Canvas) -> list[tuple[float, int]]:
@@ -1282,6 +1330,7 @@ def draw_frame(
         if prop in _BACKDROP or prop in _AIRBORNE:
             _PROPS[prop](pen, centre, size, palette, scene.label, t)
     phase = t * 2 * math.pi * 1.1
+    speaker = speaking_at(scene, scene.start_sec + t)
     for actor, (x, facing) in zip(actors, _positions(len(actors), canvas), strict=False):
         _draw_figure(
             pen,
@@ -1293,6 +1342,7 @@ def draw_frame(
             t=t,
             ink=palette.ink,
             accent=palette.accent,
+            speaking=speaker is not None and actor.name.casefold() == speaker.casefold(),
         )
     for prop, centre, size in spots:
         if prop not in _BACKDROP and prop not in _AIRBORNE:

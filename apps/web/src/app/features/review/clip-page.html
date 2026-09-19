@@ -704,8 +704,9 @@
           <h2 class="text-sm font-semibold">Drawn from a script</h2>
           <p class="mt-1 text-xs text-ink-subtle">
             {{ drawn.scenes.length }} scene{{ drawn.scenes.length === 1 ? '' : 's' }} ·
-            {{ drawn.scriptBy === 'OPERATOR' ? 'your words' : 'a script the model wrote' }} · voice
-            {{ drawn.voice }} · seed {{ drawn.seed }}
+            {{ drawn.cast.length }} character{{ drawn.cast.length === 1 ? '' : 's' }} ·
+            {{ drawn.scriptBy === 'OPERATOR' ? 'your words' : 'a script the model wrote' }} · seed
+            {{ drawn.seed }}
             @if (drawn.trendId) {
               ·
               <a [routerLink]="['/trends', drawn.trendId]" class="text-accent-ink hover:underline"
@@ -713,21 +714,37 @@
               >
             }
           </p>
-          <p class="mt-3 text-sm text-ink break-words">{{ drawn.script }}</p>
-          <ol class="mt-3 space-y-1">
+          @if (drawn.cast.length) {
+            <p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-muted">
+              @for (member of drawn.cast; track member.name) {
+                <span
+                  >{{ member.name }} <span class="text-ink-subtle">· {{ member.voice }}</span></span
+                >
+              }
+              <span class="text-ink-subtle">narrator · {{ drawn.voice }}</span>
+            </p>
+          }
+          <ol class="mt-3 space-y-2">
             @for (scene of drawn.scenes; track $index) {
-              <li class="text-xs text-ink-subtle">
-                <span class="tabular-nums">{{ scene.startSec | number: '1.0-0' }}s</span>
-                @for (actor of scene.actors; track $index) {
-                  · {{ actor.name }} ({{ actor.pose.toLowerCase() }},
-                  {{ actor.mood.toLowerCase() }})
+              <li class="text-xs">
+                @for (line of scene.lines; track $index) {
+                  <p class="text-sm text-ink break-words">
+                    <span class="font-medium">{{ line.speaker }}:</span> {{ line.text }}
+                  </p>
                 }
-                @if (scene.props.length) {
-                  · {{ scene.props.join(', ').toLowerCase() }}
-                }
-                @if (scene.label) {
-                  · “{{ scene.label }}”
-                }
+                <p class="mt-0.5 text-ink-subtle">
+                  <span class="tabular-nums">{{ scene.startSec | number: '1.0-0' }}s</span>
+                  @for (actor of scene.actors; track $index) {
+                    · {{ actor.name }} ({{ actor.pose.toLowerCase() }},
+                    {{ actor.mood.toLowerCase() }})
+                  }
+                  @if (scene.props.length) {
+                    · {{ scene.props.join(', ').toLowerCase() }}
+                  }
+                  @if (scene.label) {
+                    · “{{ scene.label }}”
+                  }
+                </p>
               </li>
             }
           </ol>

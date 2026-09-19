@@ -65,7 +65,7 @@ describe('contextFromTrend', () => {
         '- Google Trends · 20K+ searches',
         '- Reddit · r/europe · #14 today',
         '- Video: Metsola tells Euronews — euronews',
-        "- The curator's note: The evidence only confirms the topic exists.",
+        '- Caveat: The evidence only confirms the topic exists.',
         '- This channel is about: europe',
       ].join('\n'),
     );
@@ -93,7 +93,7 @@ describe('composeFromTrend', () => {
     expect(options.topic).toBe('Australia could follow Canada into associated EU membership');
     expect(options.angle).toBe('Explain what associated membership would mean.');
     expect(options.script).toBeNull();
-    expect(options.context).toContain("The curator's note");
+    expect(options.context).toContain('Caveat:');
     expect(options.trendId).toBe('trend-1');
     expect(options.style).toBe('STICK');
     expect(options.targetDurationSec).toBe(45);
@@ -152,13 +152,13 @@ describe('the lists', () => {
 });
 
 describe('describeCompose', () => {
-  it('says how many scenes, whose words, and which voice', () => {
-    expect(describeCompose({ scenes: [1, 2, 3], voice: 'af_heart', scriptBy: 'MODEL' })).toBe(
-      '3 drawn scenes · a script the model wrote · voice af_heart',
-    );
-    expect(describeCompose({ scenes: [1], voice: 'bm_george', scriptBy: 'OPERATOR' })).toBe(
-      '1 drawn scene · your words · voice bm_george',
-    );
+  it('says how many scenes, how many characters, and whose words', () => {
+    expect(
+      describeCompose({ scenes: [1, 2, 3], cast: [1, 2], voice: 'af_heart', scriptBy: 'MODEL' }),
+    ).toBe('3 drawn scenes · 2 characters · a script the model wrote');
+    expect(
+      describeCompose({ scenes: [1], cast: [1], voice: 'bm_george', scriptBy: 'OPERATOR' }),
+    ).toBe('1 drawn scene · 1 character · your words');
     expect(describeCompose(null)).toBeNull();
   });
 });

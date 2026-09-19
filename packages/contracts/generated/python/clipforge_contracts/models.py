@@ -2094,6 +2094,43 @@ class SceneMood(StrEnum):
     URGENT = "URGENT"
 
 
+class VoiceKind(StrEnum):
+    """
+    The kind of voice a character speaks with. The model chooses the kind; the worker chooses a distinct voice of that kind for each character, so two men in one video do not share one.
+    """
+
+    MAN_US = "MAN_US"
+    WOMAN_US = "WOMAN_US"
+    MAN_UK = "MAN_UK"
+    WOMAN_UK = "WOMAN_UK"
+
+
+class LlmCharacter(BaseModel):
+    """
+    One member of the cast: a name by role or first name, and the kind of voice they speak with.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    name: str = Field(..., max_length=40, min_length=1)
+    voice: VoiceKind
+
+
+class LlmLine(BaseModel):
+    """
+    One thing said, by one character. 'Narrator' is allowed as a speaker for what no character could say, and is not drawn.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    speaker: str = Field(..., max_length=40, min_length=1)
+    text: str = Field(..., max_length=300, min_length=1)
+
+
 class StickActor(BaseModel):
     """
     One figure on screen. Named by role or first name and drawn as a stick figure: never a likeness of anyone real, which is a rule of the renderer and not of the prompt.
@@ -2110,16 +2147,16 @@ class StickActor(BaseModel):
 
 class LlmScene(BaseModel):
     """
-    One scene as the model proposes it: what the narrator says, who is on screen doing what, and what is drawn beside them.
+    One scene as the model proposes it: who is on screen, what each of them says, and what is drawn beside them. The figures are the characters who speak or listen in this scene; a listener has a pose and a mood too.
     """
 
     model_config = ConfigDict(
         extra="forbid",
         populate_by_name=True,
     )
-    line: str = Field(..., max_length=300, min_length=1)
+    lines: list[LlmLine] = Field(..., max_length=6, min_length=1)
     """
-    What the narrator says over this scene. One or two sentences.
+    The dialogue of this scene, in order.
     """
     actors: list[StickActor] = Field(..., max_length=3)
     props: list[StickProp] = Field(..., max_length=3)
@@ -2140,6 +2177,10 @@ class LlmScriptResponse(BaseModel):
         populate_by_name=True,
     )
     title: str = Field(..., max_length=80, min_length=1)
+    cast: list[LlmCharacter] = Field(..., max_length=4, min_length=1)
+    """
+    Who is in the video. Two or three is a conversation; the narrator is not listed.
+    """
     scenes: list[LlmScene] = Field(..., max_length=16, min_length=1)
 
 
@@ -2163,12 +2204,12 @@ class ComposeOptions(BaseModel):
     """
     script: str | None = Field(None, max_length=2000)
     """
-    Spoken verbatim when given; the model then only draws it. Null asks the model to write it.
+    Spoken verbatim when given; the model then only stages it. Written as dialogue, one line per row as 'Name: words'; a row with no name is the narrator's. Null asks the model to write the conversation.
     """
     target_duration_sec: int | None = Field(45, alias="targetDurationSec", ge=15, le=90)
     voice: str | None = Field(None, max_length=40)
     """
-    A voice the worker's synthesiser knows. Null is its default.
+    The narrator's voice, for any line no character says. Each character gets its own voice of the kind the script gives it. Null is the worker's default.
     """
     language: str | None = Field("en-us", max_length=16, min_length=2)
     style: ComposeStyle | None = "STICK"
@@ -2184,16 +2225,46 @@ class ComposeOptions(BaseModel):
     """
 
 
-class ComposeScene(BaseModel):
+class ComposeLine(BaseModel):
     """
-    One scene as drawn: its line, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.
+    One line as spoken: who said it, in which voice, and when.
     """
 
     model_config = ConfigDict(
         extra="forbid",
         populate_by_name=True,
     )
-    line: str = Field(..., max_length=300)
+    speaker: str = Field(..., max_length=40)
+    text: str = Field(..., max_length=300)
+    voice: str = Field(..., max_length=40)
+    start_sec: float = Field(..., alias="startSec", ge=0.0)
+    end_sec: float = Field(..., alias="endSec", ge=0.0)
+
+
+class ComposeCharacter(BaseModel):
+    """
+    One member of the cast as voiced.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    name: str = Field(..., max_length=40)
+    kind: VoiceKind | None = None
+    voice: str = Field(..., max_length=40)
+
+
+class ComposeScene(BaseModel):
+    """
+    One scene as drawn: its lines, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    lines: list[ComposeLine] = Field(..., max_length=6)
     start_sec: float = Field(..., alias="startSec", ge=0.0)
     end_sec: float = Field(..., alias="endSec", ge=0.0)
     actors: list[StickActor] = Field(..., max_length=3)
@@ -2222,9 +2293,16 @@ class AppliedCompose(BaseModel):
     )
     topic: str = Field(..., max_length=200)
     title: str = Field(..., max_length=200)
-    script: str = Field(..., max_length=2400)
+    script: str = Field(..., max_length=3000)
+    """
+    The dialogue as spoken, one line per row as 'Name: words'.
+    """
+    cast: list[ComposeCharacter] = Field(..., max_length=5)
     scenes: list[ComposeScene] = Field(..., max_length=16, min_length=1)
     voice: str = Field(..., max_length=40)
+    """
+    The narrator's voice, used for any line no character says.
+    """
     engine: str = Field(..., max_length=80)
     language: str | None = Field("en-us", max_length=16)
     style: ComposeStyle

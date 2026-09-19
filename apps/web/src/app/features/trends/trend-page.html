@@ -120,9 +120,9 @@
     <form class="mt-6 rounded-xl border border-line bg-panel p-4" (ngSubmit)="makeVideo()">
       <h2 class="text-sm font-semibold">Make a video about this</h2>
       <p class="mt-1 max-w-prose text-xs text-ink-subtle">
-        A script written from the evidence above, spoken by the local voice, drawn as stick-figure
-        cartoons. It lands in Review like any clip. Figures are named by role and no real person is
-        depicted.
+        A conversation written from the evidence above between two or three stick-figure characters,
+        each spoken in a voice of their own, drawn and animated. It lands in Review like any clip.
+        Figures are named by role and no real person is depicted.
       </p>
 
       <label class="mt-4 block text-sm">
@@ -145,7 +145,7 @@
           rows="4"
           name="makeScript"
           maxlength="2000"
-          placeholder="Optional. Your own narration, spoken word for word; the model then only draws it."
+          placeholder="Optional. Your own dialogue, one row per line, as `Ada: We won.`, spoken word for word with each name in its own voice. A row with no name is the narrator's."
           [ngModel]="makeScript()"
           (ngModelChange)="makeScript.set($event)"
         ></textarea>
@@ -166,7 +166,9 @@
           </select>
         </label>
         <label class="block text-sm">
-          <span class="text-ink-muted">Voice</span>
+          <span class="text-ink-muted"
+            >Voice <span class="text-ink-subtle">(the narrator's)</span></span
+          >
           <select
             class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
             name="makeVoice"

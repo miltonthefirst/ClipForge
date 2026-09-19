@@ -1765,7 +1765,10 @@ the model doubted there was a clip in. A `COMPOSE` job — `SCRIPT` (GPU), `NARR
 (GPU), `DRAW` (CPU), `ASSEMBLE` (CPU) — writes a script from the trend's evidence or speaks the
 words given, narrates it with the Kokoro voice the remake stage already had, listens back with
 Whisper for word timings, and draws each scene as **stick-figure cartoons** rather than fetching
-stock: no Pexels key, no generated stills, no likeness of anyone real. The model's whole
+stock: no Pexels key, no generated stills, no likeness of anyone real. The next day the script
+became **dialogue**: a cast of two or three, each line said by a named character in a voice of
+their own, the talker's mouth moving on screen — because a narrator over standing figures was,
+in the operator's words, a slideshow with a commentary. The model's whole
 contribution to the picture is a choice from a vocabulary — eleven poses, six moods, thirty props,
 five palettes — that the renderer has code for, and the renderer is deterministic, so a composed
 clip is reproducible from its own record. What the plan's scope above still owes: `GATHER` behind a
@@ -2023,7 +2026,7 @@ where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 1163 | nothing |
+| Worker unit | 1160 | nothing |
 | Worker integration | 127 | Firestore emulator; the seven ASSEMBLE and DRAW tests need only ffmpeg |
 | Security rules | 274 | Auth + Firestore + Storage emulators |
 | Web unit | 346 | nothing |

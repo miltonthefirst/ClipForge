@@ -343,12 +343,14 @@ words rather than left as a COMPLETED chip beside an empty queue. A job made fro
 it, so the job page links back. See [ADR-0026](docs/adr/0026-what-became-of-a-trend.md).
 
 **When there is nothing to clip, draw it.** *Make a video* on a trend's page asks the worker to
-write a script from the trend's evidence (or to speak the words you give it, word for word),
-narrate it with the local voice, draw each scene as stick-figure cartoons and animate them, and
-join the lot behind a title card with captions. It fetches nothing and needs no key: the figures
-are drawn by the worker, named by role, and no real person is ever depicted. The result lands in
-Review like any clip, with the script, the scenes and the seed recorded on it, so the same request
-draws the same video. See [ADR-0027](docs/adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
+write a conversation from the trend's evidence — two or three stick-figure characters talking to
+each other, each in a voice of their own — or to speak the dialogue you give it, one row per line
+as `Ada: We won.`, word for word. It speaks every line in its character's voice, draws each scene
+with the talker's mouth moving, and joins the lot behind a title card with captions. It fetches
+nothing and needs no key: the figures are drawn by the worker, named by role, and no real person
+is ever depicted. The result lands in Review like any clip, with the cast, the dialogue, the
+scenes and the seed recorded on it, so the same request draws the same video. See
+[ADR-0027](docs/adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
 To get rid of one — or of a compilation — *Delete* on its row under "what became of it" removes
 the job and its clips; the same button sits beside the section of the clip's page that says what
 it was made from. The video files stay until Storage removes them.

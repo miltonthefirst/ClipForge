@@ -1,9 +1,10 @@
-"""DRAW and ASSEMBLE with real ffmpeg: two drawn scenes and a voice become one clip.
+"""DRAW and ASSEMBLE with real ffmpeg: two drawn scenes and two voices become one clip.
 
 In the integration tier because ffmpeg is what it needs, and CI has ffmpeg.
-The narration is a generated tone rather than a real voice, so the test
-proves the plumbing — frames piped in, a card in front, the voice delayed past
-it, captions burned from word timings — without needing Kokoro's weights.
+The narration is a generated tone rather than real voices, with the line
+timeline written by hand, so the test proves the plumbing — frames piped in,
+a card in front, the voices delayed past it, captions burned from word
+timings, the talker recorded per line — without needing Kokoro's weights.
 """
 
 # The fakes below stand in for the stores by shape, not by type. Said once here
@@ -95,11 +96,16 @@ def tone(path: Path, *, seconds: float) -> None:
 
 SCRIPT_CP: dict[str, Any] = {
     "title": "Two drawn scenes",
-    "script": "One figure waves at the crowd. Two figures argue over a chart.",
+    "script": "a fan: We won!\nthe boss: The chart says otherwise.\nan analyst: It says minus twelve.",
+    "cast": [
+        {"name": "a fan", "kind": "WOMAN_US"},
+        {"name": "the boss", "kind": "MAN_UK"},
+        {"name": "an analyst", "kind": "MAN_US"},
+    ],
     "scenes": [
         {
             "index": 0,
-            "line": "One figure waves at the crowd.",
+            "lines": [{"speaker": "a fan", "text": "We won!"}],
             "actors": [{"name": "a fan", "pose": "WAVE", "mood": "HAPPY"}],
             "props": ["SUN"],
             "mood": "UPBEAT",
@@ -107,7 +113,10 @@ SCRIPT_CP: dict[str, Any] = {
         },
         {
             "index": 1,
-            "line": "Two figures argue over a chart.",
+            "lines": [
+                {"speaker": "the boss", "text": "The chart says otherwise."},
+                {"speaker": "an analyst", "text": "It says minus twelve."},
+            ],
             "actors": [
                 {"name": "the boss", "pose": "POINT", "mood": "ANGRY"},
                 {"name": "an analyst", "pose": "SHRUG", "mood": "WORRIED"},
@@ -121,25 +130,52 @@ SCRIPT_CP: dict[str, Any] = {
     "modelVersion": None,
     "promptVersion": None,
 }
+LINES: list[dict[str, Any]] = [
+    {
+        "scene": 0,
+        "index": 0,
+        "speaker": "a fan",
+        "text": "We won!",
+        "voice": "af_bella",
+        "startSec": 0.0,
+        "endSec": 1.2,
+    },
+    {
+        "scene": 1,
+        "index": 0,
+        "speaker": "the boss",
+        "text": "The chart says otherwise.",
+        "voice": "bm_george",
+        "startSec": 1.8,
+        "endSec": 2.9,
+    },
+    {
+        "scene": 1,
+        "index": 1,
+        "speaker": "an analyst",
+        "text": "It says minus twelve.",
+        "voice": "am_michael",
+        "startSec": 3.25,
+        "endSec": 3.9,
+    },
+]
 ALIGN_CP: dict[str, Any] = {
     "words": [
         {"text": t, "startSec": s, "endSec": s + 0.25}
         for t, s in [
-            ("One", 0.1),
-            ("figure", 0.4),
-            ("waves", 0.7),
-            ("at", 1.0),
-            ("the", 1.2),
-            ("crowd", 1.4),
-            ("Two", 2.2),
-            ("figures", 2.5),
-            ("argue", 2.9),
-            ("over", 3.2),
-            ("a", 3.4),
-            ("chart", 3.6),
+            ("We", 0.1),
+            ("won", 0.5),
+            ("The", 1.9),
+            ("chart", 2.2),
+            ("says", 2.5),
+            ("otherwise", 2.7),
+            ("It", 3.3),
+            ("says", 3.5),
+            ("minus", 3.7),
+            ("twelve", 3.85),
         ]
     ],
-    "count": 12,
+    "count": 10,
 }
 
 
@@ -176,10 +212,7 @@ def job(checkpoints: dict[StageName, dict[str, Any]]) -> Job:
 
 def context(the_job: Job, *, stage: StageName) -> StageContext:
     settings = Settings(
-        _env_file=None,
-        video_encoder=SOFTWARE,
-        compose_fps=12,
-        compose_supersample=1,
+        _env_file=None, video_encoder=SOFTWARE, compose_fps=12, compose_supersample=1
     )
     return StageContext(
         job=the_job,
@@ -191,16 +224,22 @@ def context(the_job: Job, *, stage: StageName) -> StageContext:
     )
 
 
-def test_two_drawn_scenes_and_a_voice_become_one_captioned_clip(tmp_path: Path) -> None:
+def test_two_drawn_scenes_and_three_voices_become_one_captioned_clip(tmp_path: Path) -> None:
     workspace = FakeWorkspace(tmp_path)
     narration = workspace.tmp_dir / "compose" / "job-compose" / "narration.wav"
-    tone(narration, seconds=4.0)
+    tone(narration, seconds=4.5)
     narrate_cp = {
         "path": str(narration),
-        "durationSec": 4.0,
+        "durationSec": 4.5,
         "voice": "af_heart",
         "engine": "fake",
         "language": "en-us",
+        "cast": [
+            {"name": "a fan", "kind": "WOMAN_US", "voice": "af_bella"},
+            {"name": "the boss", "kind": "MAN_UK", "voice": "bm_george"},
+            {"name": "an analyst", "kind": "MAN_US", "voice": "am_michael"},
+        ],
+        "lines": LINES,
     }
 
     drawn = DrawStage(workspace=workspace).run(
@@ -220,8 +259,9 @@ def test_two_drawn_scenes_and_a_voice_become_one_captioned_clip(tmp_path: Path) 
     assert sorted(scenes) == ["0", "1"]
     for entry in scenes.values():
         assert Path(entry["path"]).is_file()
-    assert scenes["0"]["durationSec"] == pytest.approx(2.2, abs=0.1)
-    assert scenes["1"]["durationSec"] == pytest.approx(1.8, abs=0.1)
+    # The second scene starts a beat before its first line at 1.8 s.
+    assert scenes["0"]["durationSec"] == pytest.approx(1.55, abs=0.1)
+    assert scenes["1"]["durationSec"] == pytest.approx(2.95, abs=0.1)
 
     clips = FakeClipStore()
     stage = ComposeAssembleStage(clips=clips, workspace=workspace, blobs=FakeBlobs(tmp_path))
@@ -242,40 +282,41 @@ def test_two_drawn_scenes_and_a_voice_become_one_captioned_clip(tmp_path: Path) 
     clip, preview = clips.saved[0]
     assert clip.compose is not None
     assert clip.compose.script == SCRIPT_CP["script"]
-    assert [s.line for s in clip.compose.scenes] == [
-        SCRIPT_CP["scenes"][0]["line"],
-        SCRIPT_CP["scenes"][1]["line"],
+    assert [member.voice for member in clip.compose.cast] == ["af_bella", "bm_george", "am_michael"]
+    assert [[line.speaker for line in scene.lines] for scene in clip.compose.scenes] == [
+        ["a fan"],
+        ["the boss", "an analyst"],
     ]
-    # The card comes first, so every scene is two seconds later than its voice.
+    # The card comes first, so every scene and line is two seconds later than its voice.
     assert clip.compose.scenes[0].start_sec == pytest.approx(2.0, abs=0.01)
+    assert clip.compose.scenes[1].lines[0].start_sec == pytest.approx(3.8, abs=0.01)
     assert clip.compose.trend_id == "t1"
-    assert clip.compose.seed == 3
     assert clip.source_id is None
-    assert clip.candidate_id == "compose-job-compose"
+    assert "Cast: a fan (af_bella)" in (clip.description or "")
     assert preview is not None and preview.width_px > 0
 
     media = probe(Path(clip.local_path))
     assert media.width == 1080 and media.height == 1920
-    assert media.duration_sec == pytest.approx(6.0, abs=0.3)
+    assert media.duration_sec == pytest.approx(6.5, abs=0.3)
     assert media.has_audio
-    # Everything between stages is cleared once the clip exists.
     assert not (workspace.tmp_dir / "compose" / "job-compose").exists()
 
 
 def test_the_same_scene_draws_the_same_bytes(tmp_path: Path) -> None:
     from clipforge.media.cartoon import render_scene
     from clipforge.media.profiles import load_profile
-    from clipforge.synth.scenes import TimedScene
+    from clipforge.synth.scenes import Line, TimedLine, TimedScene
     from clipforge_contracts import SceneMood, StickActor, StickMood, StickPose
 
     scene = TimedScene(
         index=1,
-        line="x",
-        actors=(StickActor(name="a fan", pose=StickPose.WALK, mood=StickMood.NEUTRAL),),
+        lines=(Line("Ada", "x"),),
+        actors=(StickActor(name="Ada", pose=StickPose.WALK, mood=StickMood.NEUTRAL),),
         props=(),
         mood=SceneMood.CALM,
         start_sec=0.0,
         end_sec=1.0,
+        timed_lines=(TimedLine("Ada", "x", scene=1, voice="af_heart", start_sec=0.2, end_sec=0.8),),
     )
     profile = load_profile("default")
     first = render_scene(

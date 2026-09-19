@@ -154,6 +154,10 @@ export type ReviewState = 'PENDING' | 'APPROVED' | 'REJECTED';
  */
 export type CompileTransition1 = 'CUT' | 'FADE';
 /**
+ * The kind of voice a character speaks with. The model chooses the kind; the worker chooses a distinct voice of that kind for each character, so two men in one video do not share one.
+ */
+export type VoiceKind = 'MAN_US' | 'WOMAN_US' | 'MAN_UK' | 'WOMAN_UK';
+/**
  * What a stick figure is doing. The renderer animates each one procedurally; the model only names it.
  */
 export type StickPose =
@@ -895,12 +899,12 @@ export interface ComposeOptions {
    */
   context?: string | null;
   /**
-   * Spoken verbatim when given; the model then only draws it. Null asks the model to write it.
+   * Spoken verbatim when given; the model then only stages it. Written as dialogue, one line per row as 'Name: words'; a row with no name is the narrator's. Null asks the model to write the conversation.
    */
   script?: string | null;
   targetDurationSec?: number;
   /**
-   * A voice the worker's synthesiser knows. Null is its default.
+   * The narrator's voice, for any line no character says. Each character gets its own voice of the kind the script gives it. Null is the worker's default.
    */
   voice?: string | null;
   language?: string;
@@ -1665,7 +1669,20 @@ export interface CompileSkipped {
 export interface AppliedCompose {
   topic: string;
   title: string;
+  /**
+   * The dialogue as spoken, one line per row as 'Name: words'.
+   */
   script: string;
+  /**
+   * @maxItems 5
+   */
+  cast:
+    | []
+    | [ComposeCharacter]
+    | [ComposeCharacter, ComposeCharacter]
+    | [ComposeCharacter, ComposeCharacter, ComposeCharacter]
+    | [ComposeCharacter, ComposeCharacter, ComposeCharacter, ComposeCharacter]
+    | [ComposeCharacter, ComposeCharacter, ComposeCharacter, ComposeCharacter, ComposeCharacter];
   /**
    * @minItems 1
    * @maxItems 16
@@ -1812,6 +1829,9 @@ export interface AppliedCompose {
         ComposeScene,
         ComposeScene
       ];
+  /**
+   * The narrator's voice, used for any line no character says.
+   */
   voice: string;
   engine: string;
   language?: string;
@@ -1838,10 +1858,28 @@ export interface AppliedCompose {
   trendId?: string | null;
 }
 /**
- * One scene as drawn: its line, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.
+ * One member of the cast as voiced.
+ */
+export interface ComposeCharacter {
+  name: string;
+  kind?: VoiceKind;
+  voice: string;
+}
+/**
+ * One scene as drawn: its lines, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.
  */
 export interface ComposeScene {
-  line: string;
+  /**
+   * @maxItems 6
+   */
+  lines:
+    | []
+    | [ComposeLine]
+    | [ComposeLine, ComposeLine]
+    | [ComposeLine, ComposeLine, ComposeLine]
+    | [ComposeLine, ComposeLine, ComposeLine, ComposeLine]
+    | [ComposeLine, ComposeLine, ComposeLine, ComposeLine, ComposeLine]
+    | [ComposeLine, ComposeLine, ComposeLine, ComposeLine, ComposeLine, ComposeLine];
   startSec: number;
   endSec: number;
   /**
@@ -1854,6 +1892,16 @@ export interface ComposeScene {
   props: [] | [StickProp] | [StickProp, StickProp] | [StickProp, StickProp, StickProp];
   mood: SceneMood;
   label?: string | null;
+}
+/**
+ * One line as spoken: who said it, in which voice, and when.
+ */
+export interface ComposeLine {
+  speaker: string;
+  text: string;
+  voice: string;
+  startSec: number;
+  endSec: number;
 }
 /**
  * One figure on screen. Named by role or first name and drawn as a stick figure: never a likeness of anyone real, which is a rule of the renderer and not of the prompt.
@@ -2951,6 +2999,17 @@ export interface ResearchOptions1 {
 export interface LlmScriptResponse {
   title: string;
   /**
+   * Who is in the video. Two or three is a conversation; the narrator is not listed.
+   *
+   * @minItems 1
+   * @maxItems 4
+   */
+  cast:
+    | [LlmCharacter]
+    | [LlmCharacter, LlmCharacter]
+    | [LlmCharacter, LlmCharacter, LlmCharacter]
+    | [LlmCharacter, LlmCharacter, LlmCharacter, LlmCharacter];
+  /**
    * @minItems 1
    * @maxItems 16
    */
@@ -3071,13 +3130,29 @@ export interface LlmScriptResponse {
       ];
 }
 /**
- * One scene as the model proposes it: what the narrator says, who is on screen doing what, and what is drawn beside them.
+ * One member of the cast: a name by role or first name, and the kind of voice they speak with.
+ */
+export interface LlmCharacter {
+  name: string;
+  voice: VoiceKind;
+}
+/**
+ * One scene as the model proposes it: who is on screen, what each of them says, and what is drawn beside them. The figures are the characters who speak or listen in this scene; a listener has a pose and a mood too.
  */
 export interface LlmScene {
   /**
-   * What the narrator says over this scene. One or two sentences.
+   * The dialogue of this scene, in order.
+   *
+   * @minItems 1
+   * @maxItems 6
    */
-  line: string;
+  lines:
+    | [LlmLine]
+    | [LlmLine, LlmLine]
+    | [LlmLine, LlmLine, LlmLine]
+    | [LlmLine, LlmLine, LlmLine, LlmLine]
+    | [LlmLine, LlmLine, LlmLine, LlmLine, LlmLine]
+    | [LlmLine, LlmLine, LlmLine, LlmLine, LlmLine, LlmLine];
   /**
    * @maxItems 3
    */
@@ -3091,4 +3166,11 @@ export interface LlmScene {
    * A word or two written on a SIGN or SCREEN prop, when there is one.
    */
   label?: string | null;
+}
+/**
+ * One thing said, by one character. 'Narrator' is allowed as a speaker for what no character could say, and is not drawn.
+ */
+export interface LlmLine {
+  speaker: string;
+  text: string;
 }

@@ -39,8 +39,10 @@ export const COMPOSE_LENGTHS: readonly { seconds: number; label: string }[] = [
 ];
 
 /**
- * The voices offered. Kokoro ships fifty-four; these six are the ones that
- * read news plainly in English. Null is the worker's own default.
+ * The narrator's voice, when a line has no character to say it. Kokoro ships
+ * fifty-four; these six read plainly in English. Each character gets a voice
+ * of their own on the worker, of the kind the script gives them. Null is the
+ * worker's default.
  */
 export const COMPOSE_VOICES: readonly { id: string | null; label: string }[] = [
   { id: null, label: 'The worker’s default' },
@@ -69,7 +71,8 @@ export function contextFromTrend(trend: Trend): string {
   for (const video of trend.videos.slice(0, 6)) {
     lines.push(`- Video: ${video.title}` + (video.channel ? ` — ${video.channel}` : ''));
   }
-  if (trend.angle) lines.push(`- The curator's note: ${trend.angle}`);
+  // Labelled as a caveat, not as anybody's note: a name here becomes a character.
+  if (trend.angle) lines.push(`- Caveat: ${trend.angle}`);
   if (trend.matchedTopics?.length) {
     lines.push(`- This channel is about: ${trend.matchedTopics.join(', ')}`);
   }
@@ -114,9 +117,13 @@ export function composeProblems(draft: ComposeDraft): string[] {
 
 /** One line for a clip's page: what a composed clip was made from. */
 export function describeCompose(
-  made: { scenes: readonly unknown[]; voice: string; scriptBy: string } | null | undefined,
+  made:
+    | { scenes: readonly unknown[]; cast: readonly unknown[]; voice: string; scriptBy: string }
+    | null
+    | undefined,
 ): string | null {
   if (!made) return null;
   const who = made.scriptBy === 'OPERATOR' ? 'your words' : 'a script the model wrote';
-  return `${made.scenes.length} drawn scene${made.scenes.length === 1 ? '' : 's'} · ${who} · voice ${made.voice}`;
+  const n = made.cast.length;
+  return `${made.scenes.length} drawn scene${made.scenes.length === 1 ? '' : 's'} · ${n} character${n === 1 ? '' : 's'} · ${who}`;
 }

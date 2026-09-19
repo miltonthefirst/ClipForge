@@ -433,7 +433,7 @@ test('a trend with nothing to clip becomes a drawn video from its page', async (
   expect(compose?.composeOptions?.style).toBe('STICK');
   // The evidence went along as facts, the curator's doubt among them.
   expect(compose?.composeOptions?.context).toContain('Google Trends · 200K+ searches');
-  expect(compose?.composeOptions?.context).toContain("The curator's note");
+  expect(compose?.composeOptions?.context).toContain('Caveat:');
   // Asking for a video is acting on the trend.
   await expect
     .poll(async () => ((await listDocs('trends')).map(unwrap)[0] as { status: string })?.status)

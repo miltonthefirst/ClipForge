@@ -2487,6 +2487,34 @@
       "type": "string",
       "enum": ["CALM", "UPBEAT", "TENSE", "GLOOMY", "URGENT"]
     },
+    "VoiceKind": {
+      "title": "VoiceKind",
+      "description": "The kind of voice a character speaks with. The model chooses the kind; the worker chooses a distinct voice of that kind for each character, so two men in one video do not share one.",
+      "type": "string",
+      "enum": ["MAN_US", "WOMAN_US", "MAN_UK", "WOMAN_UK"]
+    },
+    "LlmCharacter": {
+      "title": "LlmCharacter",
+      "description": "One member of the cast: a name by role or first name, and the kind of voice they speak with.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "voice"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "voice": { "$ref": "#/definitions/VoiceKind" }
+      }
+    },
+    "LlmLine": {
+      "title": "LlmLine",
+      "description": "One thing said, by one character. 'Narrator' is allowed as a speaker for what no character could say, and is not drawn.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["speaker", "text"],
+      "properties": {
+        "speaker": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
     "StickActor": {
       "title": "StickActor",
       "description": "One figure on screen. Named by role or first name and drawn as a stick figure: never a likeness of anyone real, which is a rule of the renderer and not of the prompt.",
@@ -2501,12 +2529,12 @@
     },
     "LlmScene": {
       "title": "LlmScene",
-      "description": "One scene as the model proposes it: what the narrator says, who is on screen doing what, and what is drawn beside them.",
+      "description": "One scene as the model proposes it: who is on screen, what each of them says, and what is drawn beside them. The figures are the characters who speak or listen in this scene; a listener has a pose and a mood too.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["line", "actors", "props", "mood"],
+      "required": ["lines", "actors", "props", "mood"],
       "properties": {
-        "line": { "type": "string", "minLength": 1, "maxLength": 300, "description": "What the narrator says over this scene. One or two sentences." },
+        "lines": { "type": "array", "items": { "$ref": "#/definitions/LlmLine" }, "minItems": 1, "maxItems": 6, "description": "The dialogue of this scene, in order." },
         "actors": { "type": "array", "items": { "$ref": "#/definitions/StickActor" }, "maxItems": 3 },
         "props": { "type": "array", "items": { "$ref": "#/definitions/StickProp" }, "maxItems": 3 },
         "mood": { "$ref": "#/definitions/SceneMood" },
@@ -2518,9 +2546,10 @@
       "description": "The schema-constrained reply for a composed video: a title and the scenes in order. Passed to Ollama as a format constraint, as LlmClipResponse is, so a pose the renderer has no code for is refused by the runtime rather than parsed defensively.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["title", "scenes"],
+      "required": ["title", "cast", "scenes"],
       "properties": {
         "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "cast": { "type": "array", "items": { "$ref": "#/definitions/LlmCharacter" }, "minItems": 1, "maxItems": 4, "description": "Who is in the video. Two or three is a conversation; the narrator is not listed." },
         "scenes": { "type": "array", "items": { "$ref": "#/definitions/LlmScene" }, "minItems": 1, "maxItems": 16 }
       }
     },
@@ -2534,9 +2563,9 @@
         "topic": { "type": "string", "minLength": 1, "maxLength": 200 },
         "angle": { "type": ["string", "null"], "maxLength": 500, "default": null, "description": "What the video should say about the topic: the curator's angle, or a person's steer." },
         "context": { "type": ["string", "null"], "maxLength": 2000, "default": null, "description": "What is known — the evidence lines and video titles the trend carried. The script may use these facts and must not invent others." },
-        "script": { "type": ["string", "null"], "maxLength": 2000, "default": null, "description": "Spoken verbatim when given; the model then only draws it. Null asks the model to write it." },
+        "script": { "type": ["string", "null"], "maxLength": 2000, "default": null, "description": "Spoken verbatim when given; the model then only stages it. Written as dialogue, one line per row as 'Name: words'; a row with no name is the narrator's. Null asks the model to write the conversation." },
         "targetDurationSec": { "type": "integer", "minimum": 15, "maximum": 90, "default": 45 },
-        "voice": { "type": ["string", "null"], "maxLength": 40, "default": null, "description": "A voice the worker's synthesiser knows. Null is its default." },
+        "voice": { "type": ["string", "null"], "maxLength": 40, "default": null, "description": "The narrator's voice, for any line no character says. Each character gets its own voice of the kind the script gives it. Null is the worker's default." },
         "language": { "type": "string", "minLength": 2, "maxLength": 16, "default": "en-us" },
         "style": { "$ref": "#/definitions/ComposeStyle", "default": "STICK" },
         "captions": { "type": "boolean", "default": true },
@@ -2545,14 +2574,40 @@
         "trendId": { "type": ["string", "null"], "default": null, "description": "The trend this was made about, when it was. Provenance only." }
       }
     },
-    "ComposeScene": {
-      "title": "ComposeScene",
-      "description": "One scene as drawn: its line, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.",
+    "ComposeLine": {
+      "title": "ComposeLine",
+      "description": "One line as spoken: who said it, in which voice, and when.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["line", "startSec", "endSec", "actors", "props", "mood"],
+      "required": ["speaker", "text", "voice", "startSec", "endSec"],
       "properties": {
-        "line": { "type": "string", "maxLength": 300 },
+        "speaker": { "type": "string", "maxLength": 40 },
+        "text": { "type": "string", "maxLength": 300 },
+        "voice": { "type": "string", "maxLength": 40 },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ComposeCharacter": {
+      "title": "ComposeCharacter",
+      "description": "One member of the cast as voiced.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "voice"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 40 },
+        "kind": { "$ref": "#/definitions/VoiceKind" },
+        "voice": { "type": "string", "maxLength": 40 }
+      }
+    },
+    "ComposeScene": {
+      "title": "ComposeScene",
+      "description": "One scene as drawn: its lines, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lines", "startSec", "endSec", "actors", "props", "mood"],
+      "properties": {
+        "lines": { "type": "array", "items": { "$ref": "#/definitions/ComposeLine" }, "maxItems": 6 },
         "startSec": { "type": "number", "minimum": 0 },
         "endSec": { "type": "number", "minimum": 0 },
         "actors": { "type": "array", "items": { "$ref": "#/definitions/StickActor" }, "maxItems": 3 },
@@ -2572,13 +2627,14 @@
       "description": "What a composed clip was made from, recorded on the clip: the script as spoken, the scenes as drawn, the voice, the seed. Provenance like AppliedCompile — and, unlike a cut, the whole video is reproducible from it.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["topic", "title", "script", "scenes", "voice", "engine", "style", "seed", "scriptBy", "titleCard", "captions"],
+      "required": ["topic", "title", "script", "cast", "scenes", "voice", "engine", "style", "seed", "scriptBy", "titleCard", "captions"],
       "properties": {
         "topic": { "type": "string", "maxLength": 200 },
         "title": { "type": "string", "maxLength": 200 },
-        "script": { "type": "string", "maxLength": 2400 },
+        "script": { "type": "string", "maxLength": 3000, "description": "The dialogue as spoken, one line per row as 'Name: words'." },
+        "cast": { "type": "array", "items": { "$ref": "#/definitions/ComposeCharacter" }, "maxItems": 5 },
         "scenes": { "type": "array", "items": { "$ref": "#/definitions/ComposeScene" }, "minItems": 1, "maxItems": 16 },
-        "voice": { "type": "string", "maxLength": 40 },
+        "voice": { "type": "string", "maxLength": 40, "description": "The narrator's voice, used for any line no character says." },
         "engine": { "type": "string", "maxLength": 80 },
         "language": { "type": "string", "maxLength": 16, "default": "en-us" },
         "style": { "$ref": "#/definitions/ComposeStyle" },
