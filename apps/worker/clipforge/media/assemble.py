@@ -47,6 +47,7 @@ __all__ = [
     "build_concat_filter",
     "clamp_window",
     "concat_segments",
+    "output_args",
     "render_title_card",
     "segment_budget_sec",
     "title_card_ass",
@@ -208,7 +209,13 @@ def build_concat_filter(
 # ── ffmpeg ───────────────────────────────────────────────────────────────────
 
 
-def _output_args(profile: RenderProfile, encoder: str) -> list[str]:
+def output_args(profile: RenderProfile, encoder: str) -> list[str]:
+    """The encoder arguments every segment here is written with.
+
+    Public because the cartoon renderer writes segments that this module then
+    joins, and two copies of the same list is how a concat filter comes to be
+    fed two different pixel formats.
+    """
     return [
         "-c:v",
         encoder,
@@ -271,7 +278,7 @@ def render_title_card(
         f"{duration_sec:.2f}",
         "-vf",
         f"subtitles='{_escape_filter_path(subtitles)}'",
-        *_output_args(profile, encoder),
+        *output_args(profile, encoder),
         str(staging),
     ]
     try:
@@ -327,7 +334,7 @@ def concat_segments(
         "[v]",
         "-map",
         "[a]",
-        *_output_args(profile, encoder),
+        *output_args(profile, encoder),
         str(staging),
     ]
     try:

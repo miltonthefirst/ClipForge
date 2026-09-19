@@ -556,6 +556,39 @@ service cloud.firestore {
              && (options.get('trendId', null) == null || options.trendId is string);
     }
 
+    // What a COMPOSE job may ask for. The topic is the one thing it needs;
+    // the script, when given, goes to a synthesiser verbatim, and everything
+    // else is bounded because it reaches a prompt, a voice or a renderer.
+    function composeOptionsOk() {
+      let options = request.resource.data.get('composeOptions', null);
+      return options != null
+             && options.keys().hasOnly(
+                  ['topic', 'angle', 'context', 'script', 'targetDurationSec', 'voice',
+                   'language', 'style', 'captions', 'titleCard', 'seed', 'trendId'])
+             && options.topic is string
+             && options.topic.size() > 0
+             && options.topic.size() <= 200
+             && (options.get('angle', null) == null
+                 || (options.angle is string && options.angle.size() <= 500))
+             && (options.get('context', null) == null
+                 || (options.context is string && options.context.size() <= 2000))
+             && (options.get('script', null) == null
+                 || (options.script is string && options.script.size() <= 2000))
+             && (options.get('targetDurationSec', null) == null
+                 || (options.targetDurationSec is int
+                     && options.targetDurationSec >= 15 && options.targetDurationSec <= 90))
+             && (options.get('voice', null) == null
+                 || (options.voice is string && options.voice.size() <= 40))
+             && (options.get('language', null) == null
+                 || (options.language is string && options.language.size() <= 16))
+             && (options.get('style', null) == null || options.style in ['STICK'])
+             && (options.get('captions', null) == null || options.captions is bool)
+             && (options.get('titleCard', null) == null || options.titleCard is bool)
+             && (options.get('seed', null) == null
+                 || (options.seed is int && options.seed >= 0))
+             && (options.get('trendId', null) == null || options.trendId is string);
+    }
+
     // What a CLIP job may ask for: a brief, a count, a length range. Every
     // field is optional and null is today's behaviour. Checked because the
     // brief goes into a prompt on the worker and the numbers into the
@@ -663,7 +696,9 @@ service cloud.firestore {
                     // A COMPILE job is several submissions and a theme. Like
                     // CLIP it needs nothing to exist yet; unlike CLIP its
                     // options are a document, and that document is checked.
-                    && (request.resource.data.type != 'COMPILE' || compileOptionsOk());
+                    && (request.resource.data.type != 'COMPILE' || compileOptionsOk())
+                    // A COMPOSE job has no source at all. It asks for a topic.
+                    && (request.resource.data.type != 'COMPOSE' || composeOptionsOk());
 
       // The only state transition a user may drive is cancellation. Everything
       // else — claiming, progress, stage results — belongs to the worker.

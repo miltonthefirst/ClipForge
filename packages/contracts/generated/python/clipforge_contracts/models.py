@@ -30,7 +30,7 @@ class JobStatus(StrEnum):
 
 class JobType(StrEnum):
     """
-    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it.
+    ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it. COMPOSE makes a video that did not exist: a script written for a topic, narrated by a local voice, drawn as stick-figure cartoons and animated — the first job type with no source video behind it at all.
     """
 
     ECHO = "ECHO"
@@ -41,6 +41,7 @@ class JobType(StrEnum):
     REMAKE = "REMAKE"
     RESEARCH = "RESEARCH"
     COMPILE = "COMPILE"
+    COMPOSE = "COMPOSE"
 
 
 class StageStatus(StrEnum):
@@ -57,7 +58,7 @@ class StageStatus(StrEnum):
 
 class StageName(StrEnum):
     """
-    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip.
+    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice.
     """
 
     ECHO_ONE = "ECHO_ONE"
@@ -76,6 +77,10 @@ class StageName(StrEnum):
     GATHER = "GATHER"
     SELECT = "SELECT"
     ASSEMBLE = "ASSEMBLE"
+    SCRIPT = "SCRIPT"
+    NARRATE = "NARRATE"
+    ALIGN = "ALIGN"
+    DRAW = "DRAW"
 
 
 class Lane(StrEnum):
@@ -2001,6 +2006,238 @@ class ResearchSchedule(BaseModel):
     updated_at: AwareDatetime = Field(..., alias="updatedAt")
 
 
+class ComposeStyle(StrEnum):
+    """
+    How a composed video is drawn. STICK is stick-figure cartoons drawn by the worker itself: no stock footage, no generated stills, and no likeness of anyone real. The only style at Phase 13; the enum exists so a second one is an adapter rather than a rewrite.
+    """
+
+    STICK = "STICK"
+
+
+class StickPose(StrEnum):
+    """
+    What a stick figure is doing. The renderer animates each one procedurally; the model only names it.
+    """
+
+    STAND = "STAND"
+    WALK = "WALK"
+    RUN = "RUN"
+    POINT = "POINT"
+    WAVE = "WAVE"
+    TALK = "TALK"
+    THINK = "THINK"
+    SHRUG = "SHRUG"
+    CELEBRATE = "CELEBRATE"
+    SIT = "SIT"
+    FALL = "FALL"
+
+
+class StickMood(StrEnum):
+    """
+    The face on a stick figure.
+    """
+
+    NEUTRAL = "NEUTRAL"
+    HAPPY = "HAPPY"
+    SAD = "SAD"
+    ANGRY = "ANGRY"
+    SURPRISED = "SURPRISED"
+    WORRIED = "WORRIED"
+
+
+class StickProp(StrEnum):
+    """
+    A thing the renderer knows how to draw. Bounded on purpose: a prop the model names is a prop the renderer has code for, and this list is the vocabulary the script is written in.
+    """
+
+    BALL = "BALL"
+    TROPHY = "TROPHY"
+    MEDAL = "MEDAL"
+    SIGN = "SIGN"
+    SCREEN = "SCREEN"
+    CHART_UP = "CHART_UP"
+    CHART_DOWN = "CHART_DOWN"
+    BUILDING = "BUILDING"
+    HOUSE = "HOUSE"
+    CAR = "CAR"
+    PLANE = "PLANE"
+    BOAT = "BOAT"
+    PHONE = "PHONE"
+    MONEY = "MONEY"
+    HEART = "HEART"
+    QUESTION = "QUESTION"
+    STAR = "STAR"
+    FLAG = "FLAG"
+    GLOBE = "GLOBE"
+    CLOCK = "CLOCK"
+    MICROPHONE = "MICROPHONE"
+    BOOK = "BOOK"
+    PODIUM = "PODIUM"
+    TABLE = "TABLE"
+    CAMERA = "CAMERA"
+    MUSIC_NOTE = "MUSIC_NOTE"
+    FOOD = "FOOD"
+    SUN = "SUN"
+    CLOUD = "CLOUD"
+    LIGHTNING = "LIGHTNING"
+
+
+class SceneMood(StrEnum):
+    """
+    The tone of a scene, which chooses its palette.
+    """
+
+    CALM = "CALM"
+    UPBEAT = "UPBEAT"
+    TENSE = "TENSE"
+    GLOOMY = "GLOOMY"
+    URGENT = "URGENT"
+
+
+class StickActor(BaseModel):
+    """
+    One figure on screen. Named by role or first name and drawn as a stick figure: never a likeness of anyone real, which is a rule of the renderer and not of the prompt.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    name: str = Field(..., max_length=40, min_length=1)
+    pose: StickPose
+    mood: StickMood
+
+
+class LlmScene(BaseModel):
+    """
+    One scene as the model proposes it: what the narrator says, who is on screen doing what, and what is drawn beside them.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    line: str = Field(..., max_length=300, min_length=1)
+    """
+    What the narrator says over this scene. One or two sentences.
+    """
+    actors: list[StickActor] = Field(..., max_length=3)
+    props: list[StickProp] = Field(..., max_length=3)
+    mood: SceneMood
+    label: str | None = Field(None, max_length=24)
+    """
+    A word or two written on a SIGN or SCREEN prop, when there is one.
+    """
+
+
+class LlmScriptResponse(BaseModel):
+    """
+    The schema-constrained reply for a composed video: a title and the scenes in order. Passed to Ollama as a format constraint, as LlmClipResponse is, so a pose the renderer has no code for is refused by the runtime rather than parsed defensively.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    title: str = Field(..., max_length=80, min_length=1)
+    scenes: list[LlmScene] = Field(..., max_length=16, min_length=1)
+
+
+class ComposeOptions(BaseModel):
+    """
+    What a COMPOSE job makes: a video about a topic, drawn rather than cut. Bounded like the others — the script is at most a couple of minutes of speech, and the model's vocabulary of poses and props is the enum the renderer has code for.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    topic: str = Field(..., max_length=200, min_length=1)
+    angle: str | None = Field(None, max_length=500)
+    """
+    What the video should say about the topic: the curator's angle, or a person's steer.
+    """
+    context: str | None = Field(None, max_length=2000)
+    """
+    What is known — the evidence lines and video titles the trend carried. The script may use these facts and must not invent others.
+    """
+    script: str | None = Field(None, max_length=2000)
+    """
+    Spoken verbatim when given; the model then only draws it. Null asks the model to write it.
+    """
+    target_duration_sec: int | None = Field(45, alias="targetDurationSec", ge=15, le=90)
+    voice: str | None = Field(None, max_length=40)
+    """
+    A voice the worker's synthesiser knows. Null is its default.
+    """
+    language: str | None = Field("en-us", max_length=16, min_length=2)
+    style: ComposeStyle | None = "STICK"
+    captions: bool | None = True
+    title_card: bool | None = Field(True, alias="titleCard")
+    seed: int | None = Field(0, ge=0, le=2147483647)
+    """
+    Composing the same options with the same seed draws the same video.
+    """
+    trend_id: str | None = Field(None, alias="trendId")
+    """
+    The trend this was made about, when it was. Provenance only.
+    """
+
+
+class ComposeScene(BaseModel):
+    """
+    One scene as drawn: its line, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    line: str = Field(..., max_length=300)
+    start_sec: float = Field(..., alias="startSec", ge=0.0)
+    end_sec: float = Field(..., alias="endSec", ge=0.0)
+    actors: list[StickActor] = Field(..., max_length=3)
+    props: list[StickProp] = Field(..., max_length=3)
+    mood: SceneMood
+    label: str | None = Field(None, max_length=24)
+
+
+class ScriptAuthor(StrEnum):
+    """
+    Who wrote the words a composed clip speaks. MODEL when the script was written for the job; OPERATOR when a person gave it and the model only staged it.
+    """
+
+    MODEL = "MODEL"
+    OPERATOR = "OPERATOR"
+
+
+class AppliedCompose(BaseModel):
+    """
+    What a composed clip was made from, recorded on the clip: the script as spoken, the scenes as drawn, the voice, the seed. Provenance like AppliedCompile — and, unlike a cut, the whole video is reproducible from it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    topic: str = Field(..., max_length=200)
+    title: str = Field(..., max_length=200)
+    script: str = Field(..., max_length=2400)
+    scenes: list[ComposeScene] = Field(..., max_length=16, min_length=1)
+    voice: str = Field(..., max_length=40)
+    engine: str = Field(..., max_length=80)
+    language: str | None = Field("en-us", max_length=16)
+    style: ComposeStyle
+    seed: int = Field(..., ge=0)
+    script_by: ScriptAuthor = Field(..., alias="scriptBy")
+    model_version: str | None = Field(None, alias="modelVersion")
+    prompt_version: str | None = Field(None, alias="promptVersion")
+    title_card: bool = Field(..., alias="titleCard")
+    captions: bool
+    warnings: list[Warning] | None = Field([], max_length=8, validate_default=True)
+    trend_id: str | None = Field(None, alias="trendId")
+
+
 class ClipOptions(BaseModel):
     """
     The brief for a CLIP job: what to look for, how many, how long. Every field has a default, so an empty object means today's behaviour. `instructions` is a filter rather than a hint — the model is told to return only moments that fit it, and a job whose brief matches nothing finishes with no clips and says so, rather than handing over the strongest unrelated moment. It is read against the transcript, not the picture: 'the goals' works because commentary says goal; 'where the striker is offside' works only if somebody says so.
@@ -2333,6 +2570,10 @@ class Clip(BaseModel):
     """
     What this clip was stitched from, when it was stitched. Null on a clip cut from one source. A compilation has no single window and no single source, so `candidateId` and `sourceId` name the first segment's and the truth is here.
     """
+    compose: AppliedCompose | None = None
+    """
+    What this clip was drawn from, when it was drawn rather than cut. Null on every clip with a source behind it. A composed clip has no source, no candidate and no window; `sourceId` is null and `candidateId` names the job.
+    """
     review_note: str | None = Field(None, alias="reviewNote", max_length=2000)
     """
     What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
@@ -2387,6 +2628,10 @@ class Job(BaseModel):
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")
     """
     What a COMPILE job should make, and from what. Null for every other job type.
+    """
+    compose_options: ComposeOptions | None = Field(None, alias="composeOptions")
+    """
+    What a COMPOSE job should make. Null for every other job type.
     """
     schedule_id: str | None = Field(None, alias="scheduleId")
     """
@@ -2469,3 +2714,8 @@ class ClipForgeContracts(BaseModel):
     applied_compile: AppliedCompile | None = Field(None, alias="appliedCompile")
     research_schedule: ResearchSchedule | None = Field(None, alias="researchSchedule")
     clip_options: ClipOptions | None = Field(None, alias="clipOptions")
+    compose_options: ComposeOptions | None = Field(None, alias="composeOptions")
+    applied_compose: AppliedCompose | None = Field(None, alias="appliedCompose")
+    llm_script_response: LlmScriptResponse | None = Field(
+        None, alias="llmScriptResponse"
+    )

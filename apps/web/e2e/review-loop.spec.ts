@@ -20,9 +20,7 @@ test.beforeEach(async () => {
   await wipe();
 });
 
-test('an empty queue explains what to do next rather than showing nothing', async ({
-  page,
-}) => {
+test('an empty queue explains what to do next rather than showing nothing', async ({ page }) => {
   await signIn(page);
 
   await expect(page.getByText('Nothing waiting for review')).toBeVisible();
@@ -127,7 +125,7 @@ test('the queue shows the poster, the hook and the score — and no more', async
   await write('clips/clip-1', clip(uid));
   await write('clips/clip-1/preview/poster', preview());
 
-  await expect(page.getByText('Most developers never realise this')).toBeVisible();
+  await expect(page.getByText('Most developers never realise this', { exact: true })).toBeVisible();
   await expect(page.getByText('87')).toBeVisible();
   await expect(page.locator('img[alt*="Poster frame"]')).toBeVisible();
 
@@ -144,15 +142,13 @@ test('opening a clip shows the hook, the score breakdown and the excerpt', async
 
   await page.goto('/review/clip-1');
 
-  await expect(page.getByText('Most developers never realise this')).toBeVisible();
+  await expect(page.getByText('Most developers never realise this', { exact: true })).toBeVisible();
   await expect(page.getByText('Hook', { exact: true })).toBeVisible();
   await expect(page.getByText('running your own hardware')).toBeVisible();
   await expect(page.locator('img[alt*="Poster frame"]')).toBeVisible();
 });
 
-test('a clip with no playable URL says so instead of showing a broken player', async ({
-  page,
-}) => {
+test('a clip with no playable URL says so instead of showing a broken player', async ({ page }) => {
   // The free tier's normal case: the file is on the worker, and this browser is
   // not on the worker's machine.
   const uid = await signIn(page);
@@ -168,9 +164,7 @@ test('a clip with no playable URL says so instead of showing a broken player', a
   await expect(page.getByRole('button', { name: 'Ask the worker to upload it' })).toBeVisible();
 });
 
-test('a clip with a playbackUrl gets a real player — the Blaze upgrade path', async ({
-  page,
-}) => {
+test('a clip with a playbackUrl gets a real player — the Blaze upgrade path', async ({ page }) => {
   const uid = await signIn(page);
   await write('candidates/cand-1', candidate(uid));
   await write(
@@ -221,9 +215,7 @@ test('rejecting a clip is recorded just as explicitly as approving', async ({ pa
     .toEqual({ stringValue: 'REJECTED' });
 });
 
-test('a clip somebody else submitted is still this workspace’s to review', async ({
-  page,
-}) => {
+test('a clip somebody else submitted is still this workspace’s to review', async ({ page }) => {
   // One workspace, one library: `allow read: if isApproved()` deliberately does
   // not scope clips to whoever submitted them. Whoever is holding a phone is the
   // reviewer, and a queue that hid half the work would be the bug.
@@ -235,5 +227,5 @@ test('a clip somebody else submitted is still this workspace’s to review', asy
   await write('candidates/cand-1', candidate('someone-else'));
   await write('clips/clip-1', clip('someone-else'));
 
-  await expect(page.getByText('Most developers never realise this')).toBeVisible();
+  await expect(page.getByText('Most developers never realise this', { exact: true })).toBeVisible();
 });

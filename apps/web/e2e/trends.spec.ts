@@ -311,6 +311,71 @@ test('a trend has a page that says what became of it', async ({ page }) => {
   await expect(made.getByRole('link', { name: 'Job page →' })).toHaveCount(4);
 });
 
+test('a trend with nothing to clip becomes a drawn video from its page', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('jobs/job-research-1', researchJob(uid));
+  await write('trends/t1', {
+    ...trend(uid, 't1', 'brewers vs orioles', 1, 78),
+    worthClipping: false,
+    angle: 'The evidence only confirms the topic exists.',
+  });
+
+  // The card's button lands on the page with the panel open.
+  await page.goto('/trends');
+  await page.getByRole('link', { name: 'Make a video' }).click();
+  await expect(page).toHaveURL(/\/trends\/t1\?make=1$/);
+  await expect(page.getByRole('heading', { name: 'Make a video about this' })).toBeVisible();
+
+  await page
+    .getByRole('textbox', { name: 'What it should say' })
+    .fill('Explain what happened, plainly.');
+  await page.getByRole('combobox', { name: 'How long' }).selectOption({ label: 'One minute' });
+  await page.getByRole('combobox', { name: 'Voice' }).selectOption({ label: 'George · UK, male' });
+  await page.getByRole('button', { name: 'Draw the video' }).click();
+  await expect(page).toHaveURL(/\/jobs\/[A-Za-z0-9]+$/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(
+    'Drawn video: brewers vs orioles',
+  );
+
+  const jobs = (await listDocs('jobs')).map(unwrap) as {
+    type: string;
+    trendId: string | null;
+    stages: { name: string; lane: string }[];
+    composeOptions?: {
+      topic: string;
+      angle: string | null;
+      script: string | null;
+      context: string | null;
+      targetDurationSec: number;
+      voice: string | null;
+      style: string;
+      trendId: string | null;
+    };
+  }[];
+  const compose = jobs.find((job) => job.type === 'COMPOSE');
+  expect(compose?.trendId).toBe('t1');
+  expect(compose?.stages.map((stage) => stage.name)).toEqual([
+    'SCRIPT',
+    'NARRATE',
+    'ALIGN',
+    'DRAW',
+    'ASSEMBLE',
+  ]);
+  expect(compose?.composeOptions?.topic).toBe('brewers vs orioles');
+  expect(compose?.composeOptions?.angle).toBe('Explain what happened, plainly.');
+  expect(compose?.composeOptions?.script).toBeNull();
+  expect(compose?.composeOptions?.targetDurationSec).toBe(60);
+  expect(compose?.composeOptions?.voice).toBe('bm_george');
+  expect(compose?.composeOptions?.style).toBe('STICK');
+  // The evidence went along as facts, the curator's doubt among them.
+  expect(compose?.composeOptions?.context).toContain('Google Trends · 200K+ searches');
+  expect(compose?.composeOptions?.context).toContain("The curator's note");
+  // Asking for a video is acting on the trend.
+  await expect
+    .poll(async () => ((await listDocs('trends')).map(unwrap)[0] as { status: string })?.status)
+    .toBe('PROMOTED');
+});
+
 test('a dismissed trend leaves the list and can be brought back', async ({ page }) => {
   const uid = await signIn(page);
   await write('jobs/job-research-1', researchJob(uid));

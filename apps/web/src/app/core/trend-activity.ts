@@ -41,6 +41,8 @@ export function kindOf(job: Job): string {
       return 'Clip';
     case 'COMPILE':
       return 'Compilation';
+    case 'COMPOSE':
+      return 'Drawn video';
     default:
       return job.type.charAt(0) + job.type.slice(1).toLowerCase();
   }

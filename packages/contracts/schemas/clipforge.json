@@ -36,7 +36,10 @@
     "compileOptions": { "$ref": "#/definitions/CompileOptions" },
     "appliedCompile": { "$ref": "#/definitions/AppliedCompile" },
     "researchSchedule": { "$ref": "#/definitions/ResearchSchedule" },
-    "clipOptions": { "$ref": "#/definitions/ClipOptions" }
+    "clipOptions": { "$ref": "#/definitions/ClipOptions" },
+    "composeOptions": { "$ref": "#/definitions/ComposeOptions" },
+    "appliedCompose": { "$ref": "#/definitions/AppliedCompose" },
+    "llmScriptResponse": { "$ref": "#/definitions/LlmScriptResponse" }
   },
 
   "definitions": {
@@ -49,9 +52,9 @@
 
     "JobType": {
       "title": "JobType",
-      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it.",
+      "description": "ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it. COMPOSE makes a video that did not exist: a script written for a topic, narrated by a local voice, drawn as stick-figure cartoons and animated — the first job type with no source video behind it at all.",
       "type": "string",
-      "enum": ["ECHO", "CLIP", "PUBLISH", "MUSIC", "UPLOAD", "REMAKE", "RESEARCH", "COMPILE"]
+      "enum": ["ECHO", "CLIP", "PUBLISH", "MUSIC", "UPLOAD", "REMAKE", "RESEARCH", "COMPILE", "COMPOSE"]
     },
 
     "StageStatus": {
@@ -63,7 +66,7 @@
 
     "StageName": {
       "title": "StageName",
-      "description": "Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip.",
+      "description": "Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice.",
       "type": "string",
       "enum": [
         "ECHO_ONE",
@@ -81,7 +84,11 @@
         "CURATE",
         "GATHER",
         "SELECT",
-        "ASSEMBLE"
+        "ASSEMBLE",
+        "SCRIPT",
+        "NARRATE",
+        "ALIGN",
+        "DRAW"
       ]
     },
 
@@ -1069,6 +1076,11 @@
           "default": null,
           "description": "What a COMPILE job should make, and from what. Null for every other job type."
         },
+        "composeOptions": {
+          "anyOf": [{ "$ref": "#/definitions/ComposeOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "What a COMPOSE job should make. Null for every other job type."
+        },
         "scheduleId": {
           "type": ["string", "null"],
           "default": null,
@@ -1627,6 +1639,11 @@
           "anyOf": [{ "$ref": "#/definitions/AppliedCompile" }, { "type": "null" }],
           "default": null,
           "description": "What this clip was stitched from, when it was stitched. Null on a clip cut from one source. A compilation has no single window and no single source, so `candidateId` and `sourceId` name the first segment's and the truth is here."
+        },
+        "compose": {
+          "anyOf": [{ "$ref": "#/definitions/AppliedCompose" }, { "type": "null" }],
+          "default": null,
+          "description": "What this clip was drawn from, when it was drawn rather than cut. Null on every clip with a source behind it. A composed clip has no source, no candidate and no window; `sourceId` is null and `candidateId` names the job."
         },
         "reviewNote": {
           "type": ["string", "null"],
@@ -2438,6 +2455,141 @@
         "lastOutcome": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "Worker-owned. One sentence on what the last tick did with this schedule — fired it, or why not: the previous run was still going, the worker was stopped, the timezone was unknown." },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ComposeStyle": {
+      "title": "ComposeStyle",
+      "description": "How a composed video is drawn. STICK is stick-figure cartoons drawn by the worker itself: no stock footage, no generated stills, and no likeness of anyone real. The only style at Phase 13; the enum exists so a second one is an adapter rather than a rewrite.",
+      "type": "string",
+      "enum": ["STICK"]
+    },
+    "StickPose": {
+      "title": "StickPose",
+      "description": "What a stick figure is doing. The renderer animates each one procedurally; the model only names it.",
+      "type": "string",
+      "enum": ["STAND", "WALK", "RUN", "POINT", "WAVE", "TALK", "THINK", "SHRUG", "CELEBRATE", "SIT", "FALL"]
+    },
+    "StickMood": {
+      "title": "StickMood",
+      "description": "The face on a stick figure.",
+      "type": "string",
+      "enum": ["NEUTRAL", "HAPPY", "SAD", "ANGRY", "SURPRISED", "WORRIED"]
+    },
+    "StickProp": {
+      "title": "StickProp",
+      "description": "A thing the renderer knows how to draw. Bounded on purpose: a prop the model names is a prop the renderer has code for, and this list is the vocabulary the script is written in.",
+      "type": "string",
+      "enum": ["BALL", "TROPHY", "MEDAL", "SIGN", "SCREEN", "CHART_UP", "CHART_DOWN", "BUILDING", "HOUSE", "CAR", "PLANE", "BOAT", "PHONE", "MONEY", "HEART", "QUESTION", "STAR", "FLAG", "GLOBE", "CLOCK", "MICROPHONE", "BOOK", "PODIUM", "TABLE", "CAMERA", "MUSIC_NOTE", "FOOD", "SUN", "CLOUD", "LIGHTNING"]
+    },
+    "SceneMood": {
+      "title": "SceneMood",
+      "description": "The tone of a scene, which chooses its palette.",
+      "type": "string",
+      "enum": ["CALM", "UPBEAT", "TENSE", "GLOOMY", "URGENT"]
+    },
+    "StickActor": {
+      "title": "StickActor",
+      "description": "One figure on screen. Named by role or first name and drawn as a stick figure: never a likeness of anyone real, which is a rule of the renderer and not of the prompt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "pose", "mood"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "pose": { "$ref": "#/definitions/StickPose" },
+        "mood": { "$ref": "#/definitions/StickMood" }
+      }
+    },
+    "LlmScene": {
+      "title": "LlmScene",
+      "description": "One scene as the model proposes it: what the narrator says, who is on screen doing what, and what is drawn beside them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line", "actors", "props", "mood"],
+      "properties": {
+        "line": { "type": "string", "minLength": 1, "maxLength": 300, "description": "What the narrator says over this scene. One or two sentences." },
+        "actors": { "type": "array", "items": { "$ref": "#/definitions/StickActor" }, "maxItems": 3 },
+        "props": { "type": "array", "items": { "$ref": "#/definitions/StickProp" }, "maxItems": 3 },
+        "mood": { "$ref": "#/definitions/SceneMood" },
+        "label": { "type": ["string", "null"], "maxLength": 24, "default": null, "description": "A word or two written on a SIGN or SCREEN prop, when there is one." }
+      }
+    },
+    "LlmScriptResponse": {
+      "title": "LlmScriptResponse",
+      "description": "The schema-constrained reply for a composed video: a title and the scenes in order. Passed to Ollama as a format constraint, as LlmClipResponse is, so a pose the renderer has no code for is refused by the runtime rather than parsed defensively.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "scenes"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "scenes": { "type": "array", "items": { "$ref": "#/definitions/LlmScene" }, "minItems": 1, "maxItems": 16 }
+      }
+    },
+    "ComposeOptions": {
+      "title": "ComposeOptions",
+      "description": "What a COMPOSE job makes: a video about a topic, drawn rather than cut. Bounded like the others — the script is at most a couple of minutes of speech, and the model's vocabulary of poses and props is the enum the renderer has code for.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic"],
+      "properties": {
+        "topic": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "angle": { "type": ["string", "null"], "maxLength": 500, "default": null, "description": "What the video should say about the topic: the curator's angle, or a person's steer." },
+        "context": { "type": ["string", "null"], "maxLength": 2000, "default": null, "description": "What is known — the evidence lines and video titles the trend carried. The script may use these facts and must not invent others." },
+        "script": { "type": ["string", "null"], "maxLength": 2000, "default": null, "description": "Spoken verbatim when given; the model then only draws it. Null asks the model to write it." },
+        "targetDurationSec": { "type": "integer", "minimum": 15, "maximum": 90, "default": 45 },
+        "voice": { "type": ["string", "null"], "maxLength": 40, "default": null, "description": "A voice the worker's synthesiser knows. Null is its default." },
+        "language": { "type": "string", "minLength": 2, "maxLength": 16, "default": "en-us" },
+        "style": { "$ref": "#/definitions/ComposeStyle", "default": "STICK" },
+        "captions": { "type": "boolean", "default": true },
+        "titleCard": { "type": "boolean", "default": true },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0, "description": "Composing the same options with the same seed draws the same video." },
+        "trendId": { "type": ["string", "null"], "default": null, "description": "The trend this was made about, when it was. Provenance only." }
+      }
+    },
+    "ComposeScene": {
+      "title": "ComposeScene",
+      "description": "One scene as drawn: its line, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line", "startSec", "endSec", "actors", "props", "mood"],
+      "properties": {
+        "line": { "type": "string", "maxLength": 300 },
+        "startSec": { "type": "number", "minimum": 0 },
+        "endSec": { "type": "number", "minimum": 0 },
+        "actors": { "type": "array", "items": { "$ref": "#/definitions/StickActor" }, "maxItems": 3 },
+        "props": { "type": "array", "items": { "$ref": "#/definitions/StickProp" }, "maxItems": 3 },
+        "mood": { "$ref": "#/definitions/SceneMood" },
+        "label": { "type": ["string", "null"], "maxLength": 24, "default": null }
+      }
+    },
+    "ScriptAuthor": {
+      "title": "ScriptAuthor",
+      "description": "Who wrote the words a composed clip speaks. MODEL when the script was written for the job; OPERATOR when a person gave it and the model only staged it.",
+      "type": "string",
+      "enum": ["MODEL", "OPERATOR"]
+    },
+    "AppliedCompose": {
+      "title": "AppliedCompose",
+      "description": "What a composed clip was made from, recorded on the clip: the script as spoken, the scenes as drawn, the voice, the seed. Provenance like AppliedCompile — and, unlike a cut, the whole video is reproducible from it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "title", "script", "scenes", "voice", "engine", "style", "seed", "scriptBy", "titleCard", "captions"],
+      "properties": {
+        "topic": { "type": "string", "maxLength": 200 },
+        "title": { "type": "string", "maxLength": 200 },
+        "script": { "type": "string", "maxLength": 2400 },
+        "scenes": { "type": "array", "items": { "$ref": "#/definitions/ComposeScene" }, "minItems": 1, "maxItems": 16 },
+        "voice": { "type": "string", "maxLength": 40 },
+        "engine": { "type": "string", "maxLength": 80 },
+        "language": { "type": "string", "maxLength": 16, "default": "en-us" },
+        "style": { "$ref": "#/definitions/ComposeStyle" },
+        "seed": { "type": "integer", "minimum": 0 },
+        "scriptBy": { "$ref": "#/definitions/ScriptAuthor" },
+        "modelVersion": { "type": ["string", "null"], "default": null },
+        "promptVersion": { "type": ["string", "null"], "default": null },
+        "titleCard": { "type": "boolean" },
+        "captions": { "type": "boolean" },
+        "warnings": { "type": "array", "items": { "type": "string", "maxLength": 300 }, "default": [], "maxItems": 8 },
+        "trendId": { "type": ["string", "null"], "default": null }
       }
     },
     "ClipOptions": {

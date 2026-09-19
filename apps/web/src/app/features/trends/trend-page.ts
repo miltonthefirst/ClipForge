@@ -9,10 +9,19 @@ import {
   signal,
   untracked,
 } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { FormsModule } from '@angular/forms';
+import { Router, RouterLink } from '@angular/router';
 import type { Clip, Job, Trend, TrendVideo } from '@clipforge/contracts';
 
 import { CompileBasketService } from '../../core/compile-basket';
+import {
+  COMPOSE_LENGTHS,
+  COMPOSE_VOICES,
+  DEFAULT_COMPOSE,
+  composeFromTrend,
+  composeProblems,
+  type ComposeDraft,
+} from '../../core/compose-plan';
 import { newestFirst } from '../../core/data/jobs';
 import { IN_LIMIT, ResearchRepository } from '../../core/data/research';
 import type { Live } from '../../core/firestore/gateway';
@@ -44,10 +53,14 @@ interface VideoRow {
  * jobs produced with a way into Review, and — the case this page exists
  * for — a job that ran to the end and made nothing, said in words beside
  * the trend it was made from. See docs/adr/0026-what-became-of-a-trend.md.
+ *
+ * It is also where a trend with nothing to clip becomes a video anyway:
+ * *Make a video* asks the worker to write, speak and draw one
+ * (docs/adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
  */
 @Component({
   selector: 'app-trend-page',
-  imports: [RouterLink],
+  imports: [RouterLink, FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './trend-page.html',
 })
@@ -55,10 +68,13 @@ export class TrendPage implements OnDestroy {
   private readonly research = inject(ResearchRepository);
   private readonly session = inject(SessionService);
   private readonly actions = inject(TrendActions);
+  private readonly router = inject(Router);
   protected readonly basket = inject(CompileBasketService);
 
   /** From the route. */
   readonly id = input.required<string>();
+  /** `?make=1` opens the video panel, which is how the list card's button arrives here. */
+  readonly make = input<string | undefined>(undefined);
 
   /** Undefined until the first snapshot; null for a trend that is not there. */
   protected readonly trend = signal<Trend | null | undefined>(undefined);
@@ -71,6 +87,30 @@ export class TrendPage implements OnDestroy {
   private readonly heldTrend = signal<Live<Trend> | null>(null);
   private readonly heldJobs = signal<Live<Job[]> | null>(null);
   private readonly heldClips = signal<Live<Clip[]> | null>(null);
+
+  // ── Making a video ─────────────────────────────────────────────────────────
+
+  protected readonly showMake = signal(false);
+  protected readonly making = signal(false);
+  protected readonly makeAngle = signal(DEFAULT_COMPOSE.angle);
+  protected readonly makeScript = signal(DEFAULT_COMPOSE.script);
+  protected readonly makeLength = signal(DEFAULT_COMPOSE.lengthSec);
+  protected readonly makeVoice = signal<string | null>(DEFAULT_COMPOSE.voice);
+  protected readonly makeCaptions = signal(DEFAULT_COMPOSE.captions);
+  protected readonly makeTitleCard = signal(DEFAULT_COMPOSE.titleCard);
+  protected readonly lengths = COMPOSE_LENGTHS;
+  protected readonly voices = COMPOSE_VOICES;
+
+  protected readonly makeDraft = computed<ComposeDraft>(() => ({
+    angle: this.makeAngle(),
+    script: this.makeScript(),
+    lengthSec: this.makeLength(),
+    voice: this.makeVoice(),
+    captions: this.makeCaptions(),
+    titleCard: this.makeTitleCard(),
+  }));
+
+  protected readonly makeTrouble = computed(() => composeProblems(this.makeDraft()));
 
   protected readonly signals = computed(() => (this.trend()?.signals ?? []).map(describeSignal));
 
@@ -104,6 +144,10 @@ export class TrendPage implements OnDestroy {
   });
 
   constructor() {
+    effect(() => {
+      if (this.make()) this.showMake.set(true);
+    });
+
     effect(() => {
       const uid = this.session.uid;
       const id = this.id();
@@ -232,6 +276,30 @@ export class TrendPage implements OnDestroy {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.busy.set(null);
+    }
+  }
+
+  /**
+   * Ask the worker to write, speak and draw a video about this trend.
+   *
+   * The trend's evidence goes along as facts the script may use; the steer
+   * and the script, if given, are the person's own words. The job remembers
+   * the trend, so it turns up under "what became of it" as soon as it exists.
+   */
+  protected async makeVideo(): Promise<void> {
+    const trend = this.trend();
+    const uid = this.session.uid;
+    if (!trend || !uid || this.makeTrouble().length) return;
+    this.making.set(true);
+    this.error.set(null);
+    try {
+      const id = await this.research.startCompose(uid, composeFromTrend(trend, this.makeDraft()));
+      if (trend.status !== 'PROMOTED') await this.actions.decide(trend, 'PROMOTED');
+      await this.router.navigate(['/jobs', id]);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.making.set(false);
     }
   }
 

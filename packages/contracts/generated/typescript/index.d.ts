@@ -9,10 +9,10 @@
  */
 
 /**
- * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it.
+ * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it. COMPOSE makes a video that did not exist: a script written for a topic, narrated by a local voice, drawn as stick-figure cartoons and animated — the first job type with no source video behind it at all.
  */
 export type JobType =
-  'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC' | 'UPLOAD' | 'REMAKE' | 'RESEARCH' | 'COMPILE';
+  'ECHO' | 'CLIP' | 'PUBLISH' | 'MUSIC' | 'UPLOAD' | 'REMAKE' | 'RESEARCH' | 'COMPILE' | 'COMPOSE';
 /**
  * Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.
  */
@@ -70,11 +70,15 @@ export type TrendSource = 'GOOGLE_TRENDS' | 'REDDIT' | 'YOUTUBE';
  */
 export type CompileTransition = 'CUT' | 'FADE';
 /**
+ * How a composed video is drawn. STICK is stick-figure cartoons drawn by the worker itself: no stock footage, no generated stills, and no likeness of anyone real. The only style at Phase 13; the enum exists so a second one is an adapter rather than a rewrite.
+ */
+export type ComposeStyle = 'STICK';
+/**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
 /**
- * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip.
+ * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice.
  */
 export type StageName =
   | 'ECHO_ONE'
@@ -92,7 +96,11 @@ export type StageName =
   | 'CURATE'
   | 'GATHER'
   | 'SELECT'
-  | 'ASSEMBLE';
+  | 'ASSEMBLE'
+  | 'SCRIPT'
+  | 'NARRATE'
+  | 'ALIGN'
+  | 'DRAW';
 /**
  * Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).
  */
@@ -145,6 +153,71 @@ export type ReviewState = 'PENDING' | 'APPROVED' | 'REJECTED';
  * How one segment hands over to the next. CUT is a hard join. FADE dips to black for a fraction of a second on either side of the join, which reads as deliberate where a cut between two unrelated shots reads as a glitch.
  */
 export type CompileTransition1 = 'CUT' | 'FADE';
+/**
+ * What a stick figure is doing. The renderer animates each one procedurally; the model only names it.
+ */
+export type StickPose =
+  | 'STAND'
+  | 'WALK'
+  | 'RUN'
+  | 'POINT'
+  | 'WAVE'
+  | 'TALK'
+  | 'THINK'
+  | 'SHRUG'
+  | 'CELEBRATE'
+  | 'SIT'
+  | 'FALL';
+/**
+ * The face on a stick figure.
+ */
+export type StickMood = 'NEUTRAL' | 'HAPPY' | 'SAD' | 'ANGRY' | 'SURPRISED' | 'WORRIED';
+/**
+ * A thing the renderer knows how to draw. Bounded on purpose: a prop the model names is a prop the renderer has code for, and this list is the vocabulary the script is written in.
+ */
+export type StickProp =
+  | 'BALL'
+  | 'TROPHY'
+  | 'MEDAL'
+  | 'SIGN'
+  | 'SCREEN'
+  | 'CHART_UP'
+  | 'CHART_DOWN'
+  | 'BUILDING'
+  | 'HOUSE'
+  | 'CAR'
+  | 'PLANE'
+  | 'BOAT'
+  | 'PHONE'
+  | 'MONEY'
+  | 'HEART'
+  | 'QUESTION'
+  | 'STAR'
+  | 'FLAG'
+  | 'GLOBE'
+  | 'CLOCK'
+  | 'MICROPHONE'
+  | 'BOOK'
+  | 'PODIUM'
+  | 'TABLE'
+  | 'CAMERA'
+  | 'MUSIC_NOTE'
+  | 'FOOD'
+  | 'SUN'
+  | 'CLOUD'
+  | 'LIGHTNING';
+/**
+ * The tone of a scene, which chooses its palette.
+ */
+export type SceneMood = 'CALM' | 'UPBEAT' | 'TENSE' | 'GLOOMY' | 'URGENT';
+/**
+ * How a composed video is drawn. STICK is stick-figure cartoons drawn by the worker itself: no stock footage, no generated stills, and no likeness of anyone real. The only style at Phase 13; the enum exists so a second one is an adapter rather than a rewrite.
+ */
+export type ComposeStyle1 = 'STICK';
+/**
+ * Who wrote the words a composed clip speaks. MODEL when the script was written for the job; OPERATOR when a person gave it and the model only staged it.
+ */
+export type ScriptAuthor = 'MODEL' | 'OPERATOR';
 /**
  * Where a clip was published. TikTok and Instagram are out of scope until v0.3+ — both need app review with materially harder approval paths.
  */
@@ -297,6 +370,9 @@ export interface ClipForgeContracts {
   appliedCompile?: AppliedCompile;
   researchSchedule?: ResearchSchedule;
   clipOptions?: ClipOptions;
+  composeOptions?: ComposeOptions;
+  appliedCompose?: AppliedCompose;
+  llmScriptResponse?: LlmScriptResponse;
 }
 /**
  * One pipeline run over one source. Stored at jobs/{jobId}.
@@ -341,6 +417,10 @@ export interface Job {
    * What a COMPILE job should make, and from what. Null for every other job type.
    */
   compileOptions?: CompileOptions | null;
+  /**
+   * What a COMPOSE job should make. Null for every other job type.
+   */
+  composeOptions?: ComposeOptions | null;
   /**
    * The ResearchSchedule that fired this job, when one did. Null on a job a person created. Provenance: the Trends page labels a run the worker started on its own, because a list nobody asked for this morning reads differently from one somebody did.
    */
@@ -802,6 +882,41 @@ export interface CompileItem {
   note?: string | null;
 }
 /**
+ * What a COMPOSE job makes: a video about a topic, drawn rather than cut. Bounded like the others — the script is at most a couple of minutes of speech, and the model's vocabulary of poses and props is the enum the renderer has code for.
+ */
+export interface ComposeOptions {
+  topic: string;
+  /**
+   * What the video should say about the topic: the curator's angle, or a person's steer.
+   */
+  angle?: string | null;
+  /**
+   * What is known — the evidence lines and video titles the trend carried. The script may use these facts and must not invent others.
+   */
+  context?: string | null;
+  /**
+   * Spoken verbatim when given; the model then only draws it. Null asks the model to write it.
+   */
+  script?: string | null;
+  targetDurationSec?: number;
+  /**
+   * A voice the worker's synthesiser knows. Null is its default.
+   */
+  voice?: string | null;
+  language?: string;
+  style?: ComposeStyle;
+  captions?: boolean;
+  titleCard?: boolean;
+  /**
+   * Composing the same options with the same seed draws the same video.
+   */
+  seed?: number;
+  /**
+   * The trend this was made about, when it was. Provenance only.
+   */
+  trendId?: string | null;
+}
+/**
  * What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
  */
 export interface PublishOptions {
@@ -1187,6 +1302,10 @@ export interface Clip {
    */
   compile?: AppliedCompile | null;
   /**
+   * What this clip was drawn from, when it was drawn rather than cut. Null on every clip with a source behind it. A composed clip has no source, no candidate and no window; `sourceId` is null and `candidateId` names the job.
+   */
+  compose?: AppliedCompose | null;
+  /**
    * What the reviewer thought, in their own words. Distinct from `description`, which is copy that may be published: this is never uploaded anywhere and exists to answer 'why did I reject this?' three weeks later. Phase 9 calibrates the rubric against realised performance; a human's stated reason is the other half of that evidence and is worth capturing while it is fresh.
    */
   reviewNote?: string | null;
@@ -1539,6 +1658,210 @@ export interface CompileSegment {
 export interface CompileSkipped {
   submission: string;
   reason: string;
+}
+/**
+ * What a composed clip was made from, recorded on the clip: the script as spoken, the scenes as drawn, the voice, the seed. Provenance like AppliedCompile — and, unlike a cut, the whole video is reproducible from it.
+ */
+export interface AppliedCompose {
+  topic: string;
+  title: string;
+  script: string;
+  /**
+   * @minItems 1
+   * @maxItems 16
+   */
+  scenes:
+    | [ComposeScene]
+    | [ComposeScene, ComposeScene]
+    | [ComposeScene, ComposeScene, ComposeScene]
+    | [ComposeScene, ComposeScene, ComposeScene, ComposeScene]
+    | [ComposeScene, ComposeScene, ComposeScene, ComposeScene, ComposeScene]
+    | [ComposeScene, ComposeScene, ComposeScene, ComposeScene, ComposeScene, ComposeScene]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ]
+    | [
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene,
+        ComposeScene
+      ];
+  voice: string;
+  engine: string;
+  language?: string;
+  style: ComposeStyle1;
+  seed: number;
+  scriptBy: ScriptAuthor;
+  modelVersion?: string | null;
+  promptVersion?: string | null;
+  titleCard: boolean;
+  captions: boolean;
+  /**
+   * @maxItems 8
+   */
+  warnings?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string];
+  trendId?: string | null;
+}
+/**
+ * One scene as drawn: its line, when it is on screen, and who and what is in it. The list is the provenance of a composed clip.
+ */
+export interface ComposeScene {
+  line: string;
+  startSec: number;
+  endSec: number;
+  /**
+   * @maxItems 3
+   */
+  actors: [] | [StickActor] | [StickActor, StickActor] | [StickActor, StickActor, StickActor];
+  /**
+   * @maxItems 3
+   */
+  props: [] | [StickProp] | [StickProp, StickProp] | [StickProp, StickProp, StickProp];
+  mood: SceneMood;
+  label?: string | null;
+}
+/**
+ * One figure on screen. Named by role or first name and drawn as a stick figure: never a likeness of anyone real, which is a rule of the renderer and not of the prompt.
+ */
+export interface StickActor {
+  name: string;
+  pose: StickPose;
+  mood: StickMood;
 }
 /**
  * What a phone can actually see when the clip file is not reachable. Stored at clips/{clipId}/preview/poster as base64 — a subcollection document, so the review-queue query does not drag image bytes on every read. Sized to stay well inside Firestore's 1 MiB document limit; at ~40-60 KB the 1 GiB free tier holds roughly 20,000 of these.
@@ -2621,4 +2944,151 @@ export interface ResearchOptions1 {
    * Whether to run the model over the ranked list. Off is faster and costs no GPU; the list is still ranked, just not explained.
    */
   curate?: boolean;
+}
+/**
+ * The schema-constrained reply for a composed video: a title and the scenes in order. Passed to Ollama as a format constraint, as LlmClipResponse is, so a pose the renderer has no code for is refused by the runtime rather than parsed defensively.
+ */
+export interface LlmScriptResponse {
+  title: string;
+  /**
+   * @minItems 1
+   * @maxItems 16
+   */
+  scenes:
+    | [LlmScene]
+    | [LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene, LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene]
+    | [LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene, LlmScene]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ]
+    | [
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene,
+        LlmScene
+      ];
+}
+/**
+ * One scene as the model proposes it: what the narrator says, who is on screen doing what, and what is drawn beside them.
+ */
+export interface LlmScene {
+  /**
+   * What the narrator says over this scene. One or two sentences.
+   */
+  line: string;
+  /**
+   * @maxItems 3
+   */
+  actors: [] | [StickActor] | [StickActor, StickActor] | [StickActor, StickActor, StickActor];
+  /**
+   * @maxItems 3
+   */
+  props: [] | [StickProp] | [StickProp, StickProp] | [StickProp, StickProp, StickProp];
+  mood: SceneMood;
+  /**
+   * A word or two written on a SIGN or SCREEN prop, when there is one.
+   */
+  label?: string | null;
 }

@@ -238,6 +238,14 @@ class Settings(BaseSettings):
     research_schedules_enabled: bool = True
     schedule_tick_seconds: int = Field(default=60, ge=10)
 
+    # ── Composing ────────────────────────────────────────────────────────────
+    # Drawn videos. Thirty frames a second is the profile's own rate; twenty-four
+    # halves the drawing time on a slow CPU at the cost of a slightly stiffer
+    # walk. The supersample is what makes a stick figure look drawn rather
+    # than jagged; one turns it off for a machine with no time for it.
+    compose_fps: int = Field(default=30, ge=12, le=60)
+    compose_supersample: int = Field(default=2, ge=1, le=3)
+
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "console"

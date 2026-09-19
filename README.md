@@ -342,6 +342,14 @@ produced with a way into Review, and, for a job that ran to the end and cut noth
 words rather than left as a COMPLETED chip beside an empty queue. A job made from a trend remembers
 it, so the job page links back. See [ADR-0026](docs/adr/0026-what-became-of-a-trend.md).
 
+**When there is nothing to clip, draw it.** *Make a video* on a trend's page asks the worker to
+write a script from the trend's evidence (or to speak the words you give it, word for word),
+narrate it with the local voice, draw each scene as stick-figure cartoons and animate them, and
+join the lot behind a title card with captions. It fetches nothing and needs no key: the figures
+are drawn by the worker, named by role, and no real person is ever depicted. The result lands in
+Review like any clip, with the script, the scenes and the seed recorded on it, so the same request
+draws the same video. See [ADR-0027](docs/adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
+
 **Or on a schedule.** *Do this automatically…* under the same form saves its settings as a
 schedule — daily at a time of day, or every so many hours — and the worker fires it on its own
 while it is running. Each run turns up on the Trends page marked *auto*, exactly like a manual one.
@@ -363,6 +371,7 @@ uv run --project apps/worker clipforge-worker research --category football   # n
 uv run --project apps/worker clipforge-worker categories --group Sports      # the codes, by group
 uv run --project apps/worker clipforge-worker trends JOB_ID        # the ranked list, once it has run
 uv run --project apps/worker clipforge-worker compile URL1 URL2 URL3 --theme "best goals of the week"
+uv run --project apps/worker clipforge-worker compose --topic "Arsenal's late winner" --length 45  # drawn
 uv run --project apps/worker clipforge-worker compile "URL1@42-58" URL2 --theme "..."   # cut URL1 exactly there
 ```
 

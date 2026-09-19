@@ -167,6 +167,24 @@ describe('stageNote', () => {
   });
 });
 
+describe('jobTitle for a drawn video', () => {
+  it('names the topic', () => {
+    const job = {
+      id: 'j',
+      uid: 'u',
+      type: 'COMPOSE',
+      status: 'QUEUED',
+      composeOptions: { topic: 'A late winner' },
+      stages: [],
+      attempts: 0,
+      maxAttempts: 2,
+      createdAt: 'now',
+      updatedAt: 'now',
+    } as unknown as Parameters<typeof jobTitle>[0];
+    expect(jobTitle(job)).toBe('Drawn video: A late winner');
+  });
+});
+
 describe('finishedEmpty', () => {
   const rendered = (clipIds: string[] | undefined, status = 'COMPLETED', type = 'CLIP') =>
     ({

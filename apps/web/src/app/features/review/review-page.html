@@ -172,6 +172,9 @@
             @if (card.clip.compile; as made) {
               · <span [title]="made.theme">compiled from {{ made.segments.length }}</span>
             }
+            @if (card.clip.compose; as drawn) {
+              · <span [title]="drawn.topic">drawn · {{ drawn.scenes.length }} scenes</span>
+            }
             @if (card.source.kind === 'poster') {
               · <span class="text-warn-ink">no cloud copy</span>
             } @else if (card.source.kind === 'blocked') {

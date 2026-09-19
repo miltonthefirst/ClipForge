@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from clipforge_contracts import (
     ClipOptions,
     CompileOptions,
+    ComposeOptions,
     Job,
     JobStatus,
     JobType,
@@ -60,6 +61,7 @@ from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 __all__ = [
     "CLIP_PIPELINE",
     "COMPILE_PIPELINE",
+    "COMPOSE_PIPELINE",
     "MUSIC_PIPELINE",
     "PUBLISH_PIPELINE",
     "REMAKE_PIPELINE",
@@ -131,6 +133,18 @@ RESEARCH_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
 # them all, choose from each, join the results — and it is its own job type
 # for the reason D10 gives: a job's stage list is authoritative for its whole
 # life, and a harvest must not carry stages it can never run.
+# A composed video: write, speak, time, draw, join. SCRIPT and ALIGN hold the
+# GPU — one for the model, one for Whisper over the narration — and the three
+# CPU stages between and after them are where the time actually goes, which is
+# what keeps a drawn video from queuing behind a harvest for the card.
+COMPOSE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
+    (StageName.SCRIPT, Lane.GPU),
+    (StageName.NARRATE, Lane.CPU),
+    (StageName.ALIGN, Lane.GPU),
+    (StageName.DRAW, Lane.CPU),
+    (StageName.ASSEMBLE, Lane.CPU),
+)
+
 COMPILE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
     (StageName.GATHER, Lane.CPU),
     (StageName.SELECT, Lane.GPU),
@@ -647,6 +661,70 @@ def build_compile_registry(
     return registry
 
 
+def build_compose_registry(
+    *,
+    settings: Settings,
+    clips: ClipStore,
+    workspace: Workspace,
+    blobs: BlobStore,
+) -> StageRegistry:
+    """The five-stage registry for COMPOSE jobs.
+
+    Nothing here touches a source: the job has none. The model client, the
+    synthesiser and the transcriber are built per use from the context, as
+    the remake stage builds them, so the broker stays the one authority on
+    what is resident in VRAM.
+    """
+    from clipforge.stages.compose import (
+        AlignStage,
+        ComposeAssembleStage,
+        DrawStage,
+        NarrateStage,
+        ScriptStage,
+    )
+
+    del settings
+    registry = StageRegistry()
+    registry.register(ScriptStage())
+    registry.register(NarrateStage(workspace=workspace))
+    registry.register(AlignStage())
+    registry.register(DrawStage(workspace=workspace))
+    registry.register(ComposeAssembleStage(clips=clips, workspace=workspace, blobs=blobs))
+    assert tuple((s.name, s.lane) for s in registry._stages.values()) == COMPOSE_PIPELINE, (  # noqa: S101
+        "COMPOSE_PIPELINE and build_compose_registry disagree about the pipeline"
+    )
+    return registry
+
+
+def new_compose_job(
+    *,
+    uid: str,
+    options: ComposeOptions,
+    job_id: str | None = None,
+    max_attempts: int = 2,
+) -> Job:
+    """Build a COMPOSE job.
+
+    Two attempts: the script and the narration are checkpointed, so a retry
+    after a render failure redraws rather than rewrites, and a third attempt
+    would draw the same frames a third time.
+    """
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.COMPOSE,
+        status=JobStatus.QUEUED,
+        compose_options=options,
+        trend_id=options.trend_id,
+        stages=clip_stages(COMPOSE_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def new_compile_job(
     *,
     uid: str,
@@ -736,6 +814,10 @@ def build_registry_factory(
 
     research = build_research_registry(settings=settings, trends=trends, providers=providers)
 
+    compose = build_compose_registry(
+        settings=settings, clips=clips, workspace=workspace, blobs=blobs
+    )
+
     compile_ = build_compile_registry(
         settings=settings,
         sources=sources,
@@ -762,6 +844,8 @@ def build_registry_factory(
             return remake
         if job_type is JobType.RESEARCH:
             return research
+        if job_type is JobType.COMPOSE:
+            return compose
         if job_type is JobType.COMPILE:
             return compile_
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")

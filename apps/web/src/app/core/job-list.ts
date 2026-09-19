@@ -94,6 +94,10 @@ export function jobTitle(job: Job): string {
     const options = job.compileOptions;
     return options ? `Compilation: ${options.title || options.theme}` : 'Compilation';
   }
+  if (job.type === 'COMPOSE') {
+    const options = job.composeOptions;
+    return options ? `Drawn video: ${options.topic}` : 'Drawn video';
+  }
   return job.submission ?? job.id;
 }
 

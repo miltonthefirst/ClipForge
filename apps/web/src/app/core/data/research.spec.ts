@@ -11,6 +11,7 @@ import {
   jobsForTrendSpec,
   jobsForTrendsSpec,
   newCompileJob,
+  newComposeJob,
   newResearchJob,
   researchRunsSpec,
   trendsSpec,
@@ -136,6 +137,34 @@ describe('newCompileJob', () => {
       '2026-09-19T12:00:00.000Z',
     );
     expect(fromTrend.trendId).toBe('t1');
+  });
+});
+
+describe('newComposeJob', () => {
+  const job = newComposeJob(
+    'job-4',
+    'u1',
+    { topic: 'A late winner', trendId: 't1' },
+    '2026-09-19T12:00:00.000Z',
+  );
+
+  it('declares the five stages the worker registers, on the right lanes', () => {
+    expect(job.stages).toEqual([
+      { name: 'SCRIPT', lane: 'GPU', status: 'PENDING' },
+      { name: 'NARRATE', lane: 'CPU', status: 'PENDING' },
+      { name: 'ALIGN', lane: 'GPU', status: 'PENDING' },
+      { name: 'DRAW', lane: 'CPU', status: 'PENDING' },
+      { name: 'ASSEMBLE', lane: 'CPU', status: 'PENDING' },
+    ]);
+  });
+
+  it('has no submission and no source, and remembers the trend', () => {
+    expect(job.type).toBe('COMPOSE');
+    expect(job.submission).toBeNull();
+    expect(job.sourceId).toBeNull();
+    expect(job.composeOptions?.topic).toBe('A late winner');
+    expect(job.trendId).toBe('t1');
+    expect(job.maxAttempts).toBe(2);
   });
 });
 

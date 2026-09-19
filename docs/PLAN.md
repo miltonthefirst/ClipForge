@@ -281,7 +281,8 @@ minutes it took to download and transcribe.
 | **M9 — Calibration** | 17 | **v0.9.0** — one rubric over both kinds of content |
 
 M6 onwards is [the synthesis track](#the-synthesis-track--m6-to-m9), and **none of it starts until M5
-is done**.
+is done** — with one slice taken early, on 2026-09-19, because use asked for it: a `COMPOSE` job that
+draws a video for a trend with nothing to clip (see Phase 13's delivered note).
 
 ---
 
@@ -1471,6 +1472,10 @@ Review, and "finished, but nothing was worth cutting" where that is the answer �
 carries the one-line version. The jobs list says the same sentence, read off RENDER's checkpoint.
 See [ADR-0026](adr/0026-what-became-of-a-trend.md).
 
+**And a trend with nothing to clip can be drawn** (2026-09-19). *Make a video* on the trend's page
+creates a `COMPOSE` job; see Phase 13's delivered note and
+[ADR-0027](adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
+
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
 does not automate the scorer; it feeds it.
@@ -1749,6 +1754,21 @@ lip-sync, permanently.
 after a two-minute encode — so the plan is a value and unit-tested before ffmpeg ever sees it, exactly
 as `media/music.py` already does it.
 
+**Delivered early, as one slice** (2026-09-19). The gate above was lifted for this much and no
+more, because the first day of real trend use produced the input this phase exists for: a trend
+the model doubted there was a clip in. A `COMPOSE` job — `SCRIPT` (GPU), `NARRATE` (CPU), `ALIGN`
+(GPU), `DRAW` (CPU), `ASSEMBLE` (CPU) — writes a script from the trend's evidence or speaks the
+words given, narrates it with the Kokoro voice the remake stage already had, listens back with
+Whisper for word timings, and draws each scene as **stick-figure cartoons** rather than fetching
+stock: no Pexels key, no generated stills, no likeness of anyone real. The model's whole
+contribution to the picture is a choice from a vocabulary — eleven poses, six moods, thirty props,
+five palettes — that the renderer has code for, and the renderer is deterministic, so a composed
+clip is reproducible from its own record. What the plan's scope above still owes: `GATHER` behind a
+`StockProvider` port, `IMAGINE` as a broker-managed model class, and the asset library. Exit
+criteria 1, 2, 3 and 5 hold for the drawn mode (the ffmpeg test draws two scenes and a voice into
+one captioned 1080×1920 clip, and the same scene encodes to the same bytes); criterion 4 is moot
+until there is an asset. See [ADR-0027](adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
+
 ---
 
 #### Phase 14 — The editorial chain → **v0.6.0**
@@ -1998,11 +2018,11 @@ where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 1082 | nothing |
-| Worker integration | 125 | Firestore emulator; the five ASSEMBLE tests need only ffmpeg |
-| Security rules | 267 | Auth + Firestore + Storage emulators |
-| Web unit | 334 | nothing |
-| Playwright E2E | 83 | Auth + Firestore emulators, stubbed worker |
+| Worker unit | 1163 | nothing |
+| Worker integration | 127 | Firestore emulator; the seven ASSEMBLE and DRAW tests need only ffmpeg |
+| Security rules | 274 | Auth + Firestore + Storage emulators |
+| Web unit | 346 | nothing |
+| Playwright E2E | 84 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

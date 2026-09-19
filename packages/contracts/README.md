@@ -72,6 +72,7 @@ pointless: CI regenerates and compares.
 | `ResearchOptions`, `Trend`, `LlmTrendVerdict` | A trend run's question, its rows, and the model's verdict on each |
 | `ResearchSchedule` | A standing research request the worker fires on its own |
 | `CompileOptions`, `AppliedCompile` | One clip from several videos, and the provenance of each piece |
+| `ComposeOptions`, `AppliedCompose`, `LlmScriptResponse` | A drawn video: what was asked, the script and scenes as made, and the model's reply — with `StickPose`, `StickMood` and `StickProp` as the vocabulary the renderer has code for |
 | `AgentReport`, `Channel`, `UserProfile` | The machine agent, YouTube channels, and who may use the app |
 
 ## The category catalogue

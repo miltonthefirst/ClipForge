@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import type {
   Clip,
   CompileOptions,
+  ComposeOptions,
   Job,
   ResearchOptions,
   Trend,
@@ -128,6 +129,42 @@ export function newResearchJob(id: string, uid: string, options: ResearchOptions
   } satisfies Job;
 }
 
+/**
+ * The compose job a client is allowed to write. Mirrors `COMPOSE_PIPELINE`.
+ *
+ * No submission and no source: the job is asked for a topic and makes the
+ * rest. Two attempts, as a compilation has — the script and the narration
+ * are checkpointed, so a retry redraws rather than rewrites.
+ */
+export function newComposeJob(id: string, uid: string, options: ComposeOptions, now: string) {
+  return {
+    id,
+    uid,
+    type: 'COMPOSE',
+    status: 'QUEUED',
+    submission: null,
+    sourceId: null,
+    composeOptions: options,
+    trendId: options.trendId ?? null,
+    stages: [
+      { name: 'SCRIPT', lane: 'GPU', status: 'PENDING' },
+      { name: 'NARRATE', lane: 'CPU', status: 'PENDING' },
+      { name: 'ALIGN', lane: 'GPU', status: 'PENDING' },
+      { name: 'DRAW', lane: 'CPU', status: 'PENDING' },
+      { name: 'ASSEMBLE', lane: 'CPU', status: 'PENDING' },
+    ],
+    workerId: null,
+    leaseExpiresAt: null,
+    attempts: 0,
+    maxAttempts: 2,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    startedAt: null,
+    endedAt: null,
+  } satisfies Job;
+}
+
 /** The compile job a client is allowed to write. Mirrors `COMPILE_PIPELINE`. */
 export function newCompileJob(id: string, uid: string, options: CompileOptions, now: string) {
   return {
@@ -217,6 +254,17 @@ export class ResearchRepository {
     await this.db.create(
       JOBS,
       { ...newCompileJob(id, uid, options, new Date().toISOString()) },
+      id,
+    );
+    return id;
+  }
+
+  /** Write, speak and draw a video about a topic. Nothing until a worker claims it. */
+  async startCompose(uid: string, options: ComposeOptions): Promise<string> {
+    const id = this.db.newId(JOBS);
+    await this.db.create(
+      JOBS,
+      { ...newComposeJob(id, uid, options, new Date().toISOString()) },
       id,
     );
     return id;

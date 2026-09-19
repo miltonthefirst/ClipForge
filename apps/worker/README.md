@@ -45,6 +45,7 @@ uv run clipforge-worker research --category football --region GB   # steered, no
 uv run clipforge-worker categories                      # the catalogue, by group
 uv run clipforge-worker trends <job-id>                 # its ranked list, once it has run
 uv run clipforge-worker compile URL1 URL2 --theme "…"   # one clip from several videos
+uv run clipforge-worker compose --topic "…" --length 45  # a drawn video: script, voice, cartoons
 ```
 
 `clipforge-worker gpu` is the one-command answer to "why did my job refuse to
@@ -80,6 +81,8 @@ request from a fork with no secrets configured.
 | `stages/` | The stage contract, and one module per job type: `download`, `transcribe`, `analyze`, `render`, `publish`, `music`, `remake`, `research`, `compile` |
 | `stages/pipeline.py` | The stage list per job type — the one place a job's shape is declared — and the registry builders |
 | `research/` | The trend providers behind one port, the arithmetic that ranks what they say, and the curate prompt |
+| `synth/` | Writing a video: the script prompt, and the scene arithmetic that times what was drawn against what was said |
+| `media/cartoon.py` | Drawing stick-figure cartoons frame by frame, deterministically, and piping them to ffmpeg |
 | `analysis/` | What is put to the model and how its answers are read: clip selection, remake notes, preferences |
 | `media/` | ffmpeg: framing, captions, obscuring, music, assembly |
 

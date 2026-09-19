@@ -224,6 +224,102 @@ describe("what a research run may ask for", () => {
   });
 });
 
+// ── Compose jobs ─────────────────────────────────────────────────────────────
+
+/** A compose job as the trend page creates it. */
+function composeJob(
+  uid: string,
+  options: Record<string, unknown> | null,
+  overrides = {},
+) {
+  return queuedJob(uid, {
+    id: "job-compose-1",
+    type: "COMPOSE",
+    submission: null,
+    stages: [
+      { name: "SCRIPT", lane: "GPU", status: "PENDING" },
+      { name: "NARRATE", lane: "CPU", status: "PENDING" },
+      { name: "ALIGN", lane: "GPU", status: "PENDING" },
+      { name: "DRAW", lane: "CPU", status: "PENDING" },
+      { name: "ASSEMBLE", lane: "CPU", status: "PENDING" },
+    ],
+    composeOptions: options,
+    ...overrides,
+  });
+}
+
+describe("what a drawn video may ask for", () => {
+  it("accepts a topic alone", async () => {
+    await assertSucceeds(
+      create(aliceDb(), composeJob(ALICE, { topic: "A late winner" })),
+    );
+  });
+
+  it("accepts every field at its edges", async () => {
+    await assertSucceeds(
+      create(
+        aliceDb(),
+        composeJob(ALICE, {
+          topic: "x".repeat(200),
+          angle: "y".repeat(500),
+          context: "z".repeat(2000),
+          script: "w".repeat(2000),
+          targetDurationSec: 90,
+          voice: "bm_george",
+          language: "en-gb",
+          style: "STICK",
+          captions: false,
+          titleCard: false,
+          seed: 2147483647,
+          trendId: "trend-1",
+        }),
+      ),
+    );
+  });
+
+  it("refuses a compose job with no options block", async () => {
+    await assertFails(create(aliceDb(), composeJob(ALICE, null)));
+  });
+
+  it("refuses an empty topic and a script the synthesiser would choke on", async () => {
+    await assertFails(create(aliceDb(), composeJob(ALICE, { topic: "" })));
+    await assertFails(
+      create(
+        aliceDb(),
+        composeJob(ALICE, { topic: "x", script: "s".repeat(2001) }),
+      ),
+    );
+  });
+
+  it("refuses a length outside fifteen seconds to a minute and a half", async () => {
+    await assertFails(
+      create(
+        aliceDb(),
+        composeJob(ALICE, { topic: "x", targetDurationSec: 10 }),
+      ),
+    );
+    await assertFails(
+      create(
+        aliceDb(),
+        composeJob(ALICE, { topic: "x", targetDurationSec: 120 }),
+      ),
+    );
+  });
+
+  it("refuses a style the renderer has no code for, and a field the worker does not read", async () => {
+    await assertFails(
+      create(aliceDb(), composeJob(ALICE, { topic: "x", style: "PHOTOREAL" })),
+    );
+    await assertFails(
+      create(aliceDb(), composeJob(ALICE, { topic: "x", faces: true })),
+    );
+  });
+
+  it("refuses a compose job filed under somebody else's name", async () => {
+    await assertFails(create(aliceDb(), composeJob(BOB, { topic: "x" })));
+  });
+});
+
 // ── Where a job came from ────────────────────────────────────────────────────
 
 describe("a job that remembers its trend", () => {

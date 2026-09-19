@@ -39,6 +39,9 @@ dependencies = [
     # 07:30 in Europe/London". Python's zoneinfo reads the system database on
     # Linux and macOS; Windows has none, so without this every zone name is
     # unknown there — including "UTC" — and the reference machine is Windows.
+    # Drawing stick-figure cartoons for composed videos (media/cartoon.py). A
+    # pure wheel, and the only thing in the core install that draws.
+    "pillow>=10.4",
     "tzdata>=2025.1",
     # The wire protocol, generated from packages/contracts/schemas/clipforge.json.
     # A path dependency rather than a copied module: the PWA and the worker are

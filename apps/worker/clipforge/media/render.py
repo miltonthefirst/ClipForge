@@ -139,6 +139,11 @@ def build_filtergraph(
     )
 
 
+def escape_filter_path(path: Path) -> str:
+    """A path as an ffmpeg filter argument: the compose mux burns captions too."""
+    return _escape_filter_path(path)
+
+
 def _escape_filter_path(path: Path) -> str:
     """ffmpeg's filter parser needs Windows paths escaped twice over.
 

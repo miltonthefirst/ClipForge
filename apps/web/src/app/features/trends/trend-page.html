@@ -64,6 +64,14 @@
     </div>
 
     <div class="flex shrink-0 flex-col items-end gap-1">
+      <button
+        type="button"
+        class="rounded-lg bg-forge-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-forge-700"
+        [attr.aria-expanded]="showMake()"
+        (click)="showMake.set(!showMake())"
+      >
+        {{ showMake() ? 'Not now' : 'Make a video…' }}
+      </button>
       @if (trend.videos.length >= 2) {
         <button
           type="button"
@@ -101,6 +109,105 @@
     >
       {{ message }}
     </p>
+  }
+
+  <!-- ── Making a video ──────────────────────────────────────────────────
+       For the trend with nothing to clip. The worker writes a script from
+       the evidence above — or speaks the words given here — narrates it with
+       the local voice, draws stick-figure scenes and joins them. Nothing real
+       is drawn and nothing is fetched. -->
+  @if (showMake()) {
+    <form class="mt-6 rounded-xl border border-line bg-panel p-4" (ngSubmit)="makeVideo()">
+      <h2 class="text-sm font-semibold">Make a video about this</h2>
+      <p class="mt-1 max-w-prose text-xs text-ink-subtle">
+        A script written from the evidence above, spoken by the local voice, drawn as stick-figure
+        cartoons. It lands in Review like any clip. Figures are named by role and no real person is
+        depicted.
+      </p>
+
+      <label class="mt-4 block text-sm">
+        <span class="text-ink-muted">What it should say</span>
+        <textarea
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+          rows="2"
+          name="makeAngle"
+          maxlength="500"
+          placeholder="Optional. A steer for the script — the angle, the question to answer, who it is for."
+          [ngModel]="makeAngle()"
+          (ngModelChange)="makeAngle.set($event)"
+        ></textarea>
+      </label>
+
+      <label class="mt-3 block text-sm">
+        <span class="text-ink-muted">Or say exactly this</span>
+        <textarea
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+          rows="4"
+          name="makeScript"
+          maxlength="2000"
+          placeholder="Optional. Your own narration, spoken word for word; the model then only draws it."
+          [ngModel]="makeScript()"
+          (ngModelChange)="makeScript.set($event)"
+        ></textarea>
+      </label>
+
+      <div class="mt-3 flex flex-wrap items-end gap-4">
+        <label class="block text-sm">
+          <span class="text-ink-muted">How long</span>
+          <select
+            class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+            name="makeLength"
+            [ngModel]="makeLength()"
+            (ngModelChange)="makeLength.set(+$event)"
+          >
+            @for (option of lengths; track option.seconds) {
+              <option [ngValue]="option.seconds">{{ option.label }}</option>
+            }
+          </select>
+        </label>
+        <label class="block text-sm">
+          <span class="text-ink-muted">Voice</span>
+          <select
+            class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+            name="makeVoice"
+            [ngModel]="makeVoice()"
+            (ngModelChange)="makeVoice.set($event)"
+          >
+            @for (option of voices; track option.label) {
+              <option [ngValue]="option.id">{{ option.label }}</option>
+            }
+          </select>
+        </label>
+        <label class="flex items-center gap-2 pb-2 text-sm">
+          <input
+            type="checkbox"
+            name="makeCaptions"
+            [checked]="makeCaptions()"
+            (change)="makeCaptions.set(!makeCaptions())"
+          />
+          Captions
+        </label>
+        <label class="flex items-center gap-2 pb-2 text-sm">
+          <input
+            type="checkbox"
+            name="makeTitleCard"
+            [checked]="makeTitleCard()"
+            (change)="makeTitleCard.set(!makeTitleCard())"
+          />
+          Title card
+        </label>
+        <button
+          type="submit"
+          class="ml-auto rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+          [disabled]="making() || makeTrouble().length > 0"
+        >
+          {{ making() ? 'Queuing…' : 'Draw the video' }}
+        </button>
+      </div>
+      @if (makeTrouble().length) {
+        <p class="mt-2 text-xs text-ink-subtle">{{ makeTrouble()[0] }}</p>
+      }
+    </form>
   }
 
   <!-- ── The videos ─────────────────────────────────────────────────────── -->
@@ -256,7 +363,8 @@
       } @else {
         <p class="mt-2 text-xs text-ink-subtle">
           Nothing has been made from this yet. <em>Clip it</em> on a video sends it to the pipeline
-          as it is; <em>Compile this</em> gathers the best of them into one.
+          as it is; <em>Compile this</em> gathers the best of them into one; <em>Make a video</em>
+          draws one when there is nothing worth cutting.
         </p>
       }
     } @else {

@@ -47,6 +47,7 @@ describe('kindOf', () => {
   it('names the two kinds a trend makes, and reads the rest off the type', () => {
     expect(kindOf(job())).toBe('Clip');
     expect(kindOf(job({ type: 'COMPILE' }))).toBe('Compilation');
+    expect(kindOf(job({ type: 'COMPOSE' }))).toBe('Drawn video');
     expect(kindOf(job({ type: 'REMAKE' }))).toBe('Remake');
   });
 });

@@ -586,6 +586,58 @@ def trends(job_id: str = typer.Argument(..., help="The RESEARCH job whose list t
 
 
 @app.command()
+def compose(
+    topic: str = typer.Option(..., help="What the video is about."),
+    angle: str = typer.Option("", help="What it should say about it."),
+    context: str = typer.Option("", help="The facts it may use, one per line or as a paragraph."),
+    script_file: Path | None = typer.Option(  # noqa: B008
+        None, help="A script to speak verbatim. The model then only draws it."
+    ),
+    length: int = typer.Option(45, help="Target length in seconds, 15-90."),
+    voice: str = typer.Option("", help="A Kokoro voice, e.g. af_heart. Empty is the default."),
+    seed: int = typer.Option(0, help="Same options, same seed: same video."),
+    captions: bool = typer.Option(default=True, help="Burn the narration as captions."),
+    title_card: bool = typer.Option(default=True, help="Open with the title on a card."),
+    trend: str = typer.Option("", help="The trend this is about, for the trend's page."),
+    uid: str = typer.Option("cli", help="Who is asking. Recorded on the job."),
+) -> None:
+    """Queue a drawn video: a script, a local voice, stick-figure cartoons, one vertical clip.
+
+    The same job the trend page creates with *Make a video*. No source video is
+    fetched and nothing real is drawn: the figures are stick figures named by
+    role. The result lands in the review queue like any clip.
+    """
+    from clipforge_contracts import ComposeOptions
+    from pydantic import ValidationError
+
+    from clipforge.stages.pipeline import new_compose_job
+    from clipforge.store.firestore import JobStore, firestore_client
+
+    settings = get_settings()
+    script = script_file.read_text(encoding="utf-8").strip() if script_file else ""
+    try:
+        options = ComposeOptions(
+            topic=topic.strip(),
+            angle=angle.strip() or None,
+            context=context.strip() or None,
+            script=script or None,
+            target_duration_sec=length,
+            voice=voice.strip() or None,
+            seed=seed,
+            captions=captions,
+            title_card=title_card,
+            trend_id=trend.strip() or None,
+        )
+    except ValidationError as exc:
+        typer.echo(f"that video cannot be made: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+
+    job = new_compose_job(uid=uid, options=options)
+    JobStore(firestore_client(settings), settings).create(job)
+    typer.echo(job.id)
+
+
+@app.command()
 def compile(  # noqa: A001 - the verb is the command
     items: list[str] = typer.Argument(  # noqa: B008
         ..., help="Two or more YouTube URLs or local files, in the order they should appear."

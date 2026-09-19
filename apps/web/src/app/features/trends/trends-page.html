@@ -571,6 +571,15 @@
               </div>
 
               <div class="flex shrink-0 flex-col items-end gap-1">
+                <!-- Always offered, and the main way in for a trend the model
+                     doubts there is a clip in: a drawn video needs no video. -->
+                <a
+                  [routerLink]="['/trends', row.trend.id]"
+                  [queryParams]="{ make: 1 }"
+                  class="rounded-lg bg-forge-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-forge-700"
+                  title="Write, speak and draw a stick-figure video about this"
+                  >Make a video</a
+                >
                 @if (row.trend.videos.length >= 2) {
                   <button
                     type="button"

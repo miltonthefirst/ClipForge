@@ -695,6 +695,55 @@
            The provenance of a stitched clip: which videos, which moments, and
            whose idea each moment was. A compilation that came out wrong is
            easier to fix when it says which pieces were the model's choice. -->
+      <!-- ── Drawn from a script ──────────────────────────────────────────
+           A composed clip has no source at all. What it has is the script
+           as spoken, the scenes as drawn, and the seed — from which the whole
+           video can be made again. No real person is depicted, by design. -->
+      @if (clip.compose; as drawn) {
+        <section class="rounded-xl border border-line bg-panel p-4">
+          <h2 class="text-sm font-semibold">Drawn from a script</h2>
+          <p class="mt-1 text-xs text-ink-subtle">
+            {{ drawn.scenes.length }} scene{{ drawn.scenes.length === 1 ? '' : 's' }} ·
+            {{ drawn.scriptBy === 'OPERATOR' ? 'your words' : 'a script the model wrote' }} · voice
+            {{ drawn.voice }} · seed {{ drawn.seed }}
+            @if (drawn.trendId) {
+              ·
+              <a [routerLink]="['/trends', drawn.trendId]" class="text-accent-ink hover:underline"
+                >the trend</a
+              >
+            }
+          </p>
+          <p class="mt-3 text-sm text-ink break-words">{{ drawn.script }}</p>
+          <ol class="mt-3 space-y-1">
+            @for (scene of drawn.scenes; track $index) {
+              <li class="text-xs text-ink-subtle">
+                <span class="tabular-nums">{{ scene.startSec | number: '1.0-0' }}s</span>
+                @for (actor of scene.actors; track $index) {
+                  · {{ actor.name }} ({{ actor.pose.toLowerCase() }},
+                  {{ actor.mood.toLowerCase() }})
+                }
+                @if (scene.props.length) {
+                  · {{ scene.props.join(', ').toLowerCase() }}
+                }
+                @if (scene.label) {
+                  · “{{ scene.label }}”
+                }
+              </li>
+            }
+          </ol>
+          @if (drawn.warnings?.length) {
+            <ul class="mt-2 text-xs text-warn-ink">
+              @for (warning of drawn.warnings; track $index) {
+                <li>{{ warning }}</li>
+              }
+            </ul>
+          }
+          <p class="mt-3 text-xs text-ink-subtle">
+            Stick figures named by role. No real person is depicted.
+          </p>
+        </section>
+      }
+
       @if (clip.compile; as made) {
         <section class="rounded-xl border border-line bg-panel p-4">
           <h2 class="text-sm font-semibold">Compiled from {{ made.segments.length }} videos</h2>
@@ -747,7 +796,7 @@
       <section class="rounded-xl border border-line bg-panel p-4">
         <div class="flex items-center justify-between gap-3">
           <h2 class="text-sm font-semibold">Not right? Remake it</h2>
-          @if (!clip.compile) {
+          @if (!clip.compile && !clip.compose) {
             <button
               type="button"
               class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line"
@@ -758,7 +807,19 @@
           }
         </div>
 
-        @if (clip.compile) {
+        @if (clip.compose; as drawn) {
+          <p class="mt-3 text-xs text-ink-subtle">
+            A drawn video has no source to re-cut. To change it, make it again from
+            @if (drawn.trendId) {
+              <a [routerLink]="['/trends', drawn.trendId]" class="text-accent-ink hover:underline"
+                >its trend’s page</a
+              >
+            } @else {
+              its trend’s page
+            }
+            with different words, or a different voice.
+          </p>
+        } @else if (clip.compile) {
           <!-- No single source to re-cut from, so the correction channel is
                the Compile page: change the pieces and make it again. -->
           <p class="mt-2 text-xs text-ink-subtle">
