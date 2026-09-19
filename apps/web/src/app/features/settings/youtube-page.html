@@ -51,16 +51,16 @@
       {{ localReason() }}
     </p>
     @if (channel(); as ch) {
-      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dl class="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
         <dt class="text-ink-subtle">Channel</dt>
-        <dd class="text-ink-muted">{{ ch.externalChannelTitle || ch.label }}</dd>
+        <dd class="text-ink-muted break-words">{{ ch.externalChannelTitle || ch.label }}</dd>
         @if (ch.connectionMessage) {
           <dt class="text-ink-subtle">Note</dt>
-          <dd class="text-ink-muted">{{ ch.connectionMessage }}</dd>
+          <dd class="text-ink-muted break-words">{{ ch.connectionMessage }}</dd>
         }
         @if (ch.uploadsRemainingToday !== null) {
           <dt class="text-ink-subtle">Uploads left today</dt>
-          <dd class="text-ink-muted">{{ ch.uploadsRemainingToday }}</dd>
+          <dd class="text-ink-muted break-words">{{ ch.uploadsRemainingToday }}</dd>
         }
       </dl>
     } @else if (channel() === null) {
@@ -75,13 +75,15 @@
     }
   } @else {
     @if (status(); as st) {
-      <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dl class="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
         <dt class="text-ink-subtle">Publishing</dt>
-        <dd class="text-ink-muted">{{ st.publishingEnabled ? 'enabled' : 'DISABLED' }}</dd>
+        <dd class="text-ink-muted break-words">
+          {{ st.publishingEnabled ? 'enabled' : 'DISABLED' }}
+        </dd>
         <dt class="text-ink-subtle">OAuth client</dt>
-        <dd class="text-ink-muted">{{ st.hasClient ? 'saved' : 'not set' }}</dd>
+        <dd class="text-ink-muted break-words">{{ st.hasClient ? 'saved' : 'not set' }}</dd>
         <dt class="text-ink-subtle">Authorised</dt>
-        <dd class="text-ink-muted">
+        <dd class="text-ink-muted break-words">
           {{ st.hasToken ? 'yes' : 'no' }}
           @if (st.tokenAgeDays !== null) {
             <span [class.text-warn-ink]="tokenExpiringSoon()">

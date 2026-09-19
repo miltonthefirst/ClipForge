@@ -5,7 +5,10 @@
   queue like any other clip, with the list of pieces on its page.
 </p>
 
-<div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+<!-- `grid-cols-1` matters: without it the phone column is an implicit
+     `auto` track that grows to the longest pasted URL and the page
+     scrolls sideways. -->
+<div class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
   <!-- ── The pieces ─────────────────────────────────────────────────────── -->
   <section class="rounded-xl border border-line bg-panel p-4">
     <div class="flex items-baseline justify-between gap-3">

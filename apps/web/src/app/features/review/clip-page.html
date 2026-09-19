@@ -34,7 +34,7 @@
 } @else if (clip() === null) {
   <p class="py-16 text-center text-ink-subtle">No such clip.</p>
 } @else if (clip(); as clip) {
-  <div class="mt-3 grid gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
+  <div class="mt-3 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
     <!-- ── The clip itself ─────────────────────────────────────────────────
          A vertical clip is 1080×1920, so left to fill its column it renders
          about 1800px tall and runs off the screen — which is exactly what it
@@ -135,7 +135,9 @@
       <div class="flex flex-wrap items-start gap-3">
         <div class="min-w-0 flex-1">
           <p class="text-xs uppercase tracking-wide text-ink-subtle">Clip</p>
-          <h1 class="mt-1 text-xl font-semibold">{{ clip.title ?? 'Untitled clip' }}</h1>
+          <h1 class="mt-1 text-xl font-semibold break-words">
+            {{ clip.title ?? 'Untitled clip' }}
+          </h1>
         </div>
         @if (candidate(); as candidate) {
           <span

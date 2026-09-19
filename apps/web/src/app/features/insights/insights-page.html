@@ -37,7 +37,7 @@
   </section>
 } @else if (publishedCount() > 0) {
   <!-- ── The totals ────────────────────────────────────────────────────────── -->
-  <section class="mt-6 grid gap-3 sm:grid-cols-3">
+  <section class="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
     <div class="rounded-xl border border-line bg-panel p-4">
       <p class="text-xs text-ink-subtle">Published clips measured</p>
       <p class="mt-1 text-lg font-semibold text-ink">{{ publishedCount() }}</p>
@@ -153,7 +153,7 @@
       <p class="mt-2 text-sm text-ink-muted">
         Every curve on one scale, so two can be compared. The dashed line is the midpoint.
       </p>
-      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
         @for (curve of curves(); track curve.publicationId) {
           <figure class="rounded-xl border border-line bg-panel p-4">
             <svg

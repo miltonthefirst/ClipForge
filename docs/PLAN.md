@@ -1451,6 +1451,17 @@ search terms — puts a hint on every feed-phrase lookup, and is told to the cur
 overrides the run's own words, and the feed it cannot steer (Google Trends ignores category) is
 said so rather than pretended. See [ADR-0025](adr/0025-a-category-catalogue-as-data.md).
 
+**And it fits a phone** (2026-09-19). The Compile page scrolled sideways on a phone, and so, it
+turned out, did the Trends, publication, jobs and YouTube-settings pages once they held a real
+URL, a file path or a one-word title. One cause, five places: a grid with only a breakpoint
+column list has an implicit `auto` column below it, and an `auto` column grows to the longest
+unbreakable thing inside it rather than clipping it — so a `truncate` that worked on a desktop
+did nothing on a phone. The same for a `1fr` definition-list column, whose floor is its content,
+and for an inline link with `truncate`, which clips nothing because overflow applies to blocks.
+`e2e/responsive.spec.ts` now renders every page at 390px with that awkward content seeded and
+fails on the symptom — the document being wider than the viewport, naming what sticks out — so
+the next cause is caught whatever it is.
+
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
 does not automate the scorer; it feeds it.
@@ -1982,7 +1993,7 @@ where noted:
 | Worker integration | 125 | Firestore emulator; the five ASSEMBLE tests need only ffmpeg |
 | Security rules | 264 | Auth + Firestore + Storage emulators |
 | Web unit | 321 | nothing |
-| Playwright E2E | 76 | Auth + Firestore emulators, stubbed worker |
+| Playwright E2E | 82 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 
