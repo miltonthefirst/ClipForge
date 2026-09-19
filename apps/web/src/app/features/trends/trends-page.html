@@ -514,7 +514,9 @@
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                   <h3 class="min-w-0 text-base font-medium break-words text-ink">
-                    {{ row.trend.topic }}
+                    <a [routerLink]="['/trends', row.trend.id]" class="hover:text-accent-ink">{{
+                      row.trend.topic
+                    }}</a>
                   </h3>
                   <span
                     class="rounded-md bg-accent-soft px-2 py-0.5 text-xs font-semibold tabular-nums text-accent-ink"
@@ -555,6 +557,17 @@
                 @if (row.trend.angle; as angle) {
                   <p class="mt-2 text-sm text-ink-muted">{{ angle }}</p>
                 }
+
+                <!-- What became of it, in a line, and the page that says more.
+                     Always present: the way to a trend's page must not depend
+                     on something having been made from it yet. -->
+                <p class="mt-2 text-xs">
+                  <a
+                    [routerLink]="['/trends', row.trend.id]"
+                    class="text-accent-ink hover:underline"
+                    >{{ row.activity ?? 'Details' }} →</a
+                  >
+                </p>
               </div>
 
               <div class="flex shrink-0 flex-col items-end gap-1">

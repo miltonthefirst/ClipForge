@@ -224,6 +224,39 @@ describe("what a research run may ask for", () => {
   });
 });
 
+// ── Where a job came from ────────────────────────────────────────────────────
+
+describe("a job that remembers its trend", () => {
+  const clipJob = (overrides: Record<string, unknown>) =>
+    queuedJob(ALICE, {
+      type: "CLIP",
+      submission: "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+      stages: [{ name: "DOWNLOAD", lane: "CPU", status: "PENDING" }],
+      ...overrides,
+    });
+
+  it("accepts a trend id, and its absence", async () => {
+    await assertSucceeds(create(aliceDb(), clipJob({ trendId: "trend-1" })));
+    await assertSucceeds(
+      create(aliceDb(), clipJob({ id: "job-2", trendId: null })),
+    );
+    await assertSucceeds(create(aliceDb(), clipJob({ id: "job-3" })));
+  });
+
+  it("refuses a trend id that is not a string", async () => {
+    await assertFails(create(aliceDb(), clipJob({ trendId: 7 })));
+    await assertFails(
+      create(aliceDb(), clipJob({ trendId: { id: "trend-1" } })),
+    );
+  });
+
+  it("does not require the trend to exist, so a deleted list orphans nothing", async () => {
+    await assertSucceeds(
+      create(aliceDb(), clipJob({ trendId: "never-written" })),
+    );
+  });
+});
+
 // ── Compile jobs ─────────────────────────────────────────────────────────────
 
 describe("what a compilation may ask for", () => {

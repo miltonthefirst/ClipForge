@@ -204,9 +204,7 @@ export class SourcesRepository {
         // Only the id is wanted. Reading the documents at all is unavoidable —
         // Firestore has no delete-by-query — so this is the same read the batch
         // version paid for, asked for the one field it uses.
-        const page = await this.db.once<{ id: string }>(
-          ofSourceSpec(name, sourceId, BATCH_LIMIT),
-        );
+        const page = await this.db.once<{ id: string }>(ofSourceSpec(name, sourceId, BATCH_LIMIT));
         if (page.length === 0) break;
         await Promise.all(page.map((document) => this.db.remove(name, document.id)));
         removed[name] += page.length;

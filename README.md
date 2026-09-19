@@ -335,6 +335,13 @@ and joins what it cut. The result is a clip like any other: it arrives in the re
 the phone, takes music, publishes. Its page lists every piece, the window that was cut, and whose
 idea each window was, so a compilation that came out wrong says which piece to change.
 
+**Every trend has a page.** Its topic on the card, or the line under it — "1 running · 2 to
+review" — opens `/trends/…`: the same evidence and videos with the same buttons, and below them
+**what became of it**: every job made from the trend with its live progress, the clips those jobs
+produced with a way into Review, and, for a job that ran to the end and cut nothing, that said in
+words rather than left as a COMPLETED chip beside an empty queue. A job made from a trend remembers
+it, so the job page links back. See [ADR-0026](docs/adr/0026-what-became-of-a-trend.md).
+
 **Or on a schedule.** *Do this automatically…* under the same form saves its settings as a
 schedule — daily at a time of day, or every so many hours — and the worker fires it on its own
 while it is running. Each run turns up on the Trends page marked *auto*, exactly like a manual one.

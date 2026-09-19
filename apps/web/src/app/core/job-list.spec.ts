@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   JOB_TABS,
   isTerminal,
+  NOTHING_TO_CUT,
+  finishedEmpty,
   jobNote,
   jobTab,
   jobTitle,
@@ -162,6 +164,36 @@ describe('stageNote', () => {
     expect(stageNote(stage({ status: 'RUNNING' }))).toBeNull();
     expect(stageNote(stage({ status: 'RUNNING', progress: null }))).toBeNull();
     expect(stageNote(stage({ status: 'RUNNING', progress: '   ' }))).toBeNull();
+  });
+});
+
+describe('finishedEmpty', () => {
+  const rendered = (clipIds: string[] | undefined, status = 'COMPLETED', type = 'CLIP') =>
+    ({
+      id: 'j',
+      uid: 'u',
+      type,
+      status,
+      stages: [
+        { name: 'DOWNLOAD', lane: 'CPU', status: 'DONE' },
+        { name: 'RENDER', lane: 'CPU', status: 'DONE', checkpoint: clipIds && { clipIds } },
+      ],
+      attempts: 0,
+      maxAttempts: 3,
+      createdAt: 'now',
+      updatedAt: 'now',
+    }) as unknown as Parameters<typeof finishedEmpty>[0];
+
+  it('is a completed clip job whose render step lists no clips', () => {
+    expect(finishedEmpty(rendered([]))).toBe(true);
+    expect(jobNote(rendered([]))).toBe(NOTHING_TO_CUT);
+  });
+
+  it('is not one that made something, is still going, or is another kind of job', () => {
+    expect(finishedEmpty(rendered(['c1']))).toBe(false);
+    expect(finishedEmpty(rendered([], 'RUNNING'))).toBe(false);
+    expect(finishedEmpty(rendered(undefined))).toBe(false);
+    expect(finishedEmpty(rendered([], 'COMPLETED', 'RESEARCH'))).toBe(false);
   });
 });
 

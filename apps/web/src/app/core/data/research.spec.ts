@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import { cacheKey } from '../firestore/spec';
 import {
+  IN_LIMIT,
   RESEARCH_RUNS,
   TRENDS_PER_RUN,
   byRank,
+  clipsForJobsSpec,
+  jobsForTrendSpec,
+  jobsForTrendsSpec,
   newCompileJob,
   newResearchJob,
   researchRunsSpec,
@@ -121,5 +125,40 @@ describe('newCompileJob', () => {
     expect(job.type).toBe('COMPILE');
     expect(job.submission).toBeNull();
     expect(job.compileOptions?.theme).toBe('goals');
+  });
+
+  it('repeats the trend on the job itself, so one filter finds it', () => {
+    expect(job.trendId).toBeNull();
+    const fromTrend = newCompileJob(
+      'job-3',
+      'u1',
+      { theme: 'goals', items: [{ submission: 'a' }, { submission: 'b' }], trendId: 't1' },
+      '2026-09-19T12:00:00.000Z',
+    );
+    expect(fromTrend.trendId).toBe('t1');
+  });
+});
+
+describe('what became of a trend', () => {
+  it('finds one trend’s jobs with one equality filter and no ordering', () => {
+    const spec = jobsForTrendSpec('t1');
+    expect(spec.where).toEqual([['trendId', '==', 't1']]);
+    expect(spec.orderBy).toBeUndefined();
+    expect(spec.limit).toBe(IN_LIMIT);
+  });
+
+  it('finds a whole run’s jobs in one `in` filter, capped where Firestore caps it', () => {
+    const ids = Array.from({ length: 35 }, (_, i) => `t${i}`);
+    const spec = jobsForTrendsSpec(ids);
+    expect(spec.where?.[0]?.[1]).toBe('in');
+    expect((spec.where?.[0]?.[2] as string[]).length).toBe(IN_LIMIT);
+    expect(IN_LIMIT).toBe(TRENDS_PER_RUN);
+  });
+
+  it('finds the clips those jobs made by jobId, the same way', () => {
+    const spec = clipsForJobsSpec(['j1', 'j2']);
+    expect(spec.collection).toBe('clips');
+    expect(spec.where).toEqual([['jobId', 'in', ['j1', 'j2']]]);
+    expect(spec.orderBy).toBeUndefined();
   });
 });

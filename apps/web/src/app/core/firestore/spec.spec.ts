@@ -73,11 +73,17 @@ describe('cacheKey', () => {
     // A field value is user data in the general case, and JSON-encoding it is
     // what stops it impersonating the structure around it.
     const forged = jobs({ where: [['submission', '==', '|createdAt:desc|25']] });
-    expect(cacheKey(forged)).not.toBe(cacheKey(jobs({ orderBy: [['createdAt', 'desc']], limit: 25 })));
+    expect(cacheKey(forged)).not.toBe(
+      cacheKey(jobs({ orderBy: [['createdAt', 'desc']], limit: 25 })),
+    );
   });
 
   it('is stable for the same spec described twice', () => {
-    const spec = jobs({ where: [['status', 'in', ['RUNNING']]], orderBy: [['createdAt', 'desc']], limit: 25 });
+    const spec = jobs({
+      where: [['status', 'in', ['RUNNING']]],
+      orderBy: [['createdAt', 'desc']],
+      limit: 25,
+    });
     expect(cacheKey(spec)).toBe(cacheKey({ ...spec }));
   });
 });

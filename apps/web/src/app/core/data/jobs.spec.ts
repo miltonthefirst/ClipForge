@@ -138,6 +138,14 @@ describe('newestFirst', () => {
   });
 });
 
+describe('newJob from a trend', () => {
+  it('remembers the trend it came from, and null when it came from a paste', () => {
+    const now = '2026-09-19T12:00:00.000Z';
+    expect(newJob('j1', 'u1', 'https://youtu.be/x', now).trendId).toBeNull();
+    expect(newJob('j2', 'u1', 'https://youtu.be/x', now, null, 't1').trendId).toBe('t1');
+  });
+});
+
 describe('newJob with a brief', () => {
   it('writes the brief on the job, and null when there is none', () => {
     const now = '2026-09-19T12:00:00.000Z';

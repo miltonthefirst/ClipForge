@@ -163,6 +163,7 @@ export function newJob(
   submission: string,
   now: string,
   options: ClipOptions | null = null,
+  trendId: string | null = null,
 ) {
   return {
     id,
@@ -173,6 +174,9 @@ export function newJob(
     // The brief. Null is the pipeline's own judgement, and it is written as
     // null rather than left out so the document says so.
     clipOptions: options,
+    // Where it came from, when it came from a trend. The trend's page reads
+    // this back to say what became of it (docs/adr/0026-what-became-of-a-trend.md).
+    trendId,
     sourceId: null,
     stages: [
       { name: 'DOWNLOAD', lane: 'CPU', status: 'PENDING' },
@@ -272,11 +276,12 @@ export class JobsRepository {
     uid: string,
     submission: string,
     options: ClipOptions | null = null,
+    trendId: string | null = null,
   ): Promise<string> {
     const id = this.db.newId(JOBS);
     await this.db.create(
       JOBS,
-      { ...newJob(id, uid, submission, new Date().toISOString(), options) },
+      { ...newJob(id, uid, submission, new Date().toISOString(), options, trendId) },
       id,
     );
     return id;

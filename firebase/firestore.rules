@@ -603,6 +603,14 @@ service cloud.firestore {
                     && request.resource.data.attempts == 0
                     && publishOptionsOk()
                     && clipOptionsOk()
+                    // Where a job came from, when it came from a trend. A
+                    // reference and nothing more: the trend need not exist,
+                    // because deleting a stale list must not orphan-check
+                    // every job it once produced.
+                    && (
+                         request.resource.data.get('trendId', null) == null
+                         || request.resource.data.trendId is string
+                       )
                     && (
                          request.resource.data.type != 'PUBLISH'
                          || (

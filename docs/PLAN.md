@@ -1462,6 +1462,15 @@ and for an inline link with `truncate`, which clips nothing because overflow app
 fails on the symptom — the document being wider than the viewport, naming what sticks out — so
 the next cause is caught whatever it is.
 
+**And every trend has a page** (2026-09-19). The first real *Clip it* made a job that ran every
+stage and cut nothing — the model proposed no candidate in a five-minute interview it had already
+doubted — and the outcome was visible on no screen a person would look at: *sent* on the card,
+COMPLETED on the Jobs page, nothing in Review. A job now remembers the trend it came from
+(`Job.trendId`), `/trends/:id` lists what became of a trend — jobs live, clips with a way into
+Review, and "finished, but nothing was worth cutting" where that is the answer — and the card
+carries the one-line version. The jobs list says the same sentence, read off RENDER's checkpoint.
+See [ADR-0026](adr/0026-what-became-of-a-trend.md).
+
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
 does not automate the scorer; it feeds it.
@@ -1991,9 +2000,9 @@ where noted:
 | --- | --- | --- |
 | Worker unit | 1082 | nothing |
 | Worker integration | 125 | Firestore emulator; the five ASSEMBLE tests need only ffmpeg |
-| Security rules | 264 | Auth + Firestore + Storage emulators |
-| Web unit | 321 | nothing |
-| Playwright E2E | 82 | Auth + Firestore emulators, stubbed worker |
+| Security rules | 267 | Auth + Firestore + Storage emulators |
+| Web unit | 334 | nothing |
+| Playwright E2E | 83 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

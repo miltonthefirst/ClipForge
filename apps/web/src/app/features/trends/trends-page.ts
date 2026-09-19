@@ -12,6 +12,7 @@ import {
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import type {
+  Clip,
   Job,
   ResearchOptions,
   ResearchSchedule,
@@ -20,10 +21,9 @@ import type {
   TrendVideo,
 } from '@clipforge/contracts';
 
-import { briefFromTrend } from '../../core/clip-brief';
 import { CompileBasketService } from '../../core/compile-basket';
-import { JobsRepository, newestFirst } from '../../core/data/jobs';
-import { ResearchRepository, byRank } from '../../core/data/research';
+import { newestFirst } from '../../core/data/jobs';
+import { IN_LIMIT, ResearchRepository, byRank } from '../../core/data/research';
 import { SchedulesRepository, byName } from '../../core/data/schedules';
 import type { Live } from '../../core/firestore/gateway';
 import { jobNote, queueFailure } from '../../core/job-list';
@@ -37,6 +37,7 @@ import {
 } from '../../core/schedule-plan';
 import { REGIONS } from '../../core/regions';
 import { SessionService } from '../../core/session';
+import { activityFor, describeActivity } from '../../core/trend-activity';
 import {
   CATEGORY_CHOICES,
   DEFAULT_RESEARCH,
@@ -53,6 +54,7 @@ import {
   runLabel,
 } from '../../core/trend-list';
 import { Combobox } from '../../shared/combobox';
+import { TrendActions } from './trend-actions';
 
 /** One video on a trend card, with everything the template needs worked out. */
 interface VideoRow {
@@ -81,6 +83,8 @@ interface TrendRow {
   readonly videos: VideoRow[];
   readonly dismissed: boolean;
   readonly promoted: boolean;
+  /** "1 running · 2 to review", or null when nothing has been made from it. */
+  readonly activity: string | null;
 }
 
 /**
@@ -110,9 +114,9 @@ interface TrendRow {
 export class TrendsPage implements OnDestroy {
   private readonly research = inject(ResearchRepository);
   private readonly schedules = inject(SchedulesRepository);
-  private readonly jobs = inject(JobsRepository);
   private readonly session = inject(SessionService);
   private readonly router = inject(Router);
+  private readonly actions = inject(TrendActions);
   protected readonly basket = inject(CompileBasketService);
 
   /** From `?run=`, so a list can be linked to and survives a reload. */
@@ -222,12 +226,22 @@ export class TrendsPage implements OnDestroy {
   protected readonly loadFailure = signal<string | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal<string | null>(null);
-  /** Videos this visit has already sent to the pipeline, so the button says so. */
-  private readonly queued = signal<ReadonlySet<string>>(new Set());
   protected readonly showDismissed = signal(false);
 
   private readonly heldRuns = signal<Live<Job[]> | null>(null);
   private readonly heldTrends = signal<Live<Trend[]> | null>(null);
+
+  // ── What became of them ────────────────────────────────────────────────────
+  //
+  // Two more listeners for the run on screen: the jobs made from its trends,
+  // and the clips those jobs made. One `in` query each — a run has at most
+  // thirty trends, which is Firestore's cap on `in` — so the cards can say
+  // "1 running · 2 to review" and point at the page that says more.
+
+  private readonly heldTrendJobs = signal<Live<Job[]> | null>(null);
+  private readonly heldTrendClips = signal<Live<Clip[]> | null>(null);
+  private readonly trendJobs = signal<Job[]>([]);
+  private readonly trendClips = signal<Clip[]>([]);
   /** The form is seeded from the latest run once, and never over what was typed. */
   private seeded = false;
 
@@ -320,6 +334,35 @@ export class TrendsPage implements OnDestroy {
       this.heldTrends.set(this.research.watchTrends(id));
     });
 
+    // The jobs follow the trends on screen, and the clips follow the jobs.
+    // Keyed on the ids, so a status change on a row does not re-subscribe.
+    effect(() => {
+      const ids = (this.trends() ?? []).map((trend) => trend.id).slice(0, IN_LIMIT);
+      untracked(() => this.heldTrendJobs())?.release();
+      this.heldTrendJobs.set(null);
+      this.trendJobs.set([]);
+      if (!ids.length) return;
+      this.heldTrendJobs.set(this.research.watchJobsForTrends(ids));
+    });
+    effect(() => {
+      const jobs = this.heldTrendJobs()?.data();
+      if (jobs) this.trendJobs.set(jobs);
+    });
+    effect(() => {
+      const ids = newestFirst(this.trendJobs())
+        .map((job) => job.id)
+        .slice(0, IN_LIMIT);
+      untracked(() => this.heldTrendClips())?.release();
+      this.heldTrendClips.set(null);
+      this.trendClips.set([]);
+      if (!ids.length) return;
+      this.heldTrendClips.set(this.research.watchClipsForJobs(ids));
+    });
+    effect(() => {
+      const clips = this.heldTrendClips()?.data();
+      if (clips) this.trendClips.set(clips);
+    });
+
     effect(() => {
       const held = this.heldTrends();
       if (!held) return;
@@ -337,6 +380,8 @@ export class TrendsPage implements OnDestroy {
   ngOnDestroy(): void {
     this.heldRuns()?.release();
     this.heldTrends()?.release();
+    this.heldTrendJobs()?.release();
+    this.heldTrendClips()?.release();
     this.heldSchedules()?.release();
   }
 
@@ -364,10 +409,16 @@ export class TrendsPage implements OnDestroy {
   protected readonly rows = computed<TrendRow[] | null>(() => {
     const trends = this.trends();
     if (trends === null) return null;
-    const queued = this.queued();
+    const queued = this.actions.queued();
     // Read so a basket change re-renders the toggles.
     this.basket.items();
     const now = Date.now();
+    const jobsByTrend = new Map<string, Job[]>();
+    for (const job of this.trendJobs()) {
+      if (!job.trendId) continue;
+      jobsByTrend.set(job.trendId, [...(jobsByTrend.get(job.trendId) ?? []), job]);
+    }
+    const clips = this.trendClips();
     return trends.map((trend) => ({
       trend,
       signals: trend.signals.map(describeSignal),
@@ -381,6 +432,14 @@ export class TrendsPage implements OnDestroy {
       })),
       dismissed: trend.status === 'DISMISSED',
       promoted: trend.status === 'PROMOTED',
+      activity: describeActivity(
+        activityFor(
+          jobsByTrend.get(trend.id) ?? [],
+          clips.filter((clip) =>
+            (jobsByTrend.get(trend.id) ?? []).some((j) => j.id === clip.jobId),
+          ),
+        ),
+      ),
     }));
   });
 
@@ -429,21 +488,15 @@ export class TrendsPage implements OnDestroy {
     }
   }
 
-  /** One video, straight to the pipeline, as if its URL had been pasted. */
+  // The four things a person can do with a trend live in `TrendActions`, so
+  // this page and the trend's own page do exactly the same thing and agree on
+  // what has been queued. What is kept here is where a failure is shown.
+
   protected async clipIt(row: TrendRow, video: TrendVideo): Promise<void> {
-    const uid = this.session.uid;
-    if (!uid) return;
     this.busy.set(video.url);
     this.error.set(null);
     try {
-      // The model's angle on the trend becomes the brief, when it thought
-      // there was a clip in it: the best instruction anyone has written for
-      // this video, and until now read once and lost.
-      await this.jobs.submit(uid, video.url, briefFromTrend(row.trend));
-      this.queued.update((urls) => new Set([...urls, video.url]));
-      if (row.trend.status !== 'PROMOTED') {
-        await this.research.decide(row.trend.id, 'PROMOTED', uid);
-      }
+      await this.actions.clipIt(row.trend, video);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
@@ -451,48 +504,27 @@ export class TrendsPage implements OnDestroy {
     }
   }
 
-  /** In or out of the basket. The first video in sets the theme from its trend. */
   protected toggleBasket(row: TrendRow, video: TrendVideo): void {
     this.error.set(null);
-    if (this.basket.count() === 0 && !this.basket.has(video.url)) {
-      this.basket.setTheme(row.trend.compilationTitle ?? row.trend.topic);
-      this.basket.trendId.set(row.trend.id);
-    }
-    const added = this.basket.toggle({
-      url: video.url,
-      title: video.title,
-      channel: video.channel ?? null,
-    });
-    if (!added && !this.basket.has(video.url)) {
-      this.error.set(
-        `The compilation already has ${this.basket.count()} videos, which is the most it can take.`,
-      );
+    if (!this.actions.toggleBasket(row.trend, video)) {
+      this.error.set(this.actions.basketFullMessage());
     }
   }
 
-  /** The whole trend, as a compilation: its best videos, its title, over to the Compile page. */
   protected async compileTrend(row: TrendRow): Promise<void> {
-    const best = [...row.trend.videos].sort((a, b) => b.score - a.score).slice(0, 6);
-    if (best.length < 2) {
-      this.error.set('A compilation needs at least two videos, and this trend has fewer.');
-      return;
+    this.error.set(null);
+    try {
+      await this.actions.compileTrend(row.trend);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
     }
-    this.basket.startFrom(
-      row.trend.id,
-      row.trend.topic,
-      row.trend.compilationTitle ?? null,
-      best.map((video) => ({ url: video.url, title: video.title, channel: video.channel ?? null })),
-    );
-    await this.router.navigate(['/compile']);
   }
 
   protected async decide(row: TrendRow, status: 'NEW' | 'DISMISSED'): Promise<void> {
-    const uid = this.session.uid;
-    if (!uid) return;
     this.busy.set(row.trend.id);
     this.error.set(null);
     try {
-      await this.research.decide(row.trend.id, status, uid);
+      await this.actions.decide(row.trend, status);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {

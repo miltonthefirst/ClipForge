@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { listDocs, plain, signIn, wipe, write } from './helpers';
+import { clip, job, listDocs, plain, preview, signIn, wipe, write } from './helpers';
 
 /** A whole document, unwrapped: `plain` takes one REST value, and a document is a map of them. */
 function unwrap(fields: Record<string, unknown>): Record<string, unknown> {
@@ -135,11 +135,14 @@ test('pressing Clip it creates an ordinary CLIP job from the video URL', async (
     type: string;
     submission?: string;
     clipOptions?: { instructions: string } | null;
+    trendId?: string | null;
   }[];
   const clip = jobs.find((job) => job.type === 'CLIP');
   expect(clip?.submission).toBe('https://www.youtube.com/watch?v=t1aaaaaaaaa');
   // The model's angle rides along as the brief.
   expect(clip?.clipOptions?.instructions).toBe('What a clip about brewers vs orioles would show.');
+  // And the job remembers where it came from.
+  expect(clip?.trendId).toBe('t1');
   // The promotion is written after the job, and the button does not wait for it.
   await expect
     .poll(async () => ((await listDocs('trends')).map(unwrap)[0] as { status: string })?.status)
@@ -217,6 +220,95 @@ test('where and what kind are typed for, optional, and ride on the job', async (
   await page.getByRole('button', { name: 'Clear Where' }).click();
   await expect(where).toHaveValue('');
   await expect(where).toHaveAttribute('placeholder', 'Worker’s default');
+});
+
+test('a trend has a page that says what became of it', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('jobs/job-research-1', researchJob(uid));
+  await write('trends/t1', trend(uid, 't1', 'brewers vs orioles', 1, 78));
+  // Three jobs made from it: one that made a clip, one that made nothing,
+  // and one still going.
+  await write(
+    'jobs/job-a',
+    job(uid, {
+      id: 'job-a',
+      status: 'COMPLETED',
+      trendId: 't1',
+      submission: 'https://www.youtube.com/watch?v=t1aaaaaaaaa',
+      stages: [
+        { name: 'DOWNLOAD', lane: 'CPU', status: 'DONE' },
+        { name: 'TRANSCRIBE', lane: 'GPU', status: 'DONE' },
+        { name: 'ANALYZE', lane: 'GPU', status: 'DONE' },
+        { name: 'RENDER', lane: 'CPU', status: 'DONE', checkpoint: { clipIds: ['clip-1'] } },
+      ],
+    }),
+  );
+  await write('clips/clip-1', clip(uid, { id: 'clip-1', jobId: 'job-a', title: 'The late homer' }));
+  await write('clips/clip-1/preview/poster', preview());
+  await write(
+    'jobs/job-b',
+    job(uid, {
+      id: 'job-b',
+      status: 'COMPLETED',
+      trendId: 't1',
+      submission: 'https://www.youtube.com/watch?v=t1bbbbbbbbb',
+      stages: [
+        { name: 'DOWNLOAD', lane: 'CPU', status: 'DONE' },
+        { name: 'TRANSCRIBE', lane: 'GPU', status: 'DONE' },
+        { name: 'ANALYZE', lane: 'GPU', status: 'DONE' },
+        { name: 'RENDER', lane: 'CPU', status: 'DONE', checkpoint: { clipIds: [], rendered: 0 } },
+      ],
+    }),
+  );
+  await write(
+    'jobs/job-c',
+    job(uid, {
+      id: 'job-c',
+      trendId: 't1',
+      submission: 'https://www.youtube.com/watch?v=t1ccccccccc',
+    }),
+  );
+
+  // The card says what became of it, and leads to the page.
+  await page.goto('/trends');
+  const card = page.locator('ol > li').first();
+  await expect(card.getByText('1 running · 1 to review · nothing to cut →')).toBeVisible();
+  await card.getByRole('link', { name: 'brewers vs orioles', exact: true }).click();
+  await expect(page).toHaveURL(/\/trends\/t1$/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('brewers vs orioles');
+
+  // The page lists the three, each with what it did.
+  const made = page.locator('section', { hasText: 'What became of it' });
+  await expect(made.getByRole('link', { name: 'Job page →' })).toHaveCount(3);
+  await expect(made.getByRole('link', { name: 'The late homer' })).toHaveAttribute(
+    'href',
+    '/review/clip-1',
+  );
+  await expect(made.getByText('to review', { exact: true })).toBeVisible();
+  await expect(made.getByText('Finished, but nothing was worth cutting')).toBeVisible();
+  await expect(made.getByText('1 of 4 stages · TRANSCRIBE')).toBeVisible();
+
+  // Clip it from here writes the same job the list page would, trend and all.
+  await page.getByRole('button', { name: 'Clip it' }).nth(1).click();
+  await expect(page.getByRole('button', { name: 'Queued' })).toBeVisible();
+  await expect
+    .poll(
+      async () =>
+        (await listDocs('jobs'))
+          .map(unwrap)
+          .filter((doc) => (doc as { status: string }).status === 'QUEUED').length,
+    )
+    .toBe(1);
+  const queued = (await listDocs('jobs'))
+    .map(unwrap)
+    .find((doc) => (doc as { status: string }).status === 'QUEUED') as {
+    trendId: string | null;
+    submission: string;
+  };
+  expect(queued.trendId).toBe('t1');
+  expect(queued.submission).toBe('https://www.youtube.com/watch?v=t1bbbbbbbbb');
+  // And the page shows the new job at once, from the live listener.
+  await expect(made.getByRole('link', { name: 'Job page →' })).toHaveCount(4);
 });
 
 test('a dismissed trend leaves the list and can be brought back', async ({ page }) => {

@@ -58,6 +58,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/trends/trends-page').then((m) => m.TrendsPage),
   },
   {
+    path: 'trends/:id',
+    title: 'Trend · ClipForge',
+    loadComponent: () => import('./features/trends/trend-page').then((m) => m.TrendPage),
+  },
+  {
     path: 'compile',
     title: 'Compile · ClipForge',
     loadComponent: () => import('./features/compile/compile-page').then((m) => m.CompilePage),

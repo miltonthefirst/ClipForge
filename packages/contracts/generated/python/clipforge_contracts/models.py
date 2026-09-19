@@ -2392,6 +2392,10 @@ class Job(BaseModel):
     """
     The ResearchSchedule that fired this job, when one did. Null on a job a person created. Provenance: the Trends page labels a run the worker started on its own, because a list nobody asked for this morning reads differently from one somebody did.
     """
+    trend_id: str | None = Field(None, alias="trendId")
+    """
+    The trend this job was made from — a CLIP job from *Clip it*, a COMPILE job from a basket the Trends page filled — when it was. Null on a job somebody pasted. Provenance read back the other way: a trend's page lists what became of it, which is how a job that finished with nothing to cut is found without opening the queue.
+    """
     publish_options: PublishOptions | None = Field(None, alias="publishOptions")
     """
     Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.

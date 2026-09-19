@@ -1,0 +1,266 @@
+@if (loadFailure(); as failure) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">This trend could not be loaded.</p>
+    <p class="mx-auto mt-2 max-w-prose text-sm text-ink-subtle">{{ failure }}</p>
+  </div>
+} @else if (trend() === undefined) {
+  <p class="py-16 text-center text-ink-subtle">Loading…</p>
+} @else if (trend() === null) {
+  <div class="py-16 text-center">
+    <p class="text-ink-muted">No such trend.</p>
+    <p class="mt-2 text-sm text-ink-subtle">
+      Its list may have been deleted.
+      <a routerLink="/trends" class="text-accent-ink hover:underline">Back to Trends</a>
+    </p>
+  </div>
+} @else if (trend(); as trend) {
+  <p class="text-xs text-ink-subtle">
+    <a [routerLink]="['/trends']" [queryParams]="{ run: trend.jobId }" class="hover:text-ink"
+      >← The run this came from</a
+    >
+  </p>
+
+  <!-- ── What it is ─────────────────────────────────────────────────────── -->
+  <div class="mt-3 flex flex-wrap items-start gap-3">
+    <span class="w-7 shrink-0 text-right text-lg font-semibold tabular-nums text-ink-subtle">{{
+      trend.rank
+    }}</span>
+    <div class="min-w-0 flex-1">
+      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h1 class="min-w-0 text-xl font-semibold break-words">{{ trend.topic }}</h1>
+        <span
+          class="rounded-md bg-accent-soft px-2 py-0.5 text-xs font-semibold tabular-nums text-accent-ink"
+          title="Opportunity score, out of 100"
+          >{{ trend.score }}</span
+        >
+        @if (trend.relevance !== null && trend.relevance !== undefined) {
+          <span class="text-xs text-ink-subtle">relevance {{ trend.relevance }}/10</span>
+        }
+        @if (trend.status === 'PROMOTED') {
+          <span class="rounded-md bg-ok-bg px-2 py-0.5 text-xs text-ok-ink-soft">sent</span>
+        } @else if (trend.status === 'DISMISSED') {
+          <span class="rounded-md bg-line px-2 py-0.5 text-xs text-ink-subtle">dismissed</span>
+        }
+      </div>
+
+      <p class="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-ink-subtle">
+        @for (signal of signals(); track $index) {
+          <span class="rounded bg-line-strong/40 px-1.5 py-0.5">{{ signal }}</span>
+        }
+        @for (topic of trend.matchedTopics ?? []; track topic) {
+          <span class="rounded bg-forge-600/10 px-1.5 py-0.5 text-ink-muted">{{ topic }}</span>
+        }
+      </p>
+
+      @if (trend.angle; as angle) {
+        <p class="mt-3 text-sm text-ink-muted">{{ angle }}</p>
+      }
+      @if (trend.worthClipping === false) {
+        <p class="mt-1 text-xs text-warn-ink">The model doubts there is a clip in it.</p>
+      }
+      @if (trend.compilationTitle; as title) {
+        <p class="mt-1 text-xs text-ink-subtle">As a compilation: “{{ title }}”</p>
+      }
+    </div>
+
+    <div class="flex shrink-0 flex-col items-end gap-1">
+      @if (trend.videos.length >= 2) {
+        <button
+          type="button"
+          class="rounded-lg border border-line-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-line"
+          (click)="compileTrend()"
+        >
+          Compile this
+        </button>
+      }
+      @if (trend.status === 'DISMISSED') {
+        <button
+          type="button"
+          class="text-xs text-ink-subtle hover:text-ink-muted disabled:opacity-50"
+          [disabled]="busy() === trend.id"
+          (click)="decide('NEW')"
+        >
+          Bring back
+        </button>
+      } @else {
+        <button
+          type="button"
+          class="text-xs text-ink-subtle hover:text-danger-ink disabled:opacity-50"
+          [disabled]="busy() === trend.id"
+          (click)="decide('DISMISSED')"
+        >
+          Dismiss
+        </button>
+      }
+    </div>
+  </div>
+
+  @if (error(); as message) {
+    <p
+      class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-4 py-3 text-sm text-danger-ink"
+    >
+      {{ message }}
+    </p>
+  }
+
+  <!-- ── The videos ─────────────────────────────────────────────────────── -->
+  <section class="mt-6">
+    <h2 class="text-sm font-semibold">Videos</h2>
+    @if (videos().length) {
+      <ul class="mt-2 space-y-2">
+        @for (item of videos(); track item.video.externalId) {
+          <li class="flex items-center gap-3 rounded-xl border border-line bg-panel p-3">
+            @if (item.video.thumbnailUrl; as thumb) {
+              <img
+                [src]="thumb"
+                alt=""
+                class="h-12 w-20 shrink-0 rounded-md bg-black object-cover"
+                loading="lazy"
+                referrerpolicy="no-referrer"
+              />
+            } @else {
+              <div class="h-12 w-20 shrink-0 rounded-md bg-line-strong/40" aria-hidden="true"></div>
+            }
+            <div class="min-w-0 flex-1">
+              <a
+                [href]="item.video.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="line-clamp-2 text-sm text-ink hover:text-accent-ink"
+                >{{ item.video.title }}</a
+              >
+              <p class="mt-0.5 flex flex-wrap gap-x-2 text-xs text-ink-subtle">
+                <span class="font-semibold tabular-nums text-ink-muted">{{
+                  item.video.score
+                }}</span>
+                @if (item.video.channel) {
+                  <span class="min-w-0 truncate">{{ item.video.channel }}</span>
+                }
+                @if (item.views) {
+                  <span>{{ item.views }} views</span>
+                }
+                @if (item.age) {
+                  <span>{{ item.age }}</span>
+                }
+                @if (item.length) {
+                  <span>{{ item.length }}</span>
+                }
+              </p>
+            </div>
+            <div class="flex shrink-0 gap-1">
+              <button
+                type="button"
+                class="rounded-lg px-2.5 py-1 text-xs"
+                [class]="
+                  item.inBasket
+                    ? 'bg-forge-600 text-white hover:bg-forge-700'
+                    : 'border border-line-strong text-ink-muted hover:bg-line'
+                "
+                (click)="toggleBasket(item.video)"
+              >
+                {{ item.inBasket ? 'In' : '+ Compile' }}
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border border-line-strong px-2.5 py-1 text-xs text-ink-muted hover:bg-line disabled:opacity-50"
+                [disabled]="item.queued || busy() === item.video.url"
+                (click)="clipIt(item.video)"
+              >
+                {{ item.queued ? 'Queued' : 'Clip it' }}
+              </button>
+            </div>
+          </li>
+        }
+      </ul>
+    } @else {
+      <p class="mt-2 text-xs text-ink-subtle">
+        No video found for this. It is a thing people are searching for, not a thing anyone has
+        filmed.
+      </p>
+    }
+  </section>
+
+  <!-- ── What became of it ──────────────────────────────────────────────────
+       The reason this page exists. "Clip it" used to end at a button saying
+       Queued; the job then lived on one page and its clips on another, and a
+       job that finished with nothing to cut was visible on neither. -->
+  <section class="mt-6">
+    <div class="flex flex-wrap items-baseline justify-between gap-2">
+      <h2 class="text-sm font-semibold">What became of it</h2>
+      @if (summary(); as line) {
+        <span class="text-xs text-ink-subtle">{{ line }}</span>
+      }
+    </div>
+    @if (activity(); as made) {
+      @if (made.rows.length) {
+        <ul class="mt-2 space-y-2">
+          @for (row of made.rows; track row.job.id) {
+            <li class="rounded-xl border border-line bg-panel p-3">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <a
+                  [routerLink]="['/jobs', row.job.id]"
+                  class="text-sm font-medium text-ink hover:text-accent-ink"
+                  >{{ row.kind }}</a
+                >
+                <span
+                  class="rounded-md px-2 py-0.5 text-xs font-medium"
+                  [class]="statusTone(row.job)"
+                >
+                  {{ row.job.status }}
+                </span>
+                <span class="text-xs text-ink-subtle">{{ row.progress }}</span>
+                <a
+                  [routerLink]="['/jobs', row.job.id]"
+                  class="ml-auto text-xs text-accent-ink hover:underline"
+                  >Job page →</a
+                >
+              </div>
+              @if (row.note; as note) {
+                <p class="mt-1 text-xs text-ink-muted">{{ note }}</p>
+              }
+              @if (row.job.error; as failure) {
+                <p class="mt-2 rounded-lg bg-danger-bg px-3 py-2 text-xs text-danger-ink">
+                  {{ failure.message }}
+                </p>
+              }
+              @if (row.finishedEmpty) {
+                <p class="mt-2 text-xs text-ink-muted">
+                  Every stage ran and nothing was cut, so there is nothing in Review from this one.
+                  The job page says why.
+                </p>
+              }
+              @if (row.clips.length) {
+                <ul class="mt-2 space-y-1 border-t border-line pt-2">
+                  @for (clip of row.clips; track clip.id) {
+                    <li class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <a
+                        [routerLink]="['/review', clip.id]"
+                        class="min-w-0 flex-1 truncate text-ink hover:text-accent-ink"
+                        >{{ clip.title ?? 'Untitled clip' }}</a
+                      >
+                      @if (clip.compile; as compiled) {
+                        <span class="text-ink-subtle"
+                          >compiled from {{ compiled.segments.length }}</span
+                        >
+                      }
+                      <span class="rounded-md px-2 py-0.5" [class]="reviewTone(clip)">{{
+                        reviewLabel(clip)
+                      }}</span>
+                    </li>
+                  }
+                </ul>
+              }
+            </li>
+          }
+        </ul>
+      } @else {
+        <p class="mt-2 text-xs text-ink-subtle">
+          Nothing has been made from this yet. <em>Clip it</em> on a video sends it to the pipeline
+          as it is; <em>Compile this</em> gathers the best of them into one.
+        </p>
+      }
+    } @else {
+      <p class="mt-2 text-xs text-ink-subtle">Looking…</p>
+    }
+  </section>
+}

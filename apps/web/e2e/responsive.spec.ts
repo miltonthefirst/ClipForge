@@ -339,6 +339,12 @@ test('trends, with a run, a schedule and the editor open', async ({ page }) => {
   await page.getByRole('button', { name: 'Edit' }).click();
   await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible();
   await fits(page, 'the trends page with a schedule being edited');
+
+  await write('jobs/job-t', job(uid, { id: 'job-t', trendId: 't1', submission: LONG_URL }));
+  await page.goto('/trends/t1');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await expect(page.getByText('1 of 4 stages')).toBeVisible();
+  await fits(page, 'a trend’s page');
 });
 
 test('compile, with a full basket', async ({ page }) => {

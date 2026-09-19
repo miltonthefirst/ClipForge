@@ -39,6 +39,12 @@
         @if (elapsed(); as took) {
           · {{ took }}
         }
+        @if (job.trendId ?? job.compileOptions?.trendId; as trendId) {
+          ·
+          <a [routerLink]="['/trends', trendId]" class="text-accent-ink hover:underline"
+            >from a trend</a
+          >
+        }
       </p>
       <!-- The brief, when the job carried one. Beside the id because it is
            the second thing that says which job this is, and the first thing

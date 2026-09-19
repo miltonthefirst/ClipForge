@@ -181,6 +181,7 @@ export function stageNote(stage: Stage): string | null {
  * reading in that case: it is the one the worker wrote on purpose.
  */
 export function jobNote(job: Job): string | null {
+  if (finishedEmpty(job)) return NOTHING_TO_CUT;
   const stopped = isTerminal(job);
   let failed: Stage | null = null;
   for (const stage of job.stages) {
@@ -188,6 +189,25 @@ export function jobNote(job: Job): string | null {
     if (stage.status === 'FAILED' && !failed) failed = stage;
   }
   return failed ? stageNote(failed) : null;
+}
+
+/** The sentence for a job that ran to the end and made nothing. */
+export const NOTHING_TO_CUT = 'Finished, but nothing was worth cutting';
+
+/**
+ * A clip job that completed and rendered no clip, read off RENDER's own
+ * checkpoint so the list needs no second query to say so.
+ *
+ * Not a failure, and not a bug — most often a video the model found nothing in,
+ * or a brief nothing matched — but the one outcome that used to be invisible:
+ * COMPLETED on this page, an empty queue on the next, and no sentence joining
+ * them. The job page has the fuller explanation; this is the pointer to it.
+ */
+export function finishedEmpty(job: Job): boolean {
+  if (job.status !== 'COMPLETED' || job.type !== 'CLIP') return false;
+  const render = job.stages.find((stage) => stage.name === 'RENDER');
+  const made = render?.checkpoint?.['clipIds'];
+  return Array.isArray(made) && made.length === 0;
 }
 
 /**

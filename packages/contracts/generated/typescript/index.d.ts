@@ -346,6 +346,10 @@ export interface Job {
    */
   scheduleId?: string | null;
   /**
+   * The trend this job was made from — a CLIP job from *Clip it*, a COMPILE job from a basket the Trends page filled — when it was. Null on a job somebody pasted. Provenance read back the other way: a trend's page lists what became of it, which is how a job that finished with nothing to cut is found without opening the queue.
+   */
+  trendId?: string | null;
+  /**
    * Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
    */
   publishOptions?: PublishOptions | null;
