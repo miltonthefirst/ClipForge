@@ -2030,7 +2030,7 @@ where noted:
 | Worker integration | 127 | Firestore emulator; the seven ASSEMBLE and DRAW tests need only ffmpeg |
 | Security rules | 274 | Auth + Firestore + Storage emulators |
 | Web unit | 346 | nothing |
-| Playwright E2E | 85 | Auth + Firestore emulators, stubbed worker |
+| Playwright E2E | 86 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

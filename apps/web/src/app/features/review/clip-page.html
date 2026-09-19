@@ -1178,37 +1178,77 @@
             <!-- Timing -->
             <fieldset>
               <legend class="text-sm font-medium">Timing</legend>
+              <!-- Steppers beside each field, because a phone's numeric keypad has
+                   no minus key and a negative nudge could not be typed there. -->
               <div class="mt-2 grid grid-cols-2 gap-3">
-                <label class="block">
+                <div class="block">
                   <span class="text-xs text-ink-muted">Start (seconds)</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="-30"
-                    max="30"
-                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink"
-                    [ngModel]="remakeStartDelta()"
-                    (ngModelChange)="setTrim('start', $event)"
-                    name="remakeStartDelta"
-                  />
-                </label>
-                <label class="block">
+                  <div class="mt-1 flex items-stretch gap-1">
+                    <button
+                      type="button"
+                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                      aria-label="Start half a second earlier"
+                      (click)="nudgeTrim('start', -0.5)"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="-30"
+                      max="30"
+                      class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm text-ink"
+                      aria-label="Start, seconds"
+                      [ngModel]="remakeStartDelta()"
+                      (ngModelChange)="setTrim('start', $event)"
+                      name="remakeStartDelta"
+                    />
+                    <button
+                      type="button"
+                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                      aria-label="Start half a second later"
+                      (click)="nudgeTrim('start', 0.5)"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div class="block">
                   <span class="text-xs text-ink-muted">End (seconds)</span>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="-30"
-                    max="30"
-                    class="mt-1 w-full rounded-lg border border-line-strong bg-panel px-3 py-2 text-sm text-ink"
-                    [ngModel]="remakeEndDelta()"
-                    (ngModelChange)="setTrim('end', $event)"
-                    name="remakeEndDelta"
-                  />
-                </label>
+                  <div class="mt-1 flex items-stretch gap-1">
+                    <button
+                      type="button"
+                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                      aria-label="End half a second earlier"
+                      (click)="nudgeTrim('end', -0.5)"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="-30"
+                      max="30"
+                      class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm text-ink"
+                      aria-label="End, seconds"
+                      [ngModel]="remakeEndDelta()"
+                      (ngModelChange)="setTrim('end', $event)"
+                      name="remakeEndDelta"
+                    />
+                    <button
+                      type="button"
+                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                      aria-label="End half a second later"
+                      (click)="nudgeTrim('end', 0.5)"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
               </div>
               <p class="mt-1 text-xs text-ink-subtle">
                 Negative starts earlier; positive ends later. Useful when the action happens before
-                anyone says anything about it.
+                anyone says anything about it. The − and + step by half a second.
               </p>
             </fieldset>
 

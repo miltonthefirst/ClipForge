@@ -433,6 +433,18 @@ export class ClipPage implements OnDestroy {
     const value = Math.max(-TRIM_LIMIT_SEC, Math.min(TRIM_LIMIT_SEC, Number(raw) || 0));
     (which === 'start' ? this.remakeStartDelta : this.remakeEndDelta).set(value);
   }
+
+  /**
+   * Half a second earlier or later, from a button.
+   *
+   * A phone's numeric keypad has no minus key, so a negative nudge could not
+   * be typed there at all; the buttons are the way in that works everywhere,
+   * and the field stays for anyone with a full keyboard.
+   */
+  protected nudgeTrim(which: 'start' | 'end', by: number): void {
+    const current = which === 'start' ? this.remakeStartDelta() : this.remakeEndDelta();
+    this.setTrim(which, Math.round((current + by) * 2) / 2);
+  }
   protected readonly remakeKeyframes = signal<PanKeyframe[]>([]);
 
   /**

@@ -148,6 +148,26 @@ test('opening a clip shows the hook, the score breakdown and the excerpt', async
   await expect(page.locator('img[alt*="Poster frame"]')).toBeVisible();
 });
 
+test('the remake timing has minus and plus buttons, so a phone keypad can go negative', async ({
+  page,
+}) => {
+  const uid = await signIn(page);
+  await write('candidates/cand-1', candidate(uid));
+  await write('clips/clip-1', clip(uid));
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/review/clip-1');
+  await page.getByRole('button', { name: 'Remake', exact: true }).click();
+
+  // A phone's numeric keypad has no minus key, so typing is not the only way in.
+  const start = page.getByLabel('Start, seconds');
+  await expect(start).toHaveValue('0');
+  await page.getByRole('button', { name: 'Start half a second earlier' }).click();
+  await expect(start).toHaveValue('-0.5');
+  await page.getByRole('button', { name: 'End half a second later' }).click();
+  await expect(page.getByLabel('End, seconds')).toHaveValue('0.5');
+});
+
 test('a clip with no playable URL says so instead of showing a broken player', async ({ page }) => {
   // The free tier's normal case: the file is on the worker, and this browser is
   // not on the worker's machine.
