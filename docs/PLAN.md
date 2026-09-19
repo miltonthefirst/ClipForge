@@ -1392,6 +1392,10 @@ scorer just produces bad clips faster.
 **Exit criteria.** A manual trend run produces a ranked opportunity list; promoting one creates a normal
 job; quota consumption is bounded and displayed; nothing runs without a human trigger.
 
+> *Nothing runs without a human trigger* is read, since ADR-0023, as: nothing that produces a clip.
+> A person may set a research run on a timer; what the run produces is a list, and every step from
+> the list is still a press.
+
 **Delivered** (2026-09-19), and run once for real against the live feeds on the emulator: 61 signals
 from three providers, 8 rows ranked in under a minute (most of it looking up the videos Reddit
 linked), all 8 explained by the model in 37 seconds. That
@@ -1413,6 +1417,15 @@ strength, recency, and whether there is video to cut. Channel size has no eviden
 a predictor, and Phase 9's posture applies. The exit criteria hold as written: the run is manual, the
 list is ranked, promoting creates a normal job, and the worst case is a bounded number of requests
 — twelve topics, ten lookups each, thirty rows — reported per provider on the stage's checkpoint.
+
+**And on a schedule** (later the same day). A `ResearchSchedule` document — name, cadence, the same
+options as a manual run — that the worker fires on its own while it is running, creating an
+ordinary `RESEARCH` job marked with the schedule's id. Two cadences: every N hours (six to a
+week) or daily at a time of day in the browser's zone. Firing is a transaction so two workers
+cannot fire one schedule twice; a run still going is deferred rather than fired over; a worker
+that was off fires each due schedule once on return. This is the first thing in ClipForge that
+starts work unasked, and it starts the one kind of work that changes nothing — the list still goes
+no further than the Trends page. See [ADR-0023](adr/0023-research-on-a-schedule.md).
 
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list

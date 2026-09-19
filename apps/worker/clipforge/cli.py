@@ -47,6 +47,7 @@ def run(
     from clipforge.media.workspace import Workspace
     from clipforge.publish.channels import ChannelRoutes
     from clipforge.scheduler.control import WorkerRoutes
+    from clipforge.scheduler.schedule import ResearchScheduler
     from clipforge.scheduler.storage import StorageRoutes
     from clipforge.scheduler.worker import Worker
     from clipforge.stages.pipeline import build_registry_factory
@@ -58,6 +59,7 @@ def run(
         JobStore,
         PreferenceStore,
         PublicationStore,
+        ScheduleStore,
         SourceStore,
         TrendStore,
         WorkerStore,
@@ -82,6 +84,11 @@ def run(
         # the record and the file are removed separately and deliberately.
         clips=ClipStore(client, settings),
         trash=Trash(workspace.trash_dir),
+        # The standing research schedules, fired from here because this is
+        # the only process that runs unattended and can also run the job.
+        research_scheduler=ResearchScheduler(
+            schedules=ScheduleStore(client, settings), jobs=JobStore(client, settings)
+        ),
         registry_factory=build_registry_factory(
             settings=settings,
             sources=SourceStore(client, settings),

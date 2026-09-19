@@ -572,8 +572,13 @@ def new_research_job(
     options: ResearchOptions,
     job_id: str | None = None,
     max_attempts: int = 2,
+    schedule_id: str | None = None,
 ) -> Job:
-    """Build a RESEARCH job. Two attempts: the failures worth retrying are network ones."""
+    """Build a RESEARCH job. Two attempts: the failures worth retrying are network ones.
+
+    ``schedule_id`` names the schedule that fired it, when one did. The job is
+    otherwise identical to one a person created, which is the point.
+    """
     now = datetime.now(UTC)
     return Job(
         id=job_id or uuid.uuid4().hex,
@@ -581,6 +586,7 @@ def new_research_job(
         type=JobType.RESEARCH,
         status=JobStatus.QUEUED,
         research_options=options,
+        schedule_id=schedule_id,
         stages=clip_stages(RESEARCH_PIPELINE),
         attempts=0,
         max_attempts=max_attempts,

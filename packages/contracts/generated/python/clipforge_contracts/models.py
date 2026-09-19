@@ -1935,6 +1935,68 @@ class AppliedCompile(BaseModel):
     trend_id: str | None = Field(None, alias="trendId")
 
 
+class ScheduleCadence(StrEnum):
+    """
+    How often an automatic research run fires. INTERVAL is every N hours from whenever it last ran; DAILY is at a wall-clock time in a named timezone, which is what 'every morning' means to a person and what an interval cannot express across a clock change.
+    """
+
+    INTERVAL = "INTERVAL"
+    DAILY = "DAILY"
+
+
+class ResearchSchedule(BaseModel):
+    """
+    A standing request for research, at schedules/{scheduleId}: what to look for and how often. The worker fires it by creating an ordinary RESEARCH job, so a scheduled run is indistinguishable from a manual one except for the job's scheduleId. The client owns the request — name, cadence, options, whether it is on — and the worker owns the record of what it did with it. Nothing a schedule produces goes further than the Trends page: promoting a video is still a person's press.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    uid: str = Field(..., min_length=1)
+    """
+    Who set it up. Runs it fires are attributed to this account.
+    """
+    name: str = Field(..., max_length=80, min_length=1)
+    enabled: bool
+    cadence: ScheduleCadence
+    every_hours: int | None = Field(None, alias="everyHours", ge=6, le=168)
+    """
+    For INTERVAL. Six hours is the floor: the feeds this reads are daily and a run every hour would rank the same signals twelve times.
+    """
+    at: str | None = Field(None, pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    """
+    For DAILY: HH:MM, 24-hour, in `timezone`.
+    """
+    timezone: str | None = Field(None, max_length=64)
+    """
+    An IANA zone name, e.g. Europe/London, for DAILY. Recorded from the browser that set the schedule; the worker computes the next occurrence in it. An unknown zone falls back to UTC and says so in lastOutcome.
+    """
+    options: ResearchOptions
+    """
+    Exactly what a manual run would ask for.
+    """
+    next_due_at: AwareDatetime | None = Field(None, alias="nextDueAt")
+    """
+    When the worker should fire it next. Set by the client on create and edit so the first run is predictable, and rewritten by the worker after each firing. Null means 'as soon as a worker looks'.
+    """
+    last_run_at: AwareDatetime | None = Field(None, alias="lastRunAt")
+    """
+    Worker-owned.
+    """
+    last_job_id: str | None = Field(None, alias="lastJobId")
+    """
+    Worker-owned. The RESEARCH job the last firing created, so the page can link to its list.
+    """
+    last_outcome: str | None = Field(None, alias="lastOutcome", max_length=300)
+    """
+    Worker-owned. One sentence on what the last tick did with this schedule — fired it, or why not: the previous run was still going, the worker was stopped, the timezone was unknown.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    updated_at: AwareDatetime = Field(..., alias="updatedAt")
+
+
 class AppliedMusic(BaseModel):
     """
     What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.
@@ -2294,6 +2356,10 @@ class Job(BaseModel):
     """
     What a COMPILE job should make, and from what. Null for every other job type.
     """
+    schedule_id: str | None = Field(None, alias="scheduleId")
+    """
+    The ResearchSchedule that fired this job, when one did. Null on a job a person created. Provenance: the Trends page labels a run the worker started on its own, because a list nobody asked for this morning reads differently from one somebody did.
+    """
     publish_options: PublishOptions | None = Field(None, alias="publishOptions")
     """
     Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
@@ -2365,3 +2431,4 @@ class ClipForgeContracts(BaseModel):
     llm_trend_verdict: LlmTrendVerdict | None = Field(None, alias="llmTrendVerdict")
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")
     applied_compile: AppliedCompile | None = Field(None, alias="appliedCompile")
+    research_schedule: ResearchSchedule | None = Field(None, alias="researchSchedule")

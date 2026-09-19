@@ -41,6 +41,7 @@ from clipforge_contracts import (
     PreferenceStatus,
     Publication,
     PublicationState,
+    ResearchSchedule,
     ReviewState,
     Source,
     SourceKind,
@@ -76,6 +77,7 @@ EVENTS = "events"
 METRICS = "metrics"
 CALIBRATIONS = "calibrations"
 TRENDS = "trends"
+SCHEDULES = "schedules"
 
 
 def firestore_client(settings: Settings) -> firestore.Client:
@@ -110,7 +112,8 @@ def _to_document(
     | Publication
     | MetricSnapshot
     | CalibrationReport
-    | Trend,
+    | Trend
+    | ResearchSchedule,
 ) -> dict[str, Any]:
     """Model to Firestore document.
 
@@ -875,6 +878,135 @@ class TrendStore:
                     self._db.collection(TRENDS).document(trend_id).update({"rank": rank})
                 except gcloud_exceptions.NotFound:
                     log.info("trends.rerank_gone", trend_id=trend_id)
+
+
+class ScheduleStore:
+    """Standing research requests at ``schedules/{scheduleId}``.
+
+    The client writes the request and the worker writes what it did with it;
+    the two halves never overlap, and the rules pin the client to its half.
+    Firing is a transaction for the same reason claiming a job is: two workers
+    can read the same due schedule in the same minute, and exactly one of them
+    may create the job.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def get(self, schedule_id: str) -> ResearchSchedule | None:
+        snapshot = self._db.collection(SCHEDULES).document(schedule_id).get()
+        if not snapshot.exists:
+            return None
+        return _read(ResearchSchedule, snapshot.to_dict() or {})
+
+    def enabled(self, *, limit: int = 50) -> list[ResearchSchedule]:
+        """Every schedule that is switched on. Due-ness is decided in memory:
+        a range on ``nextDueAt`` beside the equality would need a composite
+        index for a collection of a handful of rows."""
+        query = (
+            self._db.collection(SCHEDULES)
+            .where(filter=firestore.FieldFilter("enabled", "==", True))
+            .limit(limit)
+        )
+        found: list[ResearchSchedule] = []
+        for doc in query.stream():
+            try:
+                found.append(_read(ResearchSchedule, doc.to_dict() or {}))
+            except ValidationError as exc:
+                # One malformed schedule must not stop the others firing.
+                log.warning("schedules.unreadable", schedule_id=doc.id, error=str(exc)[:200])
+        return found
+
+    def fire(
+        self,
+        schedule: ResearchSchedule,
+        job: Job,
+        *,
+        next_due: datetime,
+        now: datetime,
+        outcome: str,
+    ) -> bool:
+        """Create the job and advance the schedule, atomically.
+
+        Returns False when the schedule is no longer as it was read — fired by
+        another worker, disabled, edited, deleted — in which case nothing is
+        written. Re-checking inside the transaction is the whole trick, as it
+        is for claiming a job.
+        """
+        schedule_ref = self._db.collection(SCHEDULES).document(schedule.id)
+        job_ref = self._db.collection(JOBS).document(job.id)
+        expected = schedule.next_due_at
+
+        @firestore.transactional
+        def _fire(transaction: firestore.Transaction) -> bool:
+            snapshot = schedule_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return False
+            data = snapshot.to_dict() or {}
+            if not data.get("enabled", False):
+                return False
+            current = _as_aware(data.get("nextDueAt"))
+            if not _same_instant(current, expected):
+                return False
+            transaction.set(job_ref, _to_document(job))
+            transaction.update(
+                schedule_ref,
+                {
+                    "nextDueAt": next_due,
+                    "lastRunAt": now,
+                    "lastJobId": job.id,
+                    "lastOutcome": outcome[:300],
+                    "updatedAt": now,
+                },
+            )
+            return True
+
+        try:
+            return bool(_fire(self._db.transaction()))
+        except Exception as exc:
+            if _is_contention(exc):
+                return False
+            raise
+
+    def record(
+        self,
+        schedule_id: str,
+        *,
+        outcome: str,
+        next_due: datetime | None,
+        now: datetime,
+    ) -> None:
+        """What a tick decided about a schedule it did not fire."""
+        changes: dict[str, Any] = {"lastOutcome": outcome[:300], "updatedAt": now}
+        if next_due is not None:
+            changes["nextDueAt"] = next_due
+        try:
+            self._db.collection(SCHEDULES).document(schedule_id).update(changes)
+        except gcloud_exceptions.NotFound:
+            log.info("schedules.record_gone", schedule_id=schedule_id)
+
+
+def _as_aware(value: Any) -> datetime | None:
+    """A Firestore timestamp, an ISO string from the PWA, or nothing."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _same_instant(a: datetime | None, b: datetime | None) -> bool:
+    """Equal to the second. Firestore keeps nanoseconds and the contract keeps
+    microseconds, and a comparison that noticed the difference would refuse
+    every firing."""
+    if a is None or b is None:
+        return a is None and b is None
+    return abs((a - b).total_seconds()) < 1.0
 
 
 class ClipStore:

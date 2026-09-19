@@ -226,6 +226,13 @@ class Settings(BaseSettings):
     research_google_trends: bool = True
     research_reddit: bool = True
     research_youtube: bool = True
+    # Whether this worker fires the standing schedules in `schedules/`. On by
+    # default: a schedule is something a person set up on purpose, and a
+    # worker that silently ignored it would be the surprise. Off for a second
+    # worker that should only run jobs, or a machine that must never start
+    # work unasked. The tick is a single read of a handful of rows.
+    research_schedules_enabled: bool = True
+    schedule_tick_seconds: int = Field(default=60, ge=10)
 
     # ── Observability ────────────────────────────────────────────────────────
     log_level: str = "INFO"

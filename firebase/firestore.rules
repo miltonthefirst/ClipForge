@@ -437,7 +437,12 @@ service cloud.firestore {
     // bounded, because every topic is a search against somebody else's server
     // and the worst case has to be a known number of requests.
     function researchOptionsOk() {
-      let options = request.resource.data.get('researchOptions', null);
+      return researchOptionsShapeOk(request.resource.data.get('researchOptions', null));
+    }
+
+    // The same shape, wherever it appears: on a job, and on the schedule that
+    // will one day put it on a job.
+    function researchOptionsShapeOk(options) {
       return options != null
              && options.keys().hasOnly(
                   ['topics', 'region', 'lookbackHours', 'videosPerTopic', 'maxTrends',
@@ -717,6 +722,66 @@ service cloud.firestore {
     }
 
     // ── Clips ────────────────────────────────────────────────────────────────
+    // ── Schedules ────────────────────────────────────────────────────────────
+    // A standing request for research. The client owns the request — what to
+    // look for, how often, whether it is on — and the worker owns the record
+    // of what it did with it (lastRunAt, lastJobId, lastOutcome). Any approved
+    // member may edit any schedule, as with jobs: one workspace, one channel's
+    // worth of curiosity. The shape is checked because everything in `options`
+    // reaches three outside services and yt-dlp on the worker, on a timer,
+    // with nobody watching.
+    function timeOfDayOk(value) {
+      return value is string && value.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+
+    function everyHoursOk(value) {
+      return value is int && value >= 6 && value <= 168;
+    }
+
+    function scheduleOk() {
+      let s = request.resource.data;
+      return s.keys().hasOnly(
+               ['id', 'uid', 'name', 'enabled', 'cadence', 'everyHours', 'at', 'timezone',
+                'options', 'nextDueAt', 'lastRunAt', 'lastJobId', 'lastOutcome',
+                'createdAt', 'updatedAt'])
+             && s.name is string && s.name.size() > 0 && s.name.size() <= 80
+             && s.enabled is bool
+             && s.cadence in ['INTERVAL', 'DAILY']
+             // The field the cadence needs has to be there; the other may be.
+             && (s.cadence != 'INTERVAL' || everyHoursOk(s.get('everyHours', null)))
+             && (s.cadence != 'DAILY' || timeOfDayOk(s.get('at', null)))
+             && (s.get('everyHours', null) == null || everyHoursOk(s.everyHours))
+             && (s.get('at', null) == null || timeOfDayOk(s.at))
+             && (s.get('timezone', null) == null
+                 || (s.timezone is string && s.timezone.size() <= 64))
+             && researchOptionsShapeOk(s.get('options', null))
+             && (s.get('nextDueAt', null) == null || s.nextDueAt is string)
+             && s.createdAt is string
+             && s.updatedAt is string;
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if isApproved();
+
+      // Created blank on the worker's side: a schedule cannot arrive claiming
+      // to have already run.
+      allow create: if ownsIncoming()
+                    && scheduleOk()
+                    && request.resource.data.get('lastRunAt', null) == null
+                    && request.resource.data.get('lastJobId', null) == null
+                    && request.resource.data.get('lastOutcome', null) == null;
+
+      // Everything about the request may change; nothing about the record may,
+      // and neither may who set it up.
+      allow update: if isApproved()
+                    && scheduleOk()
+                    && changed().hasOnly(
+                         ['name', 'enabled', 'cadence', 'everyHours', 'at', 'timezone',
+                          'options', 'nextDueAt', 'updatedAt']);
+
+      allow delete: if isApproved();
+    }
+
     // ── Trends ───────────────────────────────────────────────────────────────
     // What a RESEARCH run found, one row per topic. Written by the worker:
     // the score, the rank, the videos and what the model said are all

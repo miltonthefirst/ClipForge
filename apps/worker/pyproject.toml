@@ -35,6 +35,11 @@ dependencies = [
     # arithmetic (clipforge/media/beats.py) and must work without the `gpu`
     # extra, which is where numpy would otherwise arrive from.
     "numpy>=1.26",
+    # The IANA time zone database, for research schedules that fire "daily at
+    # 07:30 in Europe/London". Python's zoneinfo reads the system database on
+    # Linux and macOS; Windows has none, so without this every zone name is
+    # unknown there — including "UTC" — and the reference machine is Windows.
+    "tzdata>=2025.1",
     # The wire protocol, generated from packages/contracts/schemas/clipforge.json.
     # A path dependency rather than a copied module: the PWA and the worker are
     # two implementations of one protocol and must not be able to drift.

@@ -257,6 +257,10 @@ export type TrendSource1 = 'GOOGLE_TRENDS' | 'REDDIT' | 'YOUTUBE';
  * What a person decided about a trend. NEW is nothing yet. PROMOTED means at least one video from it was sent to the pipeline. DISMISSED is a considered no, kept so the next run does not offer the same thing again as though it were news.
  */
 export type TrendStatus = 'NEW' | 'PROMOTED' | 'DISMISSED';
+/**
+ * How often an automatic research run fires. INTERVAL is every N hours from whenever it last ran; DAILY is at a wall-clock time in a named timezone, which is what 'every morning' means to a person and what an interval cannot express across a clock change.
+ */
+export type ScheduleCadence = 'INTERVAL' | 'DAILY';
 
 /**
  * The complete ClipForge wire protocol. The PWA and the worker are two independent implementations of the types defined here; both are generated from this file, so neither can drift from it. See docs/adr/0005-single-source-contracts.md. Every timestamp is an ISO 8601 date-time string, NOT a Firestore Timestamp: the store adapters convert at the boundary, which keeps this document language-neutral and lets the unit tier compare documents as plain JSON with no emulator running.
@@ -291,6 +295,7 @@ export interface ClipForgeContracts {
   llmTrendVerdict?: LlmTrendVerdict;
   compileOptions?: CompileOptions;
   appliedCompile?: AppliedCompile;
+  researchSchedule?: ResearchSchedule;
 }
 /**
  * One pipeline run over one source. Stored at jobs/{jobId}.
@@ -331,6 +336,10 @@ export interface Job {
    * What a COMPILE job should make, and from what. Null for every other job type.
    */
   compileOptions?: CompileOptions | null;
+  /**
+   * The ResearchSchedule that fired this job, when one did. Null on a job a person created. Provenance: the Trends page labels a run the worker started on its own, because a list nobody asked for this morning reads differently from one somebody did.
+   */
+  scheduleId?: string | null;
   /**
    * Set by the client on a PUBLISH job. Null for every other job type, and null here means 'use the channel defaults'.
    */
@@ -2457,4 +2466,124 @@ export interface LlmTrendVerdict {
   relevance: number;
   worthClipping: boolean;
   compilationTitle: string;
+}
+/**
+ * A standing request for research, at schedules/{scheduleId}: what to look for and how often. The worker fires it by creating an ordinary RESEARCH job, so a scheduled run is indistinguishable from a manual one except for the job's scheduleId. The client owns the request — name, cadence, options, whether it is on — and the worker owns the record of what it did with it. Nothing a schedule produces goes further than the Trends page: promoting a video is still a person's press.
+ */
+export interface ResearchSchedule {
+  id: string;
+  /**
+   * Who set it up. Runs it fires are attributed to this account.
+   */
+  uid: string;
+  name: string;
+  enabled: boolean;
+  cadence: ScheduleCadence;
+  /**
+   * For INTERVAL. Six hours is the floor: the feeds this reads are daily and a run every hour would rank the same signals twelve times.
+   */
+  everyHours?: number | null;
+  /**
+   * For DAILY: HH:MM, 24-hour, in `timezone`.
+   */
+  at?: string | null;
+  /**
+   * An IANA zone name, e.g. Europe/London, for DAILY. Recorded from the browser that set the schedule; the worker computes the next occurrence in it. An unknown zone falls back to UTC and says so in lastOutcome.
+   */
+  timezone?: string | null;
+  options: ResearchOptions1;
+  /**
+   * When the worker should fire it next. Set by the client on create and edit so the first run is predictable, and rewritten by the worker after each firing. Null means 'as soon as a worker looks'.
+   */
+  nextDueAt?: string | null;
+  /**
+   * Worker-owned.
+   */
+  lastRunAt?: string | null;
+  /**
+   * Worker-owned. The RESEARCH job the last firing created, so the page can link to its list.
+   */
+  lastJobId?: string | null;
+  /**
+   * Worker-owned. One sentence on what the last tick did with this schedule — fired it, or why not: the previous run was still going, the worker was stopped, the timezone was unknown.
+   */
+  lastOutcome?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+/**
+ * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
+ */
+export interface ResearchOptions1 {
+  /**
+   * What the channel is about, in the operator's words. Each one is searched on YouTube and used to judge relevance; with none, the run reports what is trending regardless.
+   *
+   * @maxItems 12
+   */
+  topics?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string, string]
+    | [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string
+      ];
+  /**
+   * ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US.
+   */
+  region?: string;
+  lookbackHours?: number;
+  videosPerTopic?: number;
+  maxTrends?: number;
+  /**
+   * Which providers to ask. Null asks every one that is configured.
+   *
+   * @maxItems 3
+   */
+  sources?:
+    | []
+    | [TrendSource]
+    | [TrendSource, TrendSource]
+    | [TrendSource, TrendSource, TrendSource]
+    | null;
+  /**
+   * Where on Reddit to look. Empty uses the worker's configured defaults.
+   *
+   * @maxItems 10
+   */
+  subreddits?:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string, string, string];
+  /**
+   * Whether to run the model over the ranked list. Off is faster and costs no GPU; the list is still ranked, just not explained.
+   */
+  curate?: boolean;
 }

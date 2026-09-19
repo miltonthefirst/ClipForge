@@ -70,15 +70,179 @@
       </span>
     </label>
 
-    <button
-      type="submit"
-      class="ml-auto rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
-      [disabled]="starting()"
-    >
-      {{ starting() ? 'Asking…' : "Find what's trending" }}
-    </button>
+    <div class="ml-auto flex flex-wrap gap-2">
+      <button
+        type="button"
+        class="rounded-lg border border-line-strong px-4 py-2.5 text-sm text-ink-muted hover:bg-line"
+        (click)="showSchedule.set(!showSchedule())"
+      >
+        {{ showSchedule() ? 'Not now' : 'Do this automatically…' }}
+      </button>
+      <button
+        type="submit"
+        class="rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+        [disabled]="starting()"
+      >
+        {{ starting() ? 'Asking…' : "Find what's trending" }}
+      </button>
+    </div>
   </div>
+
+  <!-- ── The standing version of the same question ─────────────────────────
+       Saved with the specifics above, plus how often. The worker fires it;
+       what it produces still only ever reaches this page. -->
+  @if (showSchedule()) {
+    <div class="mt-4 rounded-lg border border-line bg-panel-soft p-4">
+      <p class="text-sm text-ink">
+        Save the settings above as a schedule. The worker runs it on its own while it is on, and
+        each run turns up here like a manual one. Nothing is sent to the pipeline without you.
+      </p>
+      <div class="mt-3 flex flex-wrap items-end gap-4">
+        <label class="block text-sm">
+          <span class="text-ink-muted">Name</span>
+          <input
+            class="mt-1 block w-48 rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+            type="text"
+            name="scheduleName"
+            maxlength="80"
+            placeholder="Mornings"
+            [ngModel]="scheduleName()"
+            (ngModelChange)="scheduleName.set($event)"
+          />
+        </label>
+
+        <fieldset class="text-sm">
+          <legend class="text-ink-muted">How often</legend>
+          <div class="mt-1 flex flex-wrap gap-3">
+            <label class="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="scheduleCadence"
+                [checked]="scheduleCadence() === 'DAILY'"
+                (change)="scheduleCadence.set('DAILY')"
+              />
+              Daily at
+              <input
+                class="w-28 rounded-lg border border-line-strong bg-canvas px-2 py-1.5 text-ink"
+                type="time"
+                name="scheduleAt"
+                [ngModel]="scheduleAt()"
+                (ngModelChange)="scheduleAt.set($event)"
+                [disabled]="scheduleCadence() !== 'DAILY'"
+              />
+              <span class="text-xs text-ink-subtle">{{ zone }}</span>
+            </label>
+            <label class="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="scheduleCadence"
+                [checked]="scheduleCadence() === 'INTERVAL'"
+                (change)="scheduleCadence.set('INTERVAL')"
+              />
+              <select
+                class="rounded-lg border border-line-strong bg-canvas px-2 py-1.5 text-ink"
+                name="scheduleEvery"
+                [ngModel]="scheduleEvery()"
+                (ngModelChange)="scheduleEvery.set(+$event)"
+                [disabled]="scheduleCadence() !== 'INTERVAL'"
+              >
+                @for (option of intervals; track option.hours) {
+                  <option [ngValue]="option.hours">{{ option.label }}</option>
+                }
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <button
+          type="button"
+          class="rounded-lg bg-forge-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+          [disabled]="savingSchedule() || scheduleTrouble().length > 0"
+          (click)="saveSchedule()"
+        >
+          {{ savingSchedule() ? 'Saving…' : 'Save schedule' }}
+        </button>
+      </div>
+      @if (scheduleTrouble().length) {
+        <p class="mt-2 text-xs text-ink-subtle">{{ scheduleTrouble()[0] }}</p>
+      }
+    </div>
+  }
 </form>
+
+<!-- ── What runs on its own ──────────────────────────────────────────────── -->
+@if (scheduleRows(); as standing) {
+  @if (standing.length) {
+    <section class="mt-6">
+      <h2 class="text-sm font-semibold">Automatic</h2>
+      <ul class="mt-2 space-y-2">
+        @for (row of standing; track row.schedule.id) {
+          <li
+            class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-line bg-panel px-4 py-3"
+            [class.opacity-60]="!row.schedule.enabled"
+          >
+            <div class="min-w-0 flex-1">
+              <p class="text-sm font-medium text-ink">
+                {{ row.schedule.name }}
+                <span class="font-normal text-ink-subtle">· {{ row.cadence }}</span>
+              </p>
+              <p class="mt-0.5 truncate text-xs text-ink-subtle">
+                {{ row.topics }} · {{ row.schedule.options.region || 'US' }} ·
+                @if (row.schedule.enabled) {
+                  next {{ row.next }}
+                } @else {
+                  off
+                }
+                @if (row.schedule.lastJobId) {
+                  ·
+                  <a
+                    [routerLink]="['/trends']"
+                    [queryParams]="{ run: row.schedule.lastJobId }"
+                    class="text-accent-ink hover:underline"
+                    >last run</a
+                  >
+                }
+                @if (row.schedule.lastOutcome; as said) {
+                  · {{ said }}
+                }
+              </p>
+            </div>
+            <div class="flex shrink-0 gap-3 text-xs">
+              <button
+                type="button"
+                class="text-ink-subtle hover:text-ink-muted disabled:opacity-50"
+                [disabled]="scheduleBusy() === row.schedule.id"
+                (click)="runScheduleNow(row)"
+              >
+                Run now
+              </button>
+              <button
+                type="button"
+                class="text-ink-subtle hover:text-ink-muted disabled:opacity-50"
+                [disabled]="scheduleBusy() === row.schedule.id"
+                (click)="toggleSchedule(row)"
+              >
+                {{ row.schedule.enabled ? 'Switch off' : 'Switch on' }}
+              </button>
+              <button
+                type="button"
+                class="text-ink-subtle hover:text-danger-ink disabled:opacity-50"
+                [disabled]="scheduleBusy() === row.schedule.id"
+                (click)="deleteSchedule(row)"
+              >
+                Delete
+              </button>
+            </div>
+          </li>
+        }
+      </ul>
+      <p class="mt-2 text-xs text-ink-subtle">
+        A schedule fires only while the worker is running. A worker that was off fires each due
+        schedule once when it comes back, not once per missed slot.
+      </p>
+    </section>
+  }
+}
 
 @if (error(); as message) {
   <p
@@ -104,8 +268,11 @@
           "
           [attr.aria-current]="selectedRun()?.id === job.id ? 'page' : null"
           [title]="label(job)"
-          >{{ when(job) }}</a
-        >
+          >{{ when(job) }}
+          @if (job.scheduleId) {
+            <span class="ml-1 text-xs text-ink-subtle">auto</span>
+          }
+        </a>
       }
     </nav>
   }

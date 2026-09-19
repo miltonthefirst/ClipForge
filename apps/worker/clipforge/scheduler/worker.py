@@ -51,6 +51,7 @@ from clipforge.models.vram import probe_vram
 from clipforge.observability import bind_job, get_logger
 from clipforge.scheduler import lease
 from clipforge.scheduler.runner import LeaseLostError, StageRunner
+from clipforge.scheduler.schedule import ResearchScheduler
 from clipforge.scheduler.tidy import tidy_reviewed_clips
 from clipforge.stages.base import StageProgress, StageRegistry
 from clipforge.stages.echo import registry_for
@@ -76,6 +77,9 @@ class Worker:
         # the worker simply does not tidy, which is the behaviour it had before.
         clips: ClipStore | None = None,
         trash: Trash | None = None,
+        # Fires the standing research schedules. Optional for the same reason:
+        # a worker built without one never starts work unasked.
+        research_scheduler: ResearchScheduler | None = None,
         uid: str = "local",
         poll_interval_s: float = 1.0,
         registry_factory: Callable[[JobType], StageRegistry] = registry_for,
@@ -86,6 +90,7 @@ class Worker:
         self._broker = broker or ModelBroker(reserve_mb=settings.vram_reserve_mb)
         self._clips = clips
         self._trash = trash
+        self._research_scheduler = research_scheduler
         self._uid = uid
         self._poll_interval_s = poll_interval_s
         # Injected so tests can supply stage behaviour that is awkward to
@@ -180,6 +185,8 @@ class Worker:
 
         self._spawn(self._heartbeat_loop, "heartbeat")
         self._spawn(self._reaper_loop, "reaper")
+        if self._research_scheduler is not None and self._settings.research_schedules_enabled:
+            self._spawn(self._schedule_loop, "schedule")
 
         pool = ThreadPoolExecutor(
             max_workers=self._settings.cpu_lane_depth, thread_name_prefix="job"
@@ -352,6 +359,27 @@ class Worker:
                 log.info("reaper.reclaimed", jobs=[j.id for j in reaped])
 
             self._tidy_once()
+
+    def _schedule_loop(self) -> None:
+        """Fire whatever research is due, on its own cadence.
+
+        Its own thread rather than the reaper's, because it is the one loop
+        here that *creates* work, and a person switching a schedule off wants
+        the next tick to notice within a minute — not within whatever the
+        reaper's interval happens to be.
+
+        Guarded like the heartbeat: a bad minute on the network must not kill
+        the thread, because a dead schedule thread never comes back and the
+        symptom — a morning with no list — is indistinguishable from a worker
+        that was off.
+        """
+        while not self._stop.wait(self._settings.schedule_tick_seconds):
+            if self._research_scheduler is None:
+                return
+            try:
+                self._research_scheduler.tick()
+            except Exception:
+                log.exception("schedule.tick_failed")
 
     def _tidy_once(self) -> None:
         """Collect the clips a review decision has already settled.

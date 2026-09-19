@@ -301,8 +301,15 @@ and joins what it cut. The result is a clip like any other: it arrives in the re
 the phone, takes music, publishes. Its page lists every piece, the window that was cut, and whose
 idea each window was, so a compilation that came out wrong says which piece to change.
 
-**What it refuses to do.** Run on its own. Nothing here is scheduled, and nothing is published;
-the list is a proposal and every step from it is a press. A dead link among the pieces is left out
+**Or on a schedule.** *Do this automatically…* under the same form saves its settings as a
+schedule — daily at a time of day, or every so many hours — and the worker fires it on its own
+while it is running. Each run turns up on the Trends page marked *auto*, exactly like a manual one.
+A worker that was off fires each due schedule once when it comes back, not once per missed
+slot, and a run still going is never fired over. See
+[ADR-0023](docs/adr/0023-research-on-a-schedule.md).
+
+**What it refuses to do.** Go further than the list. Nothing is promoted, compiled or published
+without a press; a schedule produces a proposal on a timer, and every step from it is yours. A dead link among the pieces is left out
 and named rather than failing the lot; fewer than two pieces is a clip, not a compilation, and is
 refused as such. A compilation cannot be *remade* — there is no single source to re-cut from — and
 its page says so and points at the Compile page instead.

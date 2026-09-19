@@ -11,13 +11,29 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
-import type { Job, ResearchOptions, Trend, TrendVideo } from '@clipforge/contracts';
+import type {
+  Job,
+  ResearchOptions,
+  ResearchSchedule,
+  ScheduleCadence,
+  Trend,
+  TrendVideo,
+} from '@clipforge/contracts';
 
 import { CompileBasketService } from '../../core/compile-basket';
 import { JobsRepository, newestFirst } from '../../core/data/jobs';
 import { ResearchRepository, byRank } from '../../core/data/research';
+import { SchedulesRepository, byName } from '../../core/data/schedules';
 import type { Live } from '../../core/firestore/gateway';
 import { jobNote, queueFailure } from '../../core/job-list';
+import {
+  INTERVALS,
+  browserTimezone,
+  describeCadence,
+  describeNext,
+  scheduleProblems,
+  type ScheduleDraft,
+} from '../../core/schedule-plan';
 import { SessionService } from '../../core/session';
 import {
   DEFAULT_RESEARCH,
@@ -42,6 +58,14 @@ interface VideoRow {
   readonly length: string | null;
   readonly inBasket: boolean;
   readonly queued: boolean;
+}
+
+/** One standing schedule, with its sentences worked out. */
+interface ScheduleRow {
+  readonly schedule: ResearchSchedule;
+  readonly cadence: string;
+  readonly next: string;
+  readonly topics: string;
 }
 
 /** One trend card. */
@@ -79,6 +103,7 @@ interface TrendRow {
 })
 export class TrendsPage implements OnDestroy {
   private readonly research = inject(ResearchRepository);
+  private readonly schedules = inject(SchedulesRepository);
   private readonly jobs = inject(JobsRepository);
   private readonly session = inject(SessionService);
   private readonly router = inject(Router);
@@ -98,6 +123,48 @@ export class TrendsPage implements OnDestroy {
   protected readonly lookbacks = LOOKBACKS;
 
   protected readonly topics = computed(() => parseTopics(this.topicsText()));
+
+  // ── The standing question ──────────────────────────────────────────────────
+  //
+  // The same specifics as the form above, plus a cadence. Saving turns what is
+  // typed into a schedule the worker fires on its own; the form is left as it
+  // is, so a manual run with the same settings is still one press away.
+
+  protected readonly showSchedule = signal(false);
+  protected readonly scheduleName = signal('');
+  protected readonly scheduleCadence = signal<ScheduleCadence>('DAILY');
+  protected readonly scheduleEvery = signal(24);
+  protected readonly scheduleAt = signal('07:30');
+  protected readonly savingSchedule = signal(false);
+  protected readonly scheduleBusy = signal<string | null>(null);
+  protected readonly intervals = INTERVALS;
+  protected readonly zone = browserTimezone();
+  protected readonly standing = signal<ResearchSchedule[] | null>(null);
+  private readonly heldSchedules = signal<Live<ResearchSchedule[]> | null>(null);
+
+  protected readonly scheduleDraft = computed<ScheduleDraft>(() => ({
+    name: this.scheduleName(),
+    cadence: this.scheduleCadence(),
+    everyHours: this.scheduleEvery(),
+    at: this.scheduleAt(),
+    options: this.currentOptions(),
+  }));
+
+  protected readonly scheduleTrouble = computed(() => scheduleProblems(this.scheduleDraft()));
+
+  protected readonly scheduleRows = computed<ScheduleRow[] | null>(() => {
+    const rows = this.standing();
+    if (rows === null) return null;
+    const now = Date.now();
+    return byName(rows).map((schedule) => ({
+      schedule,
+      cadence: describeCadence(schedule),
+      next: describeNext(schedule, now),
+      topics: schedule.options.topics?.length
+        ? schedule.options.topics.join(', ')
+        : 'whatever is trending',
+    }));
+  });
 
   // ── The answers ────────────────────────────────────────────────────────────
 
@@ -156,6 +223,29 @@ export class TrendsPage implements OnDestroy {
     });
 
     effect(() => {
+      const uid = this.session.uid;
+      untracked(() => this.heldSchedules())?.release();
+      this.heldSchedules.set(null);
+      this.standing.set(null);
+      if (!uid) return;
+      this.heldSchedules.set(this.schedules.watchSchedules());
+    });
+
+    effect(() => {
+      const held = this.heldSchedules();
+      if (!held) return;
+      // A failure here is not the page's failure: the list of runs still
+      // works, and the section simply does not appear.
+      if (held.error()) {
+        this.standing.set([]);
+        return;
+      }
+      const rows = held.data();
+      if (rows === null) return;
+      this.standing.set(rows);
+    });
+
+    effect(() => {
       const held = this.heldRuns();
       if (!held) return;
       const failure = held.error();
@@ -198,6 +288,7 @@ export class TrendsPage implements OnDestroy {
   ngOnDestroy(): void {
     this.heldRuns()?.release();
     this.heldTrends()?.release();
+    this.heldSchedules()?.release();
   }
 
   /**
@@ -257,10 +348,9 @@ export class TrendsPage implements OnDestroy {
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
-  protected async start(): Promise<void> {
-    const uid = this.session.uid;
-    if (!uid) return;
-    const options: ResearchOptions = {
+  /** What the form asks for, whether now or on a schedule. */
+  private currentOptions(): ResearchOptions {
+    return {
       topics: asTopics(this.topics()),
       region: this.region(),
       lookbackHours: this.lookback(),
@@ -270,6 +360,12 @@ export class TrendsPage implements OnDestroy {
       subreddits: [],
       curate: this.curate(),
     };
+  }
+
+  protected async start(): Promise<void> {
+    const uid = this.session.uid;
+    if (!uid) return;
+    const options = this.currentOptions();
     this.starting.set(true);
     this.error.set(null);
     try {
@@ -347,6 +443,67 @@ export class TrendsPage implements OnDestroy {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.busy.set(null);
+    }
+  }
+
+  // ── Schedules ──────────────────────────────────────────────────────────────
+
+  protected async saveSchedule(): Promise<void> {
+    const uid = this.session.uid;
+    if (!uid || this.scheduleTrouble().length) return;
+    this.savingSchedule.set(true);
+    this.error.set(null);
+    try {
+      await this.schedules.create(uid, this.scheduleDraft());
+      this.showSchedule.set(false);
+      this.scheduleName.set('');
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.savingSchedule.set(false);
+    }
+  }
+
+  protected async toggleSchedule(row: ScheduleRow): Promise<void> {
+    this.scheduleBusy.set(row.schedule.id);
+    this.error.set(null);
+    try {
+      await this.schedules.setEnabled(row.schedule, !row.schedule.enabled);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.scheduleBusy.set(null);
+    }
+  }
+
+  /** The schedule's own settings, once, now: a manual run wearing its clothes. */
+  protected async runScheduleNow(row: ScheduleRow): Promise<void> {
+    const uid = this.session.uid;
+    if (!uid) return;
+    this.scheduleBusy.set(row.schedule.id);
+    this.error.set(null);
+    try {
+      const id = await this.research.startResearch(uid, row.schedule.options);
+      await this.router.navigate(['/trends'], { queryParams: { run: id } });
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.scheduleBusy.set(null);
+    }
+  }
+
+  protected async deleteSchedule(row: ScheduleRow): Promise<void> {
+    if (!confirm(`Delete the schedule "${row.schedule.name}"? The lists it already made stay.`)) {
+      return;
+    }
+    this.scheduleBusy.set(row.schedule.id);
+    this.error.set(null);
+    try {
+      await this.schedules.remove(row.schedule.id);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.scheduleBusy.set(null);
     }
   }
 

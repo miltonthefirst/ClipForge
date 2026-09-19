@@ -188,3 +188,46 @@ test('a dismissed trend leaves the list and can be brought back', async ({ page 
   await page.getByRole('button', { name: 'Bring back' }).click();
   await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
 });
+
+test('saving the form as a schedule writes what the worker fires, and the list shows it', async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.goto('/trends');
+
+  await page.getByRole('textbox', { name: /What is this channel about/ }).fill('premier league');
+  await page.getByRole('button', { name: 'Do this automatically…' }).click();
+  await page.getByRole('textbox', { name: 'Name' }).fill('Mornings');
+  await page.getByRole('button', { name: 'Save schedule' }).click();
+  // The panel closes only once the write is acknowledged; the row below can
+  // appear earlier, from the listener's local echo of the pending write.
+  await expect(page.getByRole('button', { name: 'Do this automatically…' })).toBeVisible();
+
+  const row = page.locator('section', { hasText: 'Automatic' }).locator('li').first();
+  await expect(row).toContainText('Mornings');
+  await expect(row).toContainText('Daily at 07:30');
+  await expect(row).toContainText('premier league');
+
+  const schedules = (await listDocs('schedules')).map(unwrap) as {
+    name: string;
+    enabled: boolean;
+    cadence: string;
+    at: string | null;
+    everyHours: number | null;
+    timezone: string | null;
+    options: { topics: string[]; region: string };
+    lastJobId: string | null;
+  }[];
+  expect(schedules).toHaveLength(1);
+  expect(schedules[0]?.name).toBe('Mornings');
+  expect(schedules[0]?.enabled).toBe(true);
+  expect(schedules[0]?.cadence).toBe('DAILY');
+  expect(schedules[0]?.at).toBe('07:30');
+  expect(schedules[0]?.everyHours).toBeNull();
+  expect(typeof schedules[0]?.timezone).toBe('string');
+  expect(schedules[0]?.options.topics).toEqual(['premier league']);
+  expect(schedules[0]?.lastJobId).toBeNull();
+
+  await row.getByRole('button', { name: 'Switch off' }).click();
+  await expect(row).toContainText('off');
+});
