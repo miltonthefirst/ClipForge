@@ -6,23 +6,124 @@
   <app-worker-panel [queued]="queuedCount()" />
 </div>
 
-<form class="mt-4 flex gap-2" (ngSubmit)="submit()">
-  <input
-    class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-4 py-2.5 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
-    type="text"
-    name="submission"
-    placeholder="YouTube URL, or a file path on the worker"
-    autocomplete="off"
-    [ngModel]="submission()"
-    (ngModelChange)="submission.set($event)"
-  />
-  <button
-    type="submit"
-    class="rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
-    [disabled]="submitting() || !submission().trim()"
-  >
-    {{ submitting() ? 'Adding…' : 'Add' }}
-  </button>
+<form class="mt-4" (ngSubmit)="submit()">
+  <div class="flex gap-2">
+    <input
+      class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-4 py-2.5 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+      type="text"
+      name="submission"
+      placeholder="YouTube URL, or a file path on the worker"
+      autocomplete="off"
+      [ngModel]="submission()"
+      (ngModelChange)="submission.set($event)"
+    />
+    <button
+      type="button"
+      class="rounded-lg border px-3 py-2.5 text-sm hover:bg-line"
+      [class]="
+        briefOptions()
+          ? 'border-forge-500 bg-forge-600/10 text-ink'
+          : 'border-line-strong text-ink-muted'
+      "
+      [attr.aria-expanded]="showBrief()"
+      (click)="showBrief.set(!showBrief())"
+    >
+      What to look for
+    </button>
+    <button
+      type="submit"
+      class="rounded-lg bg-forge-600 px-5 py-2.5 font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+      [disabled]="submitting() || !submission().trim() || briefTrouble().length > 0"
+    >
+      {{ submitting() ? 'Adding…' : 'Add' }}
+    </button>
+  </div>
+
+  <!-- ── The brief ───────────────────────────────────────────────────────────
+       What to clip, how many, how long. A filter, not a hint: a brief that
+       matches nothing produces no clips and the job says so. It is read
+       against what is said, not what is shown. -->
+  @if (showBrief()) {
+    <div class="mt-3 rounded-xl border border-line bg-panel p-4">
+      <label class="block text-sm">
+        <span class="text-ink-muted">What to clip</span>
+        <textarea
+          class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+          rows="2"
+          name="instructions"
+          maxlength="1000"
+          placeholder="the goals and the penalty shout · where he talks about pricing · only the jokes"
+          [ngModel]="instructions()"
+          (ngModelChange)="instructions.set($event)"
+        ></textarea>
+        <span class="mt-1 block text-xs text-ink-subtle">
+          Only moments that fit come back; if nothing fits, the job finishes with no clips and says
+          so. It reads the words, not the picture — “the goals” works because commentary says goal.
+        </span>
+      </label>
+
+      <div class="mt-4 flex flex-wrap items-end gap-4">
+        <label class="block text-sm">
+          <span class="text-ink-muted">How many, at most</span>
+          <input
+            class="mt-1 block w-24 rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+            type="number"
+            name="maxClips"
+            min="1"
+            max="20"
+            step="1"
+            [ngModel]="maxClips()"
+            (ngModelChange)="maxClips.set(+$event)"
+          />
+        </label>
+
+        <label class="block text-sm">
+          <span class="text-ink-muted">How long</span>
+          <select
+            class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+            name="preset"
+            [ngModel]="preset()"
+            (ngModelChange)="choosePreset($event)"
+          >
+            @for (option of presets; track option.key) {
+              <option [value]="option.key">{{ option.label }}</option>
+            }
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+
+        <label class="block text-sm">
+          <span class="text-ink-muted">Shortest, s</span>
+          <input
+            class="mt-1 block w-24 rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+            type="number"
+            name="minDuration"
+            min="5"
+            max="180"
+            step="5"
+            [ngModel]="minDuration()"
+            (ngModelChange)="minDuration.set(+$event)"
+          />
+        </label>
+        <label class="block text-sm">
+          <span class="text-ink-muted">Longest, s</span>
+          <input
+            class="mt-1 block w-24 rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+            type="number"
+            name="maxDuration"
+            min="5"
+            max="180"
+            step="5"
+            [ngModel]="maxDuration()"
+            (ngModelChange)="maxDuration.set(+$event)"
+          />
+        </label>
+      </div>
+      @if (briefTrouble().length) {
+        <p class="mt-2 text-xs text-danger-ink">{{ briefTrouble()[0] }}</p>
+      }
+    </div>
+  }
 </form>
 
 @if (error(); as message) {

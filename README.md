@@ -273,6 +273,24 @@ seconds.
 the original; the clip stays the length you approved and the overrun is reported on it rather than
 absorbed. See [ADR-0013](docs/adr/0013-remake-as-a-job.md).
 
+### Saying what to clip
+
+The URL box on **Jobs** has a **What to look for** panel beside it: a brief in your own words
+("the goals and the penalty shout", "where he talks about pricing", "only the jokes"), how many
+clips at most, and how long each may be — a preset or a custom range. Leave it closed and the
+pipeline does what it always did.
+
+The brief is a **filter, not a hint**. Only moments that fit it come back, and a brief that
+matches nothing finishes the job with no clips and says so on the job page, rather than handing
+you the strongest unrelated moment. It reads the words, not the picture: "the goals" works because
+commentary says goal; "where the striker is offside" works only if somebody says so. Clips chosen
+under a brief carry their own prompt version, so the calibration never compares them against
+unguided ones. See [ADR-0024](docs/adr/0024-a-brief-on-the-job.md).
+
+```bash
+uv run --project apps/worker clipforge-worker submit URL --brief "the goals" --clips 3 --min 20 --max 45
+```
+
 ### Finding what to make, and making one clip from several
 
 Everything above starts with a URL you already had. **Trends** finds them. Say what the channel is

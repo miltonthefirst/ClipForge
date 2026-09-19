@@ -33,6 +33,7 @@ firebase emulators:start --config ../../firebase.json --project demo-clipforge -
 
 # Terminal 2
 uv run clipforge-worker submit          # enqueue an ECHO job, prints its id
+uv run clipforge-worker submit URL --brief "the goals" --clips 3 --min 20 --max 45
 uv run clipforge-worker run             # claim, run, heartbeat, reap; Ctrl-C to stop
 uv run clipforge-worker status <job-id> # the job document and its event log
 uv run clipforge-worker gpu             # what is currently holding VRAM

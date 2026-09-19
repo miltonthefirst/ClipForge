@@ -131,11 +131,19 @@ test('pressing Clip it creates an ordinary CLIP job from the video URL', async (
   await page.getByRole('button', { name: 'Clip it' }).first().click();
   await expect(page.getByRole('button', { name: 'Queued' })).toBeVisible();
 
-  const jobs = (await listDocs('jobs')).map(unwrap) as { type: string; submission?: string }[];
+  const jobs = (await listDocs('jobs')).map(unwrap) as {
+    type: string;
+    submission?: string;
+    clipOptions?: { instructions: string } | null;
+  }[];
   const clip = jobs.find((job) => job.type === 'CLIP');
   expect(clip?.submission).toBe('https://www.youtube.com/watch?v=t1aaaaaaaaa');
-  const trends = (await listDocs('trends')).map(unwrap) as { status: string }[];
-  expect(trends[0]?.status).toBe('PROMOTED');
+  // The model's angle rides along as the brief.
+  expect(clip?.clipOptions?.instructions).toBe('What a clip about brewers vs orioles would show.');
+  // The promotion is written after the job, and the button does not wait for it.
+  await expect
+    .poll(async () => ((await listDocs('trends')).map(unwrap)[0] as { status: string })?.status)
+    .toBe('PROMOTED');
 });
 
 test('Compile this gathers the trend and the Compile page makes a COMPILE job', async ({

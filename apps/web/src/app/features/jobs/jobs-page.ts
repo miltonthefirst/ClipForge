@@ -26,6 +26,14 @@ import {
   type StageProgress,
 } from '../../core/job-list';
 import { SessionService } from '../../core/session';
+import {
+  DEFAULT_BRIEF,
+  DURATION_PRESETS,
+  briefProblems,
+  presetFor,
+  toClipOptions,
+  type ClipBrief,
+} from '../../core/clip-brief';
 import { JOB_PAGE, JobsRepository } from '../../core/data/jobs';
 import type { Live } from '../../core/firestore/gateway';
 import { WorkerPanel } from './worker-panel';
@@ -72,6 +80,41 @@ export class JobsPage implements OnDestroy {
   protected readonly counts = signal<Record<JobTab, number> | null>(null);
   protected readonly submission = signal('');
   protected readonly error = signal<string | null>(null);
+
+  // ── The brief ──────────────────────────────────────────────────────────────
+  //
+  // What to look for, how many, how long. Folded away by default, because
+  // most submissions are still "clip whatever is good in this"; what is typed
+  // here rides on the job, and the count and lengths stay put between
+  // submissions so a session of similar videos is not a session of retyping.
+
+  protected readonly showBrief = signal(false);
+  protected readonly instructions = signal('');
+  protected readonly maxClips = signal(DEFAULT_BRIEF.maxClips);
+  protected readonly minDuration = signal(DEFAULT_BRIEF.minDurationSec);
+  protected readonly maxDuration = signal(DEFAULT_BRIEF.maxDurationSec);
+  protected readonly presets = DURATION_PRESETS;
+
+  protected readonly preset = computed(() => presetFor(this.minDuration(), this.maxDuration()));
+
+  protected readonly brief = computed<ClipBrief>(() => ({
+    instructions: this.instructions(),
+    maxClips: this.maxClips(),
+    minDurationSec: this.minDuration(),
+    maxDurationSec: this.maxDuration(),
+  }));
+
+  protected readonly briefTrouble = computed(() => briefProblems(this.brief()));
+
+  /** What the button will write, or null when the panel says nothing new. */
+  protected readonly briefOptions = computed(() => toClipOptions(this.brief()));
+
+  protected choosePreset(key: string): void {
+    const found = this.presets.find((preset) => preset.key === key);
+    if (!found) return;
+    this.minDuration.set(found.min);
+    this.maxDuration.set(found.max);
+  }
   /**
    * Why the list is not here, when it is never going to arrive.
    *
@@ -314,13 +357,16 @@ export class JobsPage implements OnDestroy {
   protected async submit(): Promise<void> {
     const uid = this.session.uid;
     const value = this.submission().trim();
-    if (!uid || !value) return;
+    if (!uid || !value || this.briefTrouble().length) return;
 
     this.submitting.set(true);
     this.error.set(null);
     try {
-      await this.data.submit(uid, value);
+      await this.data.submit(uid, value, this.briefOptions());
       this.submission.set('');
+      // The words were about that video; the numbers are usually about the
+      // next one too.
+      this.instructions.set('');
       void this.refreshCounts();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));

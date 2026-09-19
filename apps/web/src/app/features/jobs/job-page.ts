@@ -15,6 +15,7 @@ import type { Clip, Job, JobEvent, Source, Stage, StageStatus } from '@clipforge
 import { JobsRepository } from '../../core/data/jobs';
 import { SourcesRepository } from '../../core/data/sources';
 import type { Live } from '../../core/firestore/gateway';
+import { describeBrief } from '../../core/clip-brief';
 import { isTerminal, jobTitle, stageNote } from '../../core/job-list';
 
 /**
@@ -304,6 +305,11 @@ export class JobPage implements OnDestroy {
   /** The submission, the question, or the theme — whichever this job carries. */
   protected title(job: Job): string {
     return jobTitle(job);
+  }
+
+  /** The brief, in one line, or null when the job carried none. */
+  protected brief(job: Job): string | null {
+    return describeBrief(job.clipOptions);
   }
 
   /** Whether a research run has written its list yet. */

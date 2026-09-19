@@ -20,6 +20,7 @@ import type {
   TrendVideo,
 } from '@clipforge/contracts';
 
+import { briefFromTrend } from '../../core/clip-brief';
 import { CompileBasketService } from '../../core/compile-basket';
 import { JobsRepository, newestFirst } from '../../core/data/jobs';
 import { ResearchRepository, byRank } from '../../core/data/research';
@@ -421,7 +422,10 @@ export class TrendsPage implements OnDestroy {
     this.busy.set(video.url);
     this.error.set(null);
     try {
-      await this.jobs.submit(uid, video.url);
+      // The model's angle on the trend becomes the brief, when it thought
+      // there was a clip in it: the best instruction anyone has written for
+      // this video, and until now read once and lost.
+      await this.jobs.submit(uid, video.url, briefFromTrend(row.trend));
       this.queued.update((urls) => new Set([...urls, video.url]));
       if (row.trend.status !== 'PROMOTED') {
         await this.research.decide(row.trend.id, 'PROMOTED', uid);

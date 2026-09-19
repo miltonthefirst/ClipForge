@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from clipforge_contracts import (
     Candidate,
+    ClipOptions,
     Lane,
     LlmClipResponse,
     StageName,
@@ -33,7 +35,12 @@ from clipforge.analysis.boundaries import (
     snap_start,
     words_in,
 )
-from clipforge.analysis.prompts import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt
+from clipforge.analysis.prompts import (
+    BRIEF_PROMPT_VERSION,
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
+    build_prompt,
+)
 from clipforge.analysis.ranking import (
     DEFAULT_WEIGHTS,
     ScoredWindow,
@@ -209,6 +216,7 @@ class AnalyzeStage:
     def run(self, context: StageContext) -> StageOutcome:
         transcript, speech_spans, source_id = self._load(context)
         client = self.build_client(context)
+        brief = _brief_of(context.job.clip_options, default_limit=self._limit)
 
         # The whole map step runs under one broker lease. Acquiring per window
         # would let Whisper reload between calls and thrash a 6 GB card.
@@ -219,38 +227,57 @@ class AnalyzeStage:
         context.progress("Waiting for the GPU")
         with context.broker.acquire(f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
             selected = self.propose_windows(
-                context, client, transcript, speech_spans, limit=self._limit
+                context,
+                client,
+                transcript,
+                speech_spans,
+                limit=brief.limit,
+                instructions=brief.instructions,
+                min_duration_sec=brief.min_duration_sec,
+                max_duration_sec=brief.max_duration_sec,
             )
             peak = leased.observe()
 
+        prompt_version = BRIEF_PROMPT_VERSION if brief.instructions else PROMPT_VERSION
         documents = self.to_candidates(
             context,
             selected,
             transcript,
             source_id,
             model_version=f"ollama:{client.model}",
-            prompt_version=PROMPT_VERSION,
+            prompt_version=prompt_version,
         )
         self._candidates.replace_for_job(context.job.id, documents)
 
         stats = client.stats.summary()
-        log.info("analyze.done", candidates=len(documents), **stats)
+        log.info("analyze.done", candidates=len(documents), brief=bool(brief.instructions), **stats)
+
+        if brief.instructions and not documents:
+            # Not a failure. A brief is a filter, and a filter that matched
+            # nothing is an answer — the honest one — which the job page says
+            # in as many words rather than leaving an empty queue to explain.
+            detail = f"no moment matched the brief across {stats['calls']} windows"
+        else:
+            detail = (
+                f"{len(documents)} candidates from {stats['calls']} windows "
+                f"({stats['firstAttemptRate']:.0%} first-attempt valid)"
+            )
 
         return StageOutcome(
             checkpoint={
                 "sourceId": source_id,
                 "candidateIds": [c.id for c in documents],
-                "promptVersion": PROMPT_VERSION,
+                "promptVersion": prompt_version,
                 "modelVersion": f"ollama:{client.model}",
+                "brief": brief.instructions is not None,
+                "limit": brief.limit,
+                "durationSec": [brief.min_duration_sec, brief.max_duration_sec],
                 # Recorded because a rising repair rate is the early warning that
                 # a prompt or model change has degraded.
                 "llm": stats,
             },
             peak_vram_mb=peak or None,
-            detail=(
-                f"{len(documents)} candidates from {stats['calls']} windows "
-                f"({stats['firstAttemptRate']:.0%} first-attempt valid)"
-            ),
+            detail=detail,
         )
 
     # ── The selection, without the lease ─────────────────────────────────────
@@ -268,11 +295,19 @@ class AnalyzeStage:
         *,
         limit: int,
         theme: str | None = None,
+        instructions: str | None = None,
         min_duration_sec: float = 15.0,
         max_duration_sec: float = 75.0,
     ) -> list[ScoredWindow]:
-        """Window, map, reduce, snap, rank — the caller holds the broker lease."""
+        """Window, map, reduce, snap, rank — the caller holds the broker lease.
+
+        ``theme`` is a compilation's subject and biases the choice; ``instructions``
+        is a submitter's brief and filters it. The window is widened when the
+        longest clip asked for would not fit inside the default one — a model
+        cannot propose a 150-second moment out of a 120-second window.
+        """
         windows_read = 0
+        window_spec = _window_spec_for(max_duration_sec)
 
         def propose(window: object) -> LlmClipResponse:
             nonlocal windows_read
@@ -292,6 +327,7 @@ class AnalyzeStage:
                     min_duration_sec=min_duration_sec,
                     max_duration_sec=max_duration_sec,
                     theme=theme,
+                    instructions=instructions,
                 ),
             )
 
@@ -300,6 +336,7 @@ class AnalyzeStage:
                 transcript,
                 speech_spans,
                 propose=propose,
+                window_spec=window_spec,
                 weights=self._weights,
                 limit=limit,
                 min_duration_sec=min_duration_sec,
@@ -370,6 +407,43 @@ class AnalyzeStage:
             model=settings.ollama_model,
             num_ctx=settings.ollama_num_ctx,
         )
+
+
+@dataclass(frozen=True)
+class _Brief:
+    """What the job asked ANALYZE to look for, with the defaults filled in."""
+
+    instructions: str | None
+    limit: int
+    min_duration_sec: float
+    max_duration_sec: float
+
+
+def _brief_of(options: ClipOptions | None, *, default_limit: int) -> _Brief:
+    """The job's brief, or the pipeline's own defaults when it carries none.
+
+    The contract defaults every field, so a job written by an older client —
+    no ``clipOptions`` at all — and a job written with an empty object mean
+    the same thing here. A blank instruction is no instruction.
+    """
+    if options is None:
+        return _Brief(None, default_limit, 15.0, 75.0)
+    instructions = (options.instructions or "").strip() or None
+    low = float(options.min_duration_sec or 15)
+    high = float(options.max_duration_sec or 75)
+    if low > high:
+        low, high = high, low
+    return _Brief(instructions, int(options.max_clips or default_limit), low, high)
+
+
+def _window_spec_for(max_duration_sec: float) -> WindowSpec:
+    """The default window, unless the longest clip asked for would not fit in it."""
+    needed = max_duration_sec + 30.0
+    if needed <= DEFAULT_WINDOW_SPEC.window_sec:
+        return DEFAULT_WINDOW_SPEC
+    return WindowSpec(
+        window_sec=needed, stride_sec=max(needed / 4.0, DEFAULT_WINDOW_SPEC.stride_sec)
+    )
 
 
 def _excerpt(transcript: Transcript, start_sec: float, end_sec: float, limit: int = 600) -> str:

@@ -13,9 +13,29 @@ from __future__ import annotations
 
 from clipforge.analysis.ranking import RUBRIC_MAXIMA
 
-__all__ = ["PROMPT_VERSION", "SYSTEM_PROMPT", "THEMED_PROMPT_VERSION", "build_prompt"]
+__all__ = [
+    "BRIEF_PROMPT_VERSION",
+    "PROMPT_VERSION",
+    "SYSTEM_PROMPT",
+    "THEMED_PROMPT_VERSION",
+    "build_prompt",
+]
 
 PROMPT_VERSION = "v1"
+
+# A CLIP job with a brief asks a narrower question than a harvest — "the
+# goals", "where he talks about pricing" — and its candidates are stamped with
+# their own version for the same reason the themed ones are: a brief changes
+# what gets selected, and the calibration must not mix the two.
+BRIEF_PROMPT_VERSION = "v1-brief"
+
+_BRIEF_TEMPLATE = """
+
+The person who submitted this video asked for: {instructions}
+Return ONLY moments that fit that request. A moment that is strong on its own \
+but does not fit the request is not wanted here, and if nothing in this window \
+fits, return an empty list. The request is read against what is SAID in the \
+transcript; you cannot see the picture, so do not guess at what it shows."""
 
 # A COMPILE job tells the model what the compilation is about, which changes
 # what it selects — so those candidates are stamped with their own version and
@@ -86,6 +106,7 @@ def build_prompt(
     min_duration_sec: float = 15.0,
     max_duration_sec: float = 75.0,
     theme: str | None = None,
+    instructions: str | None = None,
 ) -> str:
     prompt = USER_TEMPLATE.format(
         window=window_text,
@@ -98,4 +119,6 @@ def build_prompt(
     )
     if theme:
         prompt += _THEME_TEMPLATE.format(theme=theme.strip()[:200])
+    if instructions and instructions.strip():
+        prompt += _BRIEF_TEMPLATE.format(instructions=instructions.strip()[:1000])
     return prompt

@@ -296,6 +296,7 @@ export interface ClipForgeContracts {
   compileOptions?: CompileOptions;
   appliedCompile?: AppliedCompile;
   researchSchedule?: ResearchSchedule;
+  clipOptions?: ClipOptions;
 }
 /**
  * One pipeline run over one source. Stored at jobs/{jobId}.
@@ -320,6 +321,10 @@ export interface Job {
    * The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all.
    */
   clipId?: string | null;
+  /**
+   * What a CLIP job should look for, how many clips, and how long. Null is the pipeline's own judgement with its defaults, which is what every job before this field was.
+   */
+  clipOptions?: ClipOptions | null;
   /**
    * What a MUSIC job should add, and how. Null for every other job type.
    */
@@ -369,6 +374,24 @@ export interface Job {
   updatedAt: string;
   startedAt?: string | null;
   endedAt?: string | null;
+}
+/**
+ * The brief for a CLIP job: what to look for, how many, how long. Every field has a default, so an empty object means today's behaviour. `instructions` is a filter rather than a hint — the model is told to return only moments that fit it, and a job whose brief matches nothing finishes with no clips and says so, rather than handing over the strongest unrelated moment. It is read against the transcript, not the picture: 'the goals' works because commentary says goal; 'where the striker is offside' works only if somebody says so.
+ */
+export interface ClipOptions {
+  /**
+   * What to clip, in the submitter's words. Null is 'anything worth clipping', which is the pipeline's usual question.
+   */
+  instructions?: string | null;
+  /**
+   * How many clips at most. The ranking's limit; fewer come back when fewer are worth it.
+   */
+  maxClips?: number;
+  minDurationSec?: number;
+  /**
+   * Longer than the analysis window and the window widens to fit; boundaries are still snapped to silence, so a clip may run a little over.
+   */
+  maxDurationSec?: number;
 }
 /**
  * What to add to a clip, and how. Carried on the MUSIC job that produces the scored version.

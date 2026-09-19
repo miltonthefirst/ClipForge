@@ -1427,6 +1427,12 @@ that was off fires each due schedule once on return. This is the first thing in 
 starts work unasked, and it starts the one kind of work that changes nothing — the list still goes
 no further than the Trends page. See [ADR-0023](adr/0023-research-on-a-schedule.md).
 
+**And a brief on every clip job** (2026-09-19). `ClipOptions` — instructions, a count, a length
+range — on a `CLIP` job, from the Jobs page's *What to look for* panel and the CLI. The brief is a
+filter: only moments that fit come back, and a job whose brief matches nothing finishes with no
+clips and says so. Candidates chosen under a brief are stamped `v1-brief`. *Clip it* on the Trends
+page passes the model's angle as the brief. See [ADR-0024](adr/0024-a-brief-on-the-job.md).
+
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
 does not automate the scorer; it feeds it.

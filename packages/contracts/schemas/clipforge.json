@@ -35,7 +35,8 @@
     "llmTrendVerdict": { "$ref": "#/definitions/LlmTrendVerdict" },
     "compileOptions": { "$ref": "#/definitions/CompileOptions" },
     "appliedCompile": { "$ref": "#/definitions/AppliedCompile" },
-    "researchSchedule": { "$ref": "#/definitions/ResearchSchedule" }
+    "researchSchedule": { "$ref": "#/definitions/ResearchSchedule" },
+    "clipOptions": { "$ref": "#/definitions/ClipOptions" }
   },
 
   "definitions": {
@@ -1042,6 +1043,11 @@
           "type": ["string", "null"],
           "default": null,
           "description": "The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all."
+        },
+        "clipOptions": {
+          "anyOf": [{ "$ref": "#/definitions/ClipOptions" }, { "type": "null" }],
+          "default": null,
+          "description": "What a CLIP job should look for, how many clips, and how long. Null is the pipeline's own judgement with its defaults, which is what every job before this field was."
         },
         "musicOptions": {
           "anyOf": [{ "$ref": "#/definitions/MusicOptions" }, { "type": "null" }],
@@ -2421,6 +2427,40 @@
         "lastOutcome": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "Worker-owned. One sentence on what the last tick did with this schedule — fired it, or why not: the previous run was still going, the worker was stopped, the timezone was unknown." },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ClipOptions": {
+      "title": "ClipOptions",
+      "description": "The brief for a CLIP job: what to look for, how many, how long. Every field has a default, so an empty object means today's behaviour. `instructions` is a filter rather than a hint — the model is told to return only moments that fit it, and a job whose brief matches nothing finishes with no clips and says so, rather than handing over the strongest unrelated moment. It is read against the transcript, not the picture: 'the goals' works because commentary says goal; 'where the striker is offside' works only if somebody says so.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instructions": {
+          "type": ["string", "null"],
+          "maxLength": 1000,
+          "default": null,
+          "description": "What to clip, in the submitter's words. Null is 'anything worth clipping', which is the pipeline's usual question."
+        },
+        "maxClips": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 5,
+          "description": "How many clips at most. The ranking's limit; fewer come back when fewer are worth it."
+        },
+        "minDurationSec": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 180,
+          "default": 15
+        },
+        "maxDurationSec": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 180,
+          "default": 75,
+          "description": "Longer than the analysis window and the window widens to fit; boundaries are still snapped to silence, so a clip may run a little over."
+        }
       }
     }
   }

@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import type { Clip, Job, JobEvent, JobStatus } from '@clipforge/contracts';
+import type { Clip, ClipOptions, Job, JobEvent, JobStatus } from '@clipforge/contracts';
 
 import { FirestoreGateway, type Live } from '../firestore/gateway';
 import type { QuerySpec } from '../firestore/spec';
@@ -157,13 +157,22 @@ export function newestFirst(jobs: readonly Job[]): Job[] {
  * asserted without a database: a job that arrives claiming a worker is rejected
  * at the server, but it is rejected long after the change that caused it.
  */
-export function newJob(id: string, uid: string, submission: string, now: string) {
+export function newJob(
+  id: string,
+  uid: string,
+  submission: string,
+  now: string,
+  options: ClipOptions | null = null,
+) {
   return {
     id,
     uid,
     type: 'CLIP',
     status: 'QUEUED',
     submission,
+    // The brief. Null is the pipeline's own judgement, and it is written as
+    // null rather than left out so the document says so.
+    clipOptions: options,
     sourceId: null,
     stages: [
       { name: 'DOWNLOAD', lane: 'CPU', status: 'PENDING' },
@@ -259,9 +268,17 @@ export class JobsRepository {
    * gate, because a job carries its own id as a field and so needs one before
    * the write rather than from it.
    */
-  async submit(uid: string, submission: string): Promise<string> {
+  async submit(
+    uid: string,
+    submission: string,
+    options: ClipOptions | null = null,
+  ): Promise<string> {
     const id = this.db.newId(JOBS);
-    await this.db.create(JOBS, { ...newJob(id, uid, submission, new Date().toISOString()) }, id);
+    await this.db.create(
+      JOBS,
+      { ...newJob(id, uid, submission, new Date().toISOString(), options) },
+      id,
+    );
     return id;
   }
 

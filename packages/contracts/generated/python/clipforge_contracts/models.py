@@ -1997,6 +1997,30 @@ class ResearchSchedule(BaseModel):
     updated_at: AwareDatetime = Field(..., alias="updatedAt")
 
 
+class ClipOptions(BaseModel):
+    """
+    The brief for a CLIP job: what to look for, how many, how long. Every field has a default, so an empty object means today's behaviour. `instructions` is a filter rather than a hint — the model is told to return only moments that fit it, and a job whose brief matches nothing finishes with no clips and says so, rather than handing over the strongest unrelated moment. It is read against the transcript, not the picture: 'the goals' works because commentary says goal; 'where the striker is offside' works only if somebody says so.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    instructions: str | None = Field(None, max_length=1000)
+    """
+    What to clip, in the submitter's words. Null is 'anything worth clipping', which is the pipeline's usual question.
+    """
+    max_clips: int | None = Field(5, alias="maxClips", ge=1, le=20)
+    """
+    How many clips at most. The ranking's limit; fewer come back when fewer are worth it.
+    """
+    min_duration_sec: int | None = Field(15, alias="minDurationSec", ge=5, le=180)
+    max_duration_sec: int | None = Field(75, alias="maxDurationSec", ge=5, le=180)
+    """
+    Longer than the analysis window and the window widens to fit; boundaries are still snapped to silence, so a clip may run a little over.
+    """
+
+
 class AppliedMusic(BaseModel):
     """
     What was actually done to a scored clip, recorded on the clip itself. Provenance rather than configuration: it answers 'what is this version, and where did the track come from' months later, when the job that made it is long gone.
@@ -2340,6 +2364,10 @@ class Job(BaseModel):
     """
     The clip a PUBLISH or MUSIC job acts on. Null for every other job type. Security rules read this to check the clip has been approved before allowing the job to be created at all.
     """
+    clip_options: ClipOptions | None = Field(None, alias="clipOptions")
+    """
+    What a CLIP job should look for, how many clips, and how long. Null is the pipeline's own judgement with its defaults, which is what every job before this field was.
+    """
     music_options: MusicOptions | None = Field(None, alias="musicOptions")
     """
     What a MUSIC job should add, and how. Null for every other job type.
@@ -2432,3 +2460,4 @@ class ClipForgeContracts(BaseModel):
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")
     applied_compile: AppliedCompile | None = Field(None, alias="appliedCompile")
     research_schedule: ResearchSchedule | None = Field(None, alias="researchSchedule")
+    clip_options: ClipOptions | None = Field(None, alias="clipOptions")

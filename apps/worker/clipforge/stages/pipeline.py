@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from clipforge_contracts import (
+    ClipOptions,
     CompileOptions,
     Job,
     JobStatus,
@@ -231,12 +232,14 @@ def new_clip_job(
     stages: Sequence[Stage] | Sequence[tuple[StageName, Lane]] | None = None,
     job_id: str | None = None,
     max_attempts: int = 3,
+    options: ClipOptions | None = None,
 ) -> Job:
     """Build a CLIP job for a submission.
 
     `submission` is kept verbatim and separately from `sourceId`, so the job can
     be re-run from the original input even if its source document was later
-    garbage-collected.
+    garbage-collected. `options` is the brief — what to look for, how many, how
+    long — and None is the pipeline's own judgement.
     """
     now = datetime.now(UTC)
     return Job(
@@ -245,6 +248,7 @@ def new_clip_job(
         type=JobType.CLIP,
         status=JobStatus.QUEUED,
         submission=submission,
+        clip_options=options,
         stages=clip_stages(stages),
         attempts=0,
         max_attempts=max_attempts,

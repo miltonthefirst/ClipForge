@@ -40,6 +40,12 @@
           · {{ took }}
         }
       </p>
+      <!-- The brief, when the job carried one. Beside the id because it is
+           the second thing that says which job this is, and the first thing
+           that explains a job which produced nothing. -->
+      @if (brief(job); as asked) {
+        <p class="mt-1 text-xs text-ink-muted">Asked for {{ asked }}</p>
+      }
     </div>
     <span class="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium" [class]="statusTone(job)">
       {{ job.status }}
@@ -156,12 +162,21 @@
         </p>
 
         @if (finishedEmpty()) {
-          <p class="mt-2 text-xs text-ink-muted">
-            Every stage ran, so nothing failed — there was simply nothing to cut. The usual cause is
-            a video with no speech the transcriber could pick up, which leaves the model no words to
-            judge. Check the TRANSCRIBE duration below: a few seconds on a long video means the
-            audio came back empty.
-          </p>
+          @if (job.clipOptions?.instructions) {
+            <p class="mt-2 text-xs text-ink-muted">
+              Every stage ran and nothing matched the brief. The brief is a filter: only moments
+              that fit it come back, and it reads the words, not the picture — something has to be
+              said about what you asked for. Submit the video again with a different brief, or with
+              none, to get the pipeline's own choice.
+            </p>
+          } @else {
+            <p class="mt-2 text-xs text-ink-muted">
+              Every stage ran, so nothing failed — there was simply nothing to cut. The usual cause
+              is a video with no speech the transcriber could pick up, which leaves the model no
+              words to judge. Check the TRANSCRIBE duration below: a few seconds on a long video
+              means the audio came back empty.
+            </p>
+          }
         } @else if (produced.clips.length) {
           <a routerLink="/review" class="mt-2 inline-block text-xs text-accent-ink hover:underline">
             Review them →

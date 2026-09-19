@@ -550,6 +550,34 @@ service cloud.firestore {
              && (options.get('trendId', null) == null || options.trendId is string);
     }
 
+    // What a CLIP job may ask for: a brief, a count, a length range. Every
+    // field is optional and null is today's behaviour. Checked because the
+    // brief goes into a prompt on the worker and the numbers into the
+    // ranking, and a count of a thousand would be a thousand renders.
+    function clipOptionsOk() {
+      let options = request.resource.data.get('clipOptions', null);
+      return options == null
+             || (
+                  options.keys().hasOnly(
+                    ['instructions', 'maxClips', 'minDurationSec', 'maxDurationSec'])
+                  && (options.get('instructions', null) == null
+                      || (options.instructions is string
+                          && options.instructions.size() <= 1000))
+                  && (options.get('maxClips', null) == null
+                      || (options.maxClips is int
+                          && options.maxClips >= 1 && options.maxClips <= 20))
+                  && (options.get('minDurationSec', null) == null
+                      || (options.minDurationSec is int
+                          && options.minDurationSec >= 5 && options.minDurationSec <= 180))
+                  && (options.get('maxDurationSec', null) == null
+                      || (options.maxDurationSec is int
+                          && options.maxDurationSec >= 5 && options.maxDurationSec <= 180))
+                  && (options.get('minDurationSec', null) == null
+                      || options.get('maxDurationSec', null) == null
+                      || options.minDurationSec <= options.maxDurationSec)
+                );
+    }
+
     // ── Jobs ─────────────────────────────────────────────────────────────────
     match /jobs/{jobId} {
       allow read: if isApproved();
@@ -568,6 +596,7 @@ service cloud.firestore {
                     && request.resource.data.leaseExpiresAt == null
                     && request.resource.data.attempts == 0
                     && publishOptionsOk()
+                    && clipOptionsOk()
                     && (
                          request.resource.data.type != 'PUBLISH'
                          || (

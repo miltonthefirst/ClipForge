@@ -8,6 +8,7 @@ import {
   jobEventsSpec,
   jobsForClipSpec,
   jobsSpec,
+  newJob,
   newestFirst,
   publishJobsSpec,
 } from './jobs';
@@ -134,5 +135,20 @@ describe('newestFirst', () => {
     newestFirst(jobs);
 
     expect(jobs.map((j) => j.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('newJob with a brief', () => {
+  it('writes the brief on the job, and null when there is none', () => {
+    const now = '2026-09-19T12:00:00.000Z';
+    expect(newJob('j1', 'u1', 'https://youtu.be/x', now).clipOptions).toBeNull();
+    expect(
+      newJob('j2', 'u1', 'https://youtu.be/x', now, {
+        instructions: 'the goals',
+        maxClips: 3,
+        minDurationSec: 20,
+        maxDurationSec: 45,
+      }).clipOptions,
+    ).toEqual({ instructions: 'the goals', maxClips: 3, minDurationSec: 20, maxDurationSec: 45 });
   });
 });

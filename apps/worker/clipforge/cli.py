@@ -274,12 +274,21 @@ def submit(
         ),
     ),
     job_id: str = typer.Option("", help="Explicit job id; generated when omitted."),
+    brief: str = typer.Option(
+        "", help="What to clip, in your words. Only moments that fit it come back."
+    ),
+    clips: int = typer.Option(0, help="How many clips at most, 1-20. 0 keeps the default of 5."),
+    min_sec: int = typer.Option(0, "--min", help="Shortest clip, in seconds. 0 keeps 15."),
+    max_sec: int = typer.Option(0, "--max", help="Longest clip, in seconds. 0 keeps 75."),
 ) -> None:
     """Enqueue a job.
 
     With a submission, this is a real CLIP job. Without one it is an ECHO job —
     three no-op stages that exercise the scheduler without touching any media.
     """
+    from clipforge_contracts import ClipOptions
+    from pydantic import ValidationError
+
     from clipforge.stages.echo import new_echo_job
     from clipforge.stages.pipeline import new_clip_job
     from clipforge.store.firestore import JobStore, firestore_client
@@ -289,10 +298,22 @@ def submit(
     client = firestore_client(settings)
 
     if submission:
+        options: ClipOptions | None = None
+        if brief.strip() or clips or min_sec or max_sec:
+            try:
+                options = ClipOptions(
+                    instructions=brief.strip() or None,
+                    max_clips=clips or 5,
+                    min_duration_sec=min_sec or 15,
+                    max_duration_sec=max_sec or 75,
+                )
+            except ValidationError as exc:
+                typer.echo(f"those options are out of range: {exc}", err=True)
+                raise typer.Exit(code=2) from None
         # The full pipeline shape, from CLIP_PIPELINE. Building it from whichever
         # stage implementations happened to be constructible here is what used to
         # produce jobs that downloaded a video and then stopped.
-        job = new_clip_job(uid=uid, submission=submission, job_id=job_id or None)
+        job = new_clip_job(uid=uid, submission=submission, job_id=job_id or None, options=options)
     else:
         job = new_echo_job(uid=uid, job_id=job_id or None)
 
