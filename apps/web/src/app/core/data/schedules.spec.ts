@@ -1,7 +1,7 @@
 import type { ResearchSchedule } from '@clipforge/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { SCHEDULE_PAGE, byName, newSchedule, schedulesSpec } from './schedules';
+import { SCHEDULE_PAGE, byName, newSchedule, scheduleUpdate, schedulesSpec } from './schedules';
 
 /**
  * The one query and the one document the schedule list writes.
@@ -39,6 +39,57 @@ describe('byName', () => {
       schedule({ id: 'a', name: 'Mornings' }),
     ]);
     expect(rows.map((row) => row.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('scheduleUpdate', () => {
+  const now = '2026-09-19T12:00:00.000Z';
+
+  it('writes only what the rules let an update touch', () => {
+    const made = scheduleUpdate(
+      schedule({
+        cadence: 'INTERVAL',
+        everyHours: 12,
+        at: null,
+        nextDueAt: '2026-09-19T20:00:00.000Z',
+      }),
+      {
+        name: ' Evenings ',
+        cadence: 'INTERVAL',
+        everyHours: 12,
+        at: '',
+        options: { topics: ['nba'] },
+      },
+      now,
+    );
+    expect(Object.keys(made).sort()).toEqual(
+      [
+        'at',
+        'cadence',
+        'everyHours',
+        'name',
+        'nextDueAt',
+        'options',
+        'timezone',
+        'updatedAt',
+      ].sort(),
+    );
+    expect(made.name).toBe('Evenings');
+    expect(made.options).toEqual({ topics: ['nba'] });
+    // Same interval: the due time it already had.
+    expect(made.nextDueAt).toBe('2026-09-19T20:00:00.000Z');
+    expect(made.updatedAt).toBe(now);
+  });
+
+  it('switching to daily records the zone and drops the interval', () => {
+    const made = scheduleUpdate(
+      schedule({ cadence: 'INTERVAL', everyHours: 12, at: null }),
+      { name: 'x', cadence: 'DAILY', everyHours: 12, at: '06:00', options: {} },
+      now,
+    );
+    expect(made.at).toBe('06:00');
+    expect(made.everyHours).toBeNull();
+    expect(typeof made.timezone).toBe('string');
   });
 });
 

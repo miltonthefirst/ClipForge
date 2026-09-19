@@ -152,6 +152,42 @@ export class TrendsPage implements OnDestroy {
 
   protected readonly scheduleTrouble = computed(() => scheduleProblems(this.scheduleDraft()));
 
+  // ── Editing one in place ───────────────────────────────────────────────────
+  //
+  // Its own set of fields rather than the form's above: editing a schedule
+  // must not disturb what somebody has typed for a manual run, and the two
+  // are open at the same time more often than not.
+
+  protected readonly editing = signal<string | null>(null);
+  protected readonly editName = signal('');
+  protected readonly editCadence = signal<ScheduleCadence>('DAILY');
+  protected readonly editEvery = signal(24);
+  protected readonly editAt = signal('07:30');
+  protected readonly editTopicsText = signal('');
+  protected readonly editRegion = signal<string>(DEFAULT_RESEARCH.region);
+  protected readonly editLookback = signal<number>(DEFAULT_RESEARCH.lookbackHours);
+  protected readonly editCurate = signal<boolean>(DEFAULT_RESEARCH.curate);
+  protected readonly savingEdit = signal(false);
+
+  protected readonly editDraft = computed<ScheduleDraft>(() => ({
+    name: this.editName(),
+    cadence: this.editCadence(),
+    everyHours: this.editEvery(),
+    at: this.editAt(),
+    options: {
+      topics: asTopics(parseTopics(this.editTopicsText())),
+      region: this.editRegion(),
+      lookbackHours: this.editLookback(),
+      videosPerTopic: DEFAULT_RESEARCH.videosPerTopic,
+      maxTrends: DEFAULT_RESEARCH.maxTrends,
+      sources: null,
+      subreddits: [],
+      curate: this.editCurate(),
+    },
+  }));
+
+  protected readonly editTrouble = computed(() => scheduleProblems(this.editDraft()));
+
   protected readonly scheduleRows = computed<ScheduleRow[] | null>(() => {
     const rows = this.standing();
     if (rows === null) return null;
@@ -489,6 +525,39 @@ export class TrendsPage implements OnDestroy {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.scheduleBusy.set(null);
+    }
+  }
+
+  /** Open the editor on one row, seeded from what the schedule says now. */
+  protected beginEdit(row: ScheduleRow): void {
+    const schedule = row.schedule;
+    this.editName.set(schedule.name);
+    this.editCadence.set(schedule.cadence);
+    this.editEvery.set(schedule.everyHours ?? 24);
+    this.editAt.set(schedule.at ?? '07:30');
+    this.editTopicsText.set((schedule.options.topics ?? []).join(', '));
+    this.editRegion.set(schedule.options.region ?? DEFAULT_RESEARCH.region);
+    this.editLookback.set(schedule.options.lookbackHours ?? DEFAULT_RESEARCH.lookbackHours);
+    this.editCurate.set(schedule.options.curate ?? DEFAULT_RESEARCH.curate);
+    this.error.set(null);
+    this.editing.set(schedule.id);
+  }
+
+  protected cancelEdit(): void {
+    this.editing.set(null);
+  }
+
+  protected async saveEdit(row: ScheduleRow): Promise<void> {
+    if (this.editing() !== row.schedule.id || this.editTrouble().length) return;
+    this.savingEdit.set(true);
+    this.error.set(null);
+    try {
+      await this.schedules.update(row.schedule, this.editDraft());
+      this.editing.set(null);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.savingEdit.set(false);
     }
   }
 

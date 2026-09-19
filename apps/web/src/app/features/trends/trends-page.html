@@ -212,6 +212,14 @@
                 type="button"
                 class="text-ink-subtle hover:text-ink-muted disabled:opacity-50"
                 [disabled]="scheduleBusy() === row.schedule.id"
+                (click)="editing() === row.schedule.id ? cancelEdit() : beginEdit(row)"
+              >
+                {{ editing() === row.schedule.id ? 'Cancel' : 'Edit' }}
+              </button>
+              <button
+                type="button"
+                class="text-ink-subtle hover:text-ink-muted disabled:opacity-50"
+                [disabled]="scheduleBusy() === row.schedule.id"
                 (click)="runScheduleNow(row)"
               >
                 Run now
@@ -233,6 +241,132 @@
                 Delete
               </button>
             </div>
+
+            <!-- ── The editor, under its own row ──────────────────────────
+                 Everything the schedule is made of, seeded from what it says
+                 now. Saving rewrites the request and leaves the worker's
+                 record alone; the next run moves only when the cadence did. -->
+            @if (editing() === row.schedule.id) {
+              <div class="mt-2 w-full border-t border-line pt-3">
+                <div class="flex flex-wrap items-end gap-4">
+                  <label class="block text-sm">
+                    <span class="text-ink-muted">Name</span>
+                    <input
+                      class="mt-1 block w-48 rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink focus:border-forge-500 focus:outline-none"
+                      type="text"
+                      name="editName"
+                      maxlength="80"
+                      [ngModel]="editName()"
+                      (ngModelChange)="editName.set($event)"
+                    />
+                  </label>
+
+                  <fieldset class="text-sm">
+                    <legend class="text-ink-muted">How often</legend>
+                    <div class="mt-1 flex flex-wrap gap-3">
+                      <label class="flex items-center gap-1.5">
+                        <input
+                          type="radio"
+                          name="editCadence"
+                          [checked]="editCadence() === 'DAILY'"
+                          (change)="editCadence.set('DAILY')"
+                        />
+                        Daily at
+                        <input
+                          class="w-28 rounded-lg border border-line-strong bg-canvas px-2 py-1.5 text-ink"
+                          type="time"
+                          name="editAt"
+                          [ngModel]="editAt()"
+                          (ngModelChange)="editAt.set($event)"
+                          [disabled]="editCadence() !== 'DAILY'"
+                        />
+                        <span class="text-xs text-ink-subtle">{{ zone }}</span>
+                      </label>
+                      <label class="flex items-center gap-1.5">
+                        <input
+                          type="radio"
+                          name="editCadence"
+                          [checked]="editCadence() === 'INTERVAL'"
+                          (change)="editCadence.set('INTERVAL')"
+                        />
+                        <select
+                          class="rounded-lg border border-line-strong bg-canvas px-2 py-1.5 text-ink"
+                          name="editEvery"
+                          [ngModel]="editEvery()"
+                          (ngModelChange)="editEvery.set(+$event)"
+                          [disabled]="editCadence() !== 'INTERVAL'"
+                        >
+                          @for (option of intervals; track option.hours) {
+                            <option [ngValue]="option.hours">{{ option.label }}</option>
+                          }
+                        </select>
+                      </label>
+                    </div>
+                  </fieldset>
+                </div>
+
+                <label class="mt-3 block text-sm">
+                  <span class="text-ink-muted">What to look for</span>
+                  <textarea
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+                    rows="2"
+                    name="editTopics"
+                    placeholder="Leave empty for whatever is trending"
+                    [ngModel]="editTopicsText()"
+                    (ngModelChange)="editTopicsText.set($event)"
+                  ></textarea>
+                </label>
+
+                <div class="mt-3 flex flex-wrap items-end gap-4">
+                  <label class="block text-sm">
+                    <span class="text-ink-muted">Where</span>
+                    <select
+                      class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                      name="editRegion"
+                      [ngModel]="editRegion()"
+                      (ngModelChange)="editRegion.set($event)"
+                    >
+                      @for (option of regions; track option.code) {
+                        <option [value]="option.code">{{ option.label }}</option>
+                      }
+                    </select>
+                  </label>
+                  <label class="block text-sm">
+                    <span class="text-ink-muted">How recent</span>
+                    <select
+                      class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                      name="editLookback"
+                      [ngModel]="editLookback()"
+                      (ngModelChange)="editLookback.set(+$event)"
+                    >
+                      @for (option of lookbacks; track option.hours) {
+                        <option [ngValue]="option.hours">{{ option.label }}</option>
+                      }
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 pb-2 text-sm">
+                    <input
+                      type="checkbox"
+                      name="editCurate"
+                      [checked]="editCurate()"
+                      (change)="editCurate.set(!editCurate())"
+                    />
+                    Ask the model for an angle
+                  </label>
+                  <button
+                    type="button"
+                    class="ml-auto rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+                    [disabled]="savingEdit() || editTrouble().length > 0"
+                    (click)="saveEdit(row)"
+                  >
+                    {{ savingEdit() ? 'Saving…' : 'Save changes' }}
+                  </button>
+                </div>
+                @if (editTrouble().length) {
+                  <p class="mt-2 text-xs text-ink-subtle">{{ editTrouble()[0] }}</p>
+                }
+              </div>
+            }
           </li>
         }
       </ul>

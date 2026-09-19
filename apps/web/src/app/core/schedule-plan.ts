@@ -45,6 +45,28 @@ export function firstDue(cadence: ScheduleCadence, at: string, now: Date = new D
   return candidate.toISOString();
 }
 
+/**
+ * When an *edited* schedule should next fire.
+ *
+ * Not the same question as {@link firstDue}. A person who renames a schedule
+ * has not asked for a run; one who changes the interval has asked for the
+ * new interval to start now, not for a run now. So a daily time is always
+ * recomputed (it is what changed, or it costs nothing), an unchanged interval
+ * keeps its due time, and a changed one counts from now. A schedule that is
+ * off stays off until it is switched on, which resets the clock anyway.
+ */
+export function nextDueAfterEdit(
+  schedule: Pick<ResearchSchedule, 'enabled' | 'cadence' | 'everyHours' | 'nextDueAt'>,
+  draft: Pick<ScheduleDraft, 'cadence' | 'everyHours' | 'at'>,
+  now: Date = new Date(),
+): string | null {
+  if (!schedule.enabled) return schedule.nextDueAt ?? null;
+  if (draft.cadence === 'DAILY') return firstDue('DAILY', draft.at, now);
+  const unchanged = schedule.cadence === 'INTERVAL' && schedule.everyHours === draft.everyHours;
+  if (unchanged) return schedule.nextDueAt ?? null;
+  return new Date(now.getTime() + draft.everyHours * 3_600_000).toISOString();
+}
+
 /** "Every 12 hours" · "Daily at 07:30 (Europe/London)". */
 export function describeCadence(
   schedule: Pick<ResearchSchedule, 'cadence' | 'everyHours' | 'at' | 'timezone'>,

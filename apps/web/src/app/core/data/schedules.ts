@@ -3,7 +3,7 @@ import type { ResearchSchedule } from '@clipforge/contracts';
 
 import { FirestoreGateway, type Live } from '../firestore/gateway';
 import type { QuerySpec } from '../firestore/spec';
-import { browserTimezone, firstDue, type ScheduleDraft } from '../schedule-plan';
+import { browserTimezone, firstDue, nextDueAfterEdit, type ScheduleDraft } from '../schedule-plan';
 
 /**
  * Standing research requests: the part of Trends that runs without a press.
@@ -56,6 +56,27 @@ export function newSchedule(id: string, uid: string, draft: ScheduleDraft, now: 
   } satisfies ResearchSchedule;
 }
 
+/**
+ * What an in-place edit writes: the request, and nothing the worker owns.
+ *
+ * Exactly the fields the rules let an update touch. The zone is re-read from
+ * this browser because the time of day is meant in it; an interval schedule
+ * carries no zone at all.
+ */
+export function scheduleUpdate(schedule: ResearchSchedule, draft: ScheduleDraft, now: string) {
+  const daily = draft.cadence === 'DAILY';
+  return {
+    name: draft.name.trim(),
+    cadence: draft.cadence,
+    everyHours: daily ? null : draft.everyHours,
+    at: daily ? draft.at : null,
+    timezone: daily ? browserTimezone() : null,
+    options: draft.options,
+    nextDueAt: nextDueAfterEdit(schedule, draft, new Date(now)),
+    updatedAt: now,
+  };
+}
+
 @Injectable({ providedIn: 'root' })
 export class SchedulesRepository {
   private readonly db = inject(FirestoreGateway);
@@ -88,6 +109,15 @@ export class SchedulesRepository {
       nextDueAt: enabled ? firstDue(schedule.cadence, schedule.at ?? '00:00') : null,
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  /** Change what a schedule looks for and how often, in place. */
+  async update(schedule: ResearchSchedule, draft: ScheduleDraft): Promise<void> {
+    await this.db.update(
+      SCHEDULES,
+      schedule.id,
+      scheduleUpdate(schedule, draft, new Date().toISOString()),
+    );
   }
 
   async remove(scheduleId: string): Promise<void> {

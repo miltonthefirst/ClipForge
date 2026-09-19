@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeCadence, describeNext, firstDue, scheduleProblems } from './schedule-plan';
+import {
+  describeCadence,
+  describeNext,
+  firstDue,
+  nextDueAfterEdit,
+  scheduleProblems,
+} from './schedule-plan';
 
 /**
  * The sentences and the one instant the schedule form works out.
@@ -28,6 +34,51 @@ describe('firstDue', () => {
     tomorrow.setHours(7, 30, 0, 0);
     tomorrow.setDate(tomorrow.getDate() + 1);
     expect(firstDue('DAILY', '07:30', now)).toBe(tomorrow.toISOString());
+  });
+});
+
+describe('nextDueAfterEdit', () => {
+  const now = new Date('2026-09-19T09:00:00.000Z');
+  const due = '2026-09-19T20:00:00.000Z';
+
+  it('keeps an unchanged interval’s due time, so a rename is not a run', () => {
+    expect(
+      nextDueAfterEdit(
+        { enabled: true, cadence: 'INTERVAL', everyHours: 12, nextDueAt: due },
+        { cadence: 'INTERVAL', everyHours: 12, at: '' },
+        now,
+      ),
+    ).toBe(due);
+  });
+
+  it('starts a changed interval from now', () => {
+    expect(
+      nextDueAfterEdit(
+        { enabled: true, cadence: 'INTERVAL', everyHours: 12, nextDueAt: due },
+        { cadence: 'INTERVAL', everyHours: 6, at: '' },
+        now,
+      ),
+    ).toBe('2026-09-19T15:00:00.000Z');
+  });
+
+  it('recomputes a daily time of day', () => {
+    expect(
+      nextDueAfterEdit(
+        { enabled: true, cadence: 'INTERVAL', everyHours: 12, nextDueAt: due },
+        { cadence: 'DAILY', everyHours: 12, at: '07:30' },
+        now,
+      ),
+    ).toBe(firstDue('DAILY', '07:30', now));
+  });
+
+  it('leaves a schedule that is off alone', () => {
+    expect(
+      nextDueAfterEdit(
+        { enabled: false, cadence: 'INTERVAL', everyHours: 12, nextDueAt: null },
+        { cadence: 'INTERVAL', everyHours: 6, at: '' },
+        now,
+      ),
+    ).toBeNull();
   });
 });
 

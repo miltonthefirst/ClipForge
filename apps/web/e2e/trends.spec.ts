@@ -231,3 +231,49 @@ test('saving the form as a schedule writes what the worker fires, and the list s
   await row.getByRole('button', { name: 'Switch off' }).click();
   await expect(row).toContainText('off');
 });
+
+test('a schedule can be changed in place, and only the request changes', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('schedules/sched-1', {
+    id: 'sched-1',
+    uid,
+    name: 'Mornings',
+    enabled: true,
+    cadence: 'DAILY',
+    everyHours: null,
+    at: '07:30',
+    timezone: 'Europe/London',
+    options: { topics: ['premier league'], region: 'GB', lookbackHours: 24, curate: true },
+    nextDueAt: '2026-09-20T06:30:00.000Z',
+    lastRunAt: NOW,
+    lastJobId: 'job-research-1',
+    lastOutcome: 'fired',
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+
+  await page.goto('/trends');
+  const row = page.locator('section', { hasText: 'Automatic' }).locator('li').first();
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await row.getByRole('textbox', { name: 'Name' }).fill('Evenings');
+  await row.getByRole('textbox', { name: 'What to look for' }).fill('nba, formula 1');
+  await row.getByRole('button', { name: 'Save changes' }).click();
+
+  await expect(row).toContainText('Evenings');
+  await expect(row).toContainText('nba, formula 1');
+  await expect(row.getByRole('button', { name: 'Edit' })).toBeVisible();
+
+  const schedules = (await listDocs('schedules')).map(unwrap) as {
+    name: string;
+    options: { topics: string[] };
+    lastJobId: string | null;
+    lastOutcome: string | null;
+    at: string | null;
+  }[];
+  expect(schedules[0]?.name).toBe('Evenings');
+  expect(schedules[0]?.options.topics).toEqual(['nba', 'formula 1']);
+  expect(schedules[0]?.at).toBe('07:30');
+  // The worker's record survives the edit.
+  expect(schedules[0]?.lastJobId).toBe('job-research-1');
+  expect(schedules[0]?.lastOutcome).toBe('fired');
+});
