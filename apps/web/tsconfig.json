@@ -8,10 +8,16 @@
     /* The wire protocol, generated from packages/contracts/schemas/clipforge.json.
        A path mapping rather than an npm dependency: the generated output is
        types-only, so there is nothing to build, install or keep in a lockfile.
-       Paths resolve relative to this file; `baseUrl` is deprecated in TS 6.
-       See docs/adr/0005-single-source-contracts.md. */
+       The one exception is the category catalogue, which is data the page
+       lists at runtime: a generated `.js` with a `.d.ts` beside it, mapped
+       without an extension so `tsc` reads the declarations and the bundler
+       follows the module. Paths resolve relative to this file; `baseUrl` is
+       deprecated in TS 6. See docs/adr/0005-single-source-contracts.md. */
     "paths": {
-      "@clipforge/contracts": ["../../packages/contracts/generated/typescript/index.d.ts"]
+      "@clipforge/contracts": ["../../packages/contracts/generated/typescript/index.d.ts"],
+      "@clipforge/contracts/categories": [
+        "../../packages/contracts/generated/typescript/categories"
+      ]
     },
     "noImplicitOverride": true,
     "noPropertyAccessFromIndexSignature": true,

@@ -222,6 +222,10 @@ class Settings(BaseSettings):
     research_user_agent: str = "ClipForge/0.2 (+https://github.com/miltonthefirst/ClipForge)"
     # Comma-separated. What a run asks for when it names no subreddits.
     research_subreddits: str = "videos,popular"
+    # Where a run looks when it names no region. Google Trends' feed is per
+    # country and has no worldwide edition, so "nowhere in particular" has to
+    # resolve to somewhere; this is where.
+    research_region: str = Field(default="US", pattern=r"^[A-Z]{2}$")
     research_timeout_seconds: float = Field(default=20.0, ge=1.0)
     research_google_trends: bool = True
     research_reddit: bool = True

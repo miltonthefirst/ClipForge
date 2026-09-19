@@ -25,6 +25,11 @@ vertical clips, review them from your phone, publish, and learn from what perfor
 > broadcaster's logo covered, and the corrections it learns from you are proposed rather than
 > applied. Approved clips publish to YouTube from the machine that holds both the file and the token.
 >
+> Since then, and ahead of `v0.2.0`: a **Trends** page that asks what the web is talking about — by
+> country and by category, or on a schedule — and offers every video it finds as one press to the
+> pipeline; a **compilation** that cuts one clip from the best moment of several; and a **brief** on
+> every clip job saying what to clip, how many, and how long.
+>
 > Working towards `v0.2.0`, which closes the loop by measuring whether any of the scoring predicted
 > anything. See [`docs/PLAN.md`](docs/PLAN.md) for the milestone plan and where things stand.
 
@@ -310,6 +315,17 @@ explained by reading its parts; the local model is asked afterwards, per row, fo
 arithmetic cannot supply — a sentence saying what a clip about this would actually *be*, and
 whether it belongs on a channel about your topics — and the list is still ranked without it.
 
+**Where, and what kind.** Two optional pickers sit beside the topics, both typed for rather than
+scrolled to. *Where* is one of the 124 countries Google Trends' daily feed actually answers for;
+trends are local, and the same day looks different from Lagos and from London. Left empty, the
+worker's own default region is used (`CLIPFORGE_RESEARCH_REGION`, US out of the box). *Category* is
+one of some two hundred — Football, K-pop, AI, True crime, Gardening, Formula 1 … — and says what
+the channel is about more broadly than its topics. It does not filter the feeds; it steers where
+the worker looks: which subreddits are read when you name none, what is searched on YouTube when
+you give no topics, which corner of YouTube a bare trending phrase is looked up in, and what the
+model judges relevance against. The catalogue is data in the contracts package, so a new category
+is a line in a JSON file. See [ADR-0025](docs/adr/0025-a-category-catalogue-as-data.md).
+
 Each video on the list is one press from the pipeline. **Clip it** submits its URL exactly as if you
 had pasted it. **+ Compile** gathers it, and a few of those become a **compilation**: one vertical
 clip cut from the best moment of each video, for a theme, with the theme on a card in front and a
@@ -336,6 +352,8 @@ its page says so and points at the Compile page instead.
 
 ```bash
 uv run --project apps/worker clipforge-worker research -t "premier league" -t "formula 1" --region GB
+uv run --project apps/worker clipforge-worker research --category football   # no topics: the category's own
+uv run --project apps/worker clipforge-worker categories --group Sports      # the codes, by group
 uv run --project apps/worker clipforge-worker trends JOB_ID        # the ranked list, once it has run
 uv run --project apps/worker clipforge-worker compile URL1 URL2 URL3 --theme "best goals of the week"
 uv run --project apps/worker clipforge-worker compile "URL1@42-58" URL2 --theme "..."   # cut URL1 exactly there

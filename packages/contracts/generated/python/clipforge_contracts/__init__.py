@@ -9,6 +9,11 @@
 
 """ClipForge wire protocol, generated from JSON Schema."""
 
+from clipforge_contracts.categories import (
+    CATEGORIES as CATEGORIES,
+    Category as Category,
+    category_by_code as category_by_code,
+)
 from clipforge_contracts.models import (
     AgentDesired as AgentDesired,
     AgentReport as AgentReport,
@@ -126,10 +131,12 @@ __all__ = [
     "AppliedMusic",
     "AppliedRemake",
     "AppliedVoice",
+    "CATEGORIES",
     "CalibrationCorrelation",
     "CalibrationMethod",
     "CalibrationReport",
     "Candidate",
+    "Category",
     "Channel",
     "ChannelConnection",
     "Clip",
@@ -225,4 +232,5 @@ __all__ = [
     "WorkerCapabilities",
     "WorkerHeartbeat",
     "WorkerStatus",
+    "category_by_code",
 ]

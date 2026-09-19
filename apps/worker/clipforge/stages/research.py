@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from clipforge_contracts import (
+    Category,
     Lane,
     LlmTrendVerdict,
     ResearchOptions,
@@ -36,6 +37,7 @@ from clipforge_contracts import (
     TrendSource,
     TrendStatus,
     TrendVideo,
+    category_by_code,
 )
 
 from clipforge.models.ollama import OllamaClient, OllamaError
@@ -46,6 +48,7 @@ from clipforge.research.scoring import (
     ScoredTrend,
     blend_rank,
     cluster_signals,
+    lookup_query,
     rank_trends,
     score_trend,
 )
@@ -61,7 +64,7 @@ from clipforge.store.firestore import TrendStore
 
 log = get_logger(__name__)
 
-__all__ = ["CurateStage", "ResearchError", "ResearchStage", "plain_strings"]
+__all__ = ["CurateStage", "ResearchError", "ResearchStage", "plain_strings", "resolve_category"]
 
 # The same lease ANALYZE takes: one small call per row on the same model.
 _CURATE_VRAM_MB = 3600
@@ -87,6 +90,20 @@ def plain_strings(items: Sequence[Any] | None) -> list[str]:
     return [str(getattr(item, "root", item)).strip() for item in (items or []) if item is not None]
 
 
+def resolve_category(options: ResearchOptions) -> Category | None:
+    """The catalogue entry a run named, or None.
+
+    A code the catalogue does not know is ignored with a warning rather than
+    refused: the client and the worker are deployed separately, and a newer
+    page offering a category an older worker has not heard of should still get
+    its list — just not steered.
+    """
+    category = category_by_code(options.category)
+    if options.category and category is None:
+        log.warning("research.unknown_category", category=options.category)
+    return category
+
+
 class ResearchStage:
     """Ask every configured provider, cluster what they said, rank it, write it."""
 
@@ -110,13 +127,21 @@ class ResearchStage:
         options = context.job.research_options or ResearchOptions()
         now = self._clock()
         interests = plain_strings(options.topics)
+        # The category fills in what the run left blank and never overrides
+        # what it said: its own topics are searched and scored as before, and
+        # its own subreddits are read. Only the lookup hint applies regardless,
+        # because a feed phrase is nobody's words.
+        category = resolve_category(options)
         request = ResearchRequest(
-            topics=tuple(interests),
-            region=options.region or "US",
+            topics=tuple(interests) or (category.terms if category else ()),
+            region=options.region or context.settings.research_region,
             lookback_hours=options.lookback_hours or 48,
             videos_per_topic=options.videos_per_topic or 5,
-            subreddits=tuple(plain_strings(options.subreddits)),
+            subreddits=tuple(plain_strings(options.subreddits))
+            or (category.subreddits if category else ()),
             now=now,
+            category=category.code if category else None,
+            category_hint=category.hint if category else None,
         )
         max_trends = options.max_trends or 12
 
@@ -143,7 +168,14 @@ class ResearchStage:
                 )
             self._trends.replace_for_job(context.job.id, [])
             return StageOutcome(
-                checkpoint={"trendIds": [], "signals": 0, "providers": counts, "failures": {}},
+                checkpoint={
+                    "trendIds": [],
+                    "signals": 0,
+                    "providers": counts,
+                    "failures": {},
+                    "region": request.region,
+                    "category": request.category,
+                },
                 detail="nothing is moving in this window",
             )
 
@@ -181,7 +213,9 @@ class ResearchStage:
                 try:
                     cluster.found.extend(
                         self._finder.find_videos(
-                            cluster.label, limit=request.videos_per_topic, request=request
+                            lookup_query(cluster.label, request.category_hint),
+                            limit=request.videos_per_topic,
+                            request=request,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 - one lookup must not fail the run
@@ -213,6 +247,11 @@ class ResearchStage:
                 "clusters": len(clusters),
                 "providers": counts,
                 "failures": failures,
+                # What the run resolved to, so a list can be read back against
+                # the question actually asked — the region defaulted here, and
+                # a category the worker did not know shows up as null.
+                "region": request.region,
+                "category": request.category,
             },
             detail=detail,
         )
@@ -337,6 +376,7 @@ class CurateStage:
             )
 
         interests = plain_strings(options.topics)
+        category = resolve_category(options)
         checkpoint = context.checkpoint or {}
         done: set[str] = set(checkpoint.get("curated") or [])
         failed: dict[str, str] = dict(checkpoint.get("failed") or {})
@@ -353,7 +393,7 @@ class CurateStage:
                     )
                 context.progress(f"Judging trend {index} of {len(rows)}: {trend.topic[:50]}")
                 try:
-                    verdict = curate_trend(client, trend, interests=interests)
+                    verdict = curate_trend(client, trend, interests=interests, category=category)
                 except OllamaError as exc:
                     if exc.retryable:
                         raise _as_stage_failure(exc) from exc
@@ -363,7 +403,7 @@ class CurateStage:
                     trend.id,
                     angle=verdict.angle.strip()[:300] or None,
                     # Relevance to nothing is a number the model made up.
-                    relevance=verdict.relevance if interests else None,
+                    relevance=verdict.relevance if (interests or category) else None,
                     worth_clipping=verdict.worth_clipping,
                     compilation_title=verdict.compilation_title.strip()[:120] or None,
                 )

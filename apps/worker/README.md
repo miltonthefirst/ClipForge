@@ -6,9 +6,12 @@ The local half of ClipForge. Claims jobs from Firestore, then runs the pipeline
 See [`docs/PLAN.md`](../../docs/PLAN.md) for the architecture, and the repository
 [`README.md`](../../README.md) for setup.
 
-> **Status: Phase 2 complete.** The scheduler, lease protocol, checkpointed stage
-> runner and `ModelBroker` are in place and exercised by the `ECHO` job type. The
-> real pipeline stages land in Phases 3-6.
+> **Status (2026-09-19): the pipeline runs end to end, and then some.** Eight job
+> types — `CLIP`, `REMAKE`, `MUSIC`, `PUBLISH`, `UPLOAD`, `RESEARCH`, `COMPILE`
+> and the `ECHO` that exercises the scheduler — over the lease protocol,
+> checkpointed stage runner and `ModelBroker` that Phase 2 laid down. The
+> worker also fires research schedules on its own. Where things stand is in
+> [`docs/PLAN.md`](../../docs/PLAN.md), by phase.
 
 ## Quick reference
 
@@ -38,6 +41,8 @@ uv run clipforge-worker run             # claim, run, heartbeat, reap; Ctrl-C to
 uv run clipforge-worker status <job-id> # the job document and its event log
 uv run clipforge-worker gpu             # what is currently holding VRAM
 uv run clipforge-worker research -t "premier league"   # what is trending, as a job
+uv run clipforge-worker research --category football --region GB   # steered, no topics needed
+uv run clipforge-worker categories                      # the catalogue, by group
 uv run clipforge-worker trends <job-id>                 # its ranked list, once it has run
 uv run clipforge-worker compile URL1 URL2 --theme "…"   # one clip from several videos
 ```
@@ -67,11 +72,16 @@ request from a fork with no secrets configured.
 | --- | --- |
 | `scheduler/lease.py` | The job state machine as **pure functions**. No I/O — it does not know Firestore exists |
 | `scheduler/runner.py` | Executes a claimed job's stages in order, skipping `DONE` ones and persisting checkpoints |
-| `scheduler/worker.py` | The process: claim loop, heartbeat, reaper, graceful shutdown |
+| `scheduler/worker.py` | The process: claim loop, heartbeat, reaper, schedule tick, graceful shutdown |
+| `scheduler/schedule.py` | When a standing research schedule is due, as pure functions, and the tick that fires it |
 | `store/firestore.py` | Reads, applies and compare-and-swaps. Contains no rules of its own |
 | `models/broker.py` | Exclusive GPU residency. Its lock **is** the depth-1 GPU lane |
 | `models/vram.py` | NVML accounting, including *who else* is holding memory |
-| `stages/` | The stage contract, and the `ECHO` job type |
+| `stages/` | The stage contract, and one module per job type: `download`, `transcribe`, `analyze`, `render`, `publish`, `music`, `remake`, `research`, `compile` |
+| `stages/pipeline.py` | The stage list per job type — the one place a job's shape is declared — and the registry builders |
+| `research/` | The trend providers behind one port, the arithmetic that ranks what they say, and the curate prompt |
+| `analysis/` | What is put to the model and how its answers are read: clip selection, remake notes, preferences |
+| `media/` | ffmpeg: framing, captions, obscuring, music, assembly |
 
 The split between `lease.py` and `store/firestore.py` is deliberate: every
 decision about whether a transition is legal is a pure function, so the adapter

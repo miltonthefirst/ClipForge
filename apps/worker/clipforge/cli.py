@@ -486,7 +486,12 @@ def research(
     topic: list[str] = typer.Option(  # noqa: B008 - typer's declared-default idiom
         [], "--topic", "-t", help="What the channel is about. Repeatable; none means 'anything'."
     ),
-    region: str = typer.Option("US", help="Two-letter country code for the trend feeds."),
+    region: str | None = typer.Option(
+        None, help="Two-letter country code for the trend feeds. Default: the worker's setting."
+    ),
+    category: str | None = typer.Option(
+        None, help="A catalogue code — `clipforge-worker categories` lists them — or nothing."
+    ),
     hours: int = typer.Option(48, help="How far back counts as 'now', 6-168."),
     videos: int = typer.Option(5, help="How many videos to look up per topic, 1-10."),
     limit: int = typer.Option(12, help="How many trends to keep, 1-30."),
@@ -504,17 +509,24 @@ def research(
     runs on its own — the result is a ranked list to pick from, on the Trends
     page or with `clipforge-worker trends JOB_ID`.
     """
-    from clipforge_contracts import ResearchOptions
+    from clipforge_contracts import ResearchOptions, category_by_code
     from pydantic import ValidationError
 
     from clipforge.stages.pipeline import new_research_job
     from clipforge.store.firestore import JobStore, firestore_client
 
     settings = get_settings()
+    if category and category_by_code(category) is None:
+        typer.echo(
+            f"unknown category {category!r}; `clipforge-worker categories` lists the codes.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     try:
         options = ResearchOptions(
             topics=[t.strip() for t in topic if t.strip()],
-            region=region.upper(),
+            region=region.upper() if region else None,
+            category=category or None,
             lookback_hours=hours,
             videos_per_topic=videos,
             max_trends=limit,
@@ -528,6 +540,29 @@ def research(
     job = new_research_job(uid=uid, options=options)
     JobStore(firestore_client(settings), settings).create(job)
     typer.echo(job.id)
+
+
+@app.command()
+def categories(
+    group: str | None = typer.Option(None, help="Only this group, e.g. Sports. Case-insensitive."),
+) -> None:
+    """List the category catalogue: the codes a research run may name, by group."""
+    from clipforge_contracts import CATEGORIES
+
+    wanted = group.strip().lower() if group else None
+    current: str | None = None
+    shown = 0
+    for entry in CATEGORIES:
+        if wanted is not None and entry.group.lower() != wanted:
+            continue
+        if entry.group != current:
+            current = entry.group
+            typer.echo(f"\n{current}")
+        typer.echo(f"  {entry.code:<20} {entry.label}")
+        shown += 1
+    if not shown:
+        typer.echo(f"no category group called {group!r}", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()

@@ -15,6 +15,7 @@ from clipforge.research.scoring import (
     blend_rank,
     cluster_signals,
     dedupe_videos,
+    lookup_query,
     matched_interests,
     rank_trends,
     score_trend,
@@ -245,3 +246,15 @@ def test_blending_keeps_most_of_the_weight_on_the_arithmetic() -> None:
     assert blend_rank(80, 0, worth_clipping=True) == 48
     # Not worth clipping sinks the row without removing it.
     assert blend_rank(80, 10, worth_clipping=False) == 53
+
+
+# ── Looking up a feed phrase ─────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_a_lookup_appends_the_category_hint_unless_the_phrase_already_says_it() -> None:
+    assert lookup_query("portland st vs oregon", "nfl") == "portland st vs oregon nfl"
+    assert lookup_query("f1 grand prix", "f1") == "f1 grand prix"
+    assert lookup_query("Grand Prix", "F1") == "Grand Prix F1"
+    assert lookup_query("starz", None) == "starz"
+    assert lookup_query("starz", "") == "starz"

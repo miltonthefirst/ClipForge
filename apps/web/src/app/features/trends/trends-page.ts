@@ -35,13 +35,15 @@ import {
   scheduleProblems,
   type ScheduleDraft,
 } from '../../core/schedule-plan';
+import { REGIONS } from '../../core/regions';
 import { SessionService } from '../../core/session';
 import {
+  CATEGORY_CHOICES,
   DEFAULT_RESEARCH,
   LOOKBACKS,
-  REGIONS,
   asTopics,
   curationState,
+  describeScope,
   describeSignal,
   parseTopics,
   readableAge,
@@ -50,6 +52,7 @@ import {
   runInProgress,
   runLabel,
 } from '../../core/trend-list';
+import { Combobox } from '../../shared/combobox';
 
 /** One video on a trend card, with everything the template needs worked out. */
 interface VideoRow {
@@ -67,6 +70,8 @@ interface ScheduleRow {
   readonly cadence: string;
   readonly next: string;
   readonly topics: string;
+  /** Where it looks and what it is about: "United Kingdom · Football (soccer)". */
+  readonly scope: string;
 }
 
 /** One trend card. */
@@ -98,7 +103,7 @@ interface TrendRow {
  */
 @Component({
   selector: 'app-trends-page',
-  imports: [FormsModule, RouterLink],
+  imports: [FormsModule, RouterLink, Combobox],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './trends-page.html',
 })
@@ -116,11 +121,15 @@ export class TrendsPage implements OnDestroy {
   // ── The question ───────────────────────────────────────────────────────────
 
   protected readonly topicsText = signal('');
-  protected readonly region = signal<string>(DEFAULT_RESEARCH.region);
+  /** Null is a real answer: the worker's default region. */
+  protected readonly region = signal<string | null>(null);
+  /** Null is a real answer: nothing steered. */
+  protected readonly category = signal<string | null>(null);
   protected readonly lookback = signal<number>(DEFAULT_RESEARCH.lookbackHours);
   protected readonly curate = signal<boolean>(DEFAULT_RESEARCH.curate);
   protected readonly starting = signal(false);
   protected readonly regions = REGIONS;
+  protected readonly categories = CATEGORY_CHOICES;
   protected readonly lookbacks = LOOKBACKS;
 
   protected readonly topics = computed(() => parseTopics(this.topicsText()));
@@ -165,7 +174,8 @@ export class TrendsPage implements OnDestroy {
   protected readonly editEvery = signal(24);
   protected readonly editAt = signal('07:30');
   protected readonly editTopicsText = signal('');
-  protected readonly editRegion = signal<string>(DEFAULT_RESEARCH.region);
+  protected readonly editRegion = signal<string | null>(null);
+  protected readonly editCategory = signal<string | null>(null);
   protected readonly editLookback = signal<number>(DEFAULT_RESEARCH.lookbackHours);
   protected readonly editCurate = signal<boolean>(DEFAULT_RESEARCH.curate);
   protected readonly savingEdit = signal(false);
@@ -178,6 +188,7 @@ export class TrendsPage implements OnDestroy {
     options: {
       topics: asTopics(parseTopics(this.editTopicsText())),
       region: this.editRegion(),
+      category: this.editCategory(),
       lookbackHours: this.editLookback(),
       videosPerTopic: DEFAULT_RESEARCH.videosPerTopic,
       maxTrends: DEFAULT_RESEARCH.maxTrends,
@@ -200,6 +211,7 @@ export class TrendsPage implements OnDestroy {
       topics: schedule.options.topics?.length
         ? schedule.options.topics.join(', ')
         : 'whatever is trending',
+      scope: describeScope(schedule.options),
     }));
   });
 
@@ -341,7 +353,8 @@ export class TrendsPage implements OnDestroy {
     const options = run.researchOptions;
     if (!options) return;
     if (options.topics?.length) this.topicsText.set(options.topics.join(', '));
-    if (options.region) this.region.set(options.region);
+    this.region.set(options.region ?? null);
+    this.category.set(options.category ?? null);
     if (options.lookbackHours) this.lookback.set(options.lookbackHours);
     if (options.curate !== undefined && options.curate !== null) this.curate.set(options.curate);
   }
@@ -390,6 +403,7 @@ export class TrendsPage implements OnDestroy {
     return {
       topics: asTopics(this.topics()),
       region: this.region(),
+      category: this.category(),
       lookbackHours: this.lookback(),
       videosPerTopic: DEFAULT_RESEARCH.videosPerTopic,
       maxTrends: DEFAULT_RESEARCH.maxTrends,
@@ -540,7 +554,8 @@ export class TrendsPage implements OnDestroy {
     this.editEvery.set(schedule.everyHours ?? 24);
     this.editAt.set(schedule.at ?? '07:30');
     this.editTopicsText.set((schedule.options.topics ?? []).join(', '));
-    this.editRegion.set(schedule.options.region ?? DEFAULT_RESEARCH.region);
+    this.editRegion.set(schedule.options.region ?? null);
+    this.editCategory.set(schedule.options.category ?? null);
     this.editLookback.set(schedule.options.lookbackHours ?? DEFAULT_RESEARCH.lookbackHours);
     this.editCurate.set(schedule.options.curate ?? DEFAULT_RESEARCH.curate);
     this.error.set(null);

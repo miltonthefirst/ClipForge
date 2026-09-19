@@ -1,5 +1,8 @@
 """Generate the Pydantic half of the contracts from schemas/clipforge.json.
 
+Also renders data/categories.json — the category catalogue — into
+``clipforge_contracts.categories``, for the same reason and under the same check.
+
 Run with the worker's environment, which is where datamodel-code-generator lives:
 
     uv run --project apps/worker python packages/contracts/scripts/generate_python.py
@@ -28,7 +31,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "schemas" / "clipforge.json"
+CATALOGUE = ROOT / "data" / "categories.json"
 PKG_DIR = ROOT / "generated" / "python" / "clipforge_contracts"
+GENERATED = ("models.py", "categories.py", "__init__.py")
 
 BANNER = """\
 # ClipForge contracts - GENERATED FILE, DO NOT EDIT.
@@ -41,6 +46,19 @@ BANNER = """\
 # difference. Change the schema instead.
 """
 
+CATALOGUE_BANNER = """\
+# ClipForge category catalogue - GENERATED FILE, DO NOT EDIT.
+#
+# Source of truth: packages/contracts/data/categories.json
+# Regenerate with:
+#   uv run --project apps/worker python packages/contracts/scripts/generate_python.py
+#
+# Editing this file by hand is pointless: CI regenerates it and fails on any
+# difference. Change the catalogue instead.
+"""
+
+CATALOGUE_NAMES = ["CATEGORIES", "Category", "category_by_code"]
+
 
 def _exported_names() -> list[str]:
     """Every type the schema defines, plus the root registry object."""
@@ -51,14 +69,92 @@ def _exported_names() -> list[str]:
 
 def _render_init(names: list[str]) -> str:
     lines = [BANNER, '"""ClipForge wire protocol, generated from JSON Schema."""', ""]
+    lines.append("from clipforge_contracts.categories import (")
+    lines.extend(f"    {name} as {name}," for name in CATALOGUE_NAMES)
+    lines.append(")")
     lines.append("from clipforge_contracts.models import (")
     lines.extend(f"    {name} as {name}," for name in names)
     lines.append(")")
     lines.append("")
     lines.append("__all__ = [")
-    lines.extend(f'    "{name}",' for name in names)
+    lines.extend(f'    "{name}",' for name in sorted([*names, *CATALOGUE_NAMES]))
     lines.append("]")
     lines.append("")
+    return "\n".join(lines)
+
+
+def _py(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _tuple(values: list[str]) -> str:
+    inner = ", ".join(_py(v) for v in values)
+    return f"({inner},)" if values else "()"
+
+
+def _render_catalogue() -> str:
+    """The category catalogue as frozen dataclasses.
+
+    Data rather than a type, and needed at runtime by the worker — which
+    subreddits a category reads, what it searches — so it is rendered into the
+    package instead of read from a file an installed package might not ship.
+    """
+    document = json.loads(CATALOGUE.read_text(encoding="utf-8"))
+    lines = [
+        CATALOGUE_BANNER,
+        '"""The category catalogue: what a RESEARCH run may say it is about."""',
+        "",
+        "from __future__ import annotations",
+        "",
+        "from dataclasses import dataclass",
+        "",
+        "",
+        "@dataclass(frozen=True)",
+        "class Category:",
+        '    """One entry. ``code`` is what travels on ``ResearchOptions.category``."""',
+        "",
+        "    code: str",
+        "    label: str",
+        "    group: str",
+        "    #: Appended to a feed phrase when videos are looked up for it.",
+        "    hint: str",
+        "    #: Other words a person might search the list by.",
+        "    aliases: tuple[str, ...]",
+        "    #: Searched on YouTube when a run has no topics of its own.",
+        "    terms: tuple[str, ...]",
+        "    #: Read when a run names no subreddits of its own.",
+        "    subreddits: tuple[str, ...]",
+        "",
+        "",
+        "CATEGORIES: tuple[Category, ...] = (",
+    ]
+    for entry in document["categories"]:
+        lines.extend(
+            [
+                "    Category(",
+                f"        code={_py(entry['code'])},",
+                f"        label={_py(entry['label'])},",
+                f"        group={_py(entry['group'])},",
+                f"        hint={_py(entry['hint'])},",
+                f"        aliases={_tuple(entry['aliases'])},",
+                f"        terms={_tuple(entry['terms'])},",
+                f"        subreddits={_tuple(entry['subreddits'])},",
+                "    ),",
+            ]
+        )
+    lines.extend(
+        [
+            ")",
+            "",
+            "_BY_CODE: dict[str, Category] = {category.code: category for category in CATEGORIES}",
+            "",
+            "",
+            "def category_by_code(code: str | None) -> Category | None:",
+            '    """The catalogue entry for a code, or None for an unknown or absent one."""',
+            "    return _BY_CODE.get(code) if code else None",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -119,6 +215,7 @@ def _generate_into(target: Path) -> None:
     # Linux. (The --check comparison itself is unaffected either way, because
     # read_text() translates line endings on the way in.)
     models.write_text(models.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+    (target / "categories.py").write_text(_render_catalogue(), encoding="utf-8", newline="\n")
     (target / "__init__.py").write_text(
         _render_init(_exported_names()), encoding="utf-8", newline="\n"
     )
@@ -140,7 +237,7 @@ def main() -> int:
         _generate_into(fresh)
 
         stale: list[str] = []
-        for name in ("models.py", "__init__.py"):
+        for name in GENERATED:
             want = (fresh / name).read_text(encoding="utf-8")
             got_path = PKG_DIR / name
             got = got_path.read_text(encoding="utf-8") if got_path.exists() else None

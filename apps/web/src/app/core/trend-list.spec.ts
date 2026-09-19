@@ -2,7 +2,10 @@ import type { Job } from '@clipforge/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
+  CATEGORY_CHOICES,
+  categoryLabel,
   curationState,
+  describeScope,
   describeSignal,
   parseTopics,
   readableAge,
@@ -36,6 +39,37 @@ function job(overrides: Partial<Job> = {}): Job {
     ...overrides,
   } as Job;
 }
+
+describe('describeScope', () => {
+  it('names the region and the category, or says what was left to the worker', () => {
+    expect(describeScope({ region: 'GB', category: 'football' })).toBe(
+      'United Kingdom · Football (soccer)',
+    );
+    expect(describeScope({ region: 'GB', category: null })).toBe('United Kingdom');
+    expect(describeScope({ region: null, category: 'k-pop' })).toBe('default region · K-pop');
+    expect(describeScope({})).toBe('default region');
+    expect(describeScope(null)).toBe('default region');
+  });
+
+  it('shows a code it does not know rather than nothing', () => {
+    expect(describeScope({ region: 'ZZ', category: 'newer-than-this-build' })).toBe(
+      'ZZ · newer-than-this-build',
+    );
+    expect(categoryLabel(null)).toBeNull();
+  });
+});
+
+describe('CATEGORY_CHOICES', () => {
+  it('is the whole catalogue, searchable by group and alias', () => {
+    expect(CATEGORY_CHOICES.length).toBeGreaterThanOrEqual(200);
+    const football = CATEGORY_CHOICES.find((choice) => choice.code === 'football');
+    expect(football?.group).toBe('Sports');
+    expect(football?.aliases).toContain('soccer');
+    expect(new Set(CATEGORY_CHOICES.map((choice) => choice.code)).size).toBe(
+      CATEGORY_CHOICES.length,
+    );
+  });
+});
 
 describe('parseTopics', () => {
   it('splits on commas and lines, trims, and drops blanks', () => {

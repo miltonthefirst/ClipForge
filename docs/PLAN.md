@@ -236,6 +236,15 @@ clips/{clipId}                    # a rendered artefact — the FILE stays on th
                                    # not drag image bytes on every read
   publications/{pubId}            # platform, externalId, state, attempts
   metrics/{yyyymmdd}              # daily analytics snapshot
+
+trends/{trendId}                  # one row of a RESEARCH run's ranked list (Phase 10)
+  jobId, topic, rank, score, signals[], videos[], matchedTopics[]
+  angle, relevance, worthClipping, compilationTitle, curated   # the model's verdict
+  status: NEW|PROMOTED|DISMISSED   # the one thing a client may change
+
+schedules/{scheduleId}            # a standing research request (ADR-0023)
+  name, enabled, cadence, everyHours, at, timezone, options{}   # client-owned
+  nextDueAt, lastRunAt, lastJobId, lastOutcome                  # worker-owned
 ```
 
 ### 3.3 Job and lease protocol
@@ -1433,6 +1442,15 @@ filter: only moments that fit come back, and a job whose brief matches nothing f
 clips and says so. Candidates chosen under a brief are stamped `v1-brief`. *Clip it* on the Trends
 page passes the model's angle as the brief. See [ADR-0024](adr/0024-a-brief-on-the-job.md).
 
+**Where, and what kind** (2026-09-19). The region became optional and the list became every
+country Google Trends' feed answers for — 124, probed one by one — behind a searchable combobox;
+null resolves to a new worker setting. A **category** joined it: a catalogue of 224 entries in 17
+groups, held as data in the contracts package and rendered into both consumers under the same
+staleness check as the schema. A category fills in what a run left blank — subreddits, YouTube
+search terms — puts a hint on every feed-phrase lookup, and is told to the curator; it never
+overrides the run's own words, and the feed it cannot steer (Google Trends ignores category) is
+said so rather than pretended. See [ADR-0025](adr/0025-a-category-catalogue-as-data.md).
+
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
 does not automate the scorer; it feeds it.
@@ -1960,11 +1978,11 @@ where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 1050 | nothing |
-| Worker integration | 119 | Firestore emulator; the five ASSEMBLE tests need only ffmpeg |
-| Security rules | 233 | Auth + Firestore + Storage emulators |
-| Web unit | 279 | nothing |
-| Playwright E2E | 70 | Auth + Firestore emulators, stubbed worker |
+| Worker unit | 1082 | nothing |
+| Worker integration | 125 | Firestore emulator; the five ASSEMBLE tests need only ffmpeg |
+| Security rules | 264 | Auth + Firestore + Storage emulators |
+| Web unit | 321 | nothing |
+| Playwright E2E | 76 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

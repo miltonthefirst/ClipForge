@@ -40,6 +40,14 @@ class ResearchRequest:
     videos_per_topic: int
     subreddits: tuple[str, ...]
     now: datetime
+    #: The catalogue code the run named, once the stage has confirmed it is
+    #: one the catalogue knows. Already folded into `topics` and `subreddits`
+    #: where those were blank; kept here for providers that want to know.
+    category: str | None = None
+    #: What to append to a feed phrase when looking up videos for it, so a
+    #: search for a bare trending name lands in the category's corner of
+    #: YouTube. None when the run named no category.
+    category_hint: str | None = None
 
 
 @dataclass(frozen=True)

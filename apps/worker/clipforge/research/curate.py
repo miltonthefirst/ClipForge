@@ -15,13 +15,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from clipforge_contracts import LlmTrendVerdict, Trend
+from clipforge_contracts import Category, LlmTrendVerdict, Trend
 
 from clipforge.models.ollama import OllamaClient
 
-__all__ = ["CURATE_PROMPT_VERSION", "CURATE_SYSTEM_PROMPT", "build_curate_prompt", "curate_trend"]
+__all__ = [
+    "CURATE_PROMPT_VERSION",
+    "CURATE_SYSTEM_PROMPT",
+    "build_curate_prompt",
+    "curate_trend",
+    "describe_channel",
+]
 
-CURATE_PROMPT_VERSION = "curate-v1"
+# v2: the channel's category, when the run named one, is put to the model
+# beside its topics, and relevance is judged against either.
+CURATE_PROMPT_VERSION = "curate-v2"
 
 CURATE_SYSTEM_PROMPT = """\
 You are the editor of a short-form video channel deciding what to make next.
@@ -47,15 +55,18 @@ Answer these four things:
 - angle: ONE sentence saying what a 30-60 second clip about this would actually \
 show or say. Concrete, not a slogan. If the evidence does not support a clip, \
 say what is missing.
-- relevance: 0-10, how much this belongs on a channel about the interests \
-above. 0 if there are no interests listed, or nothing here relates to them.
+- relevance: 0-10, how much this belongs on the channel described above: its \
+interests, its category, or both. 0 if neither is given, or nothing here \
+relates to them.
 - worthClipping: true only if there is at least one video that a clip could be \
 cut from AND the topic is something a viewer would stop scrolling for.
 - compilationTitle: a title, under 70 characters, for a video stitched from the \
 best of these videos. Written for a feed: the hook first, no hashtags."""
 
 
-def build_curate_prompt(trend: Trend, *, interests: Sequence[str]) -> str:
+def build_curate_prompt(
+    trend: Trend, *, interests: Sequence[str], category: Category | None = None
+) -> str:
     signals = (
         "\n".join(
             f"- {signal.source.value.replace('_', ' ').title()}: "
@@ -74,21 +85,45 @@ def build_curate_prompt(trend: Trend, *, interests: Sequence[str]) -> str:
         )
         or "- none found"
     )
-    if interests:
-        interest_line = "This channel is about: " + ", ".join(interests) + "."
-    else:
-        interest_line = "This channel has not said what it is about."
     return _USER_TEMPLATE.format(
-        topic=trend.topic, signals=signals, videos=videos, interests=interest_line
+        topic=trend.topic,
+        signals=signals,
+        videos=videos,
+        interests=describe_channel(interests, category),
     )
 
 
+def describe_channel(interests: Sequence[str], category: Category | None) -> str:
+    """The sentence that tells the model what the channel is, or that nobody said.
+
+    The category is named by its label and its search terms rather than its
+    code, because "Football (soccer): football highlights, champions league"
+    is what a person meant and "football" is a key.
+    """
+    lines: list[str] = []
+    if interests:
+        lines.append("This channel is about: " + ", ".join(interests) + ".")
+    if category is not None:
+        lines.append(
+            f"Its category is {category.label}"
+            + (f" ({', '.join(category.terms)})" if category.terms else "")
+            + "."
+        )
+    if not lines:
+        return "This channel has not said what it is about."
+    return " ".join(lines)
+
+
 def curate_trend(
-    client: OllamaClient, trend: Trend, *, interests: Sequence[str]
+    client: OllamaClient,
+    trend: Trend,
+    *,
+    interests: Sequence[str],
+    category: Category | None = None,
 ) -> LlmTrendVerdict:
     """One schema-constrained call. Raises `OllamaError`; the stage decides what that costs."""
     return client.generate_structured(
         schema_model=LlmTrendVerdict,
         system=CURATE_SYSTEM_PROMPT,
-        prompt=build_curate_prompt(trend, interests=interests),
+        prompt=build_curate_prompt(trend, interests=interests, category=category),
     )

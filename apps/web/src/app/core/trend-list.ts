@@ -1,4 +1,8 @@
 import type { Job, ResearchOptions, TrendSignal, TrendSource } from '@clipforge/contracts';
+import { CATEGORIES } from '@clipforge/contracts/categories';
+
+import type { Choice } from '../shared/combobox';
+import { regionLabel } from './regions';
 
 /**
  * What the Trends page says about a row, worked out here so it can be tested.
@@ -19,35 +23,52 @@ export function asTopics(topics: string[]): ResearchOptions['topics'] {
   return topics.slice(0, 12) as ResearchOptions['topics'];
 }
 
-/** What a run asks for when the form is left alone. Mirrors the contract's defaults. */
+/**
+ * What a run asks for when the form is left alone. Mirrors the contract's
+ * defaults. Region and category are not here because their default is *none*:
+ * no region means the worker's own, no category means nothing steered.
+ */
 export const DEFAULT_RESEARCH: Required<
-  Pick<ResearchOptions, 'region' | 'lookbackHours' | 'videosPerTopic' | 'maxTrends' | 'curate'>
+  Pick<ResearchOptions, 'lookbackHours' | 'videosPerTopic' | 'maxTrends' | 'curate'>
 > = {
-  region: 'US',
   lookbackHours: 48,
   videosPerTopic: 5,
   maxTrends: 12,
   curate: true,
 };
 
-/** The regions the form offers. Trends are local; the same day differs by country. */
-export const REGIONS: readonly { code: string; label: string }[] = [
-  { code: 'US', label: 'United States' },
-  { code: 'GB', label: 'United Kingdom' },
-  { code: 'IE', label: 'Ireland' },
-  { code: 'CA', label: 'Canada' },
-  { code: 'AU', label: 'Australia' },
-  { code: 'NZ', label: 'New Zealand' },
-  { code: 'IN', label: 'India' },
-  { code: 'DE', label: 'Germany' },
-  { code: 'FR', label: 'France' },
-  { code: 'ES', label: 'Spain' },
-  { code: 'IT', label: 'Italy' },
-  { code: 'NL', label: 'Netherlands' },
-  { code: 'BR', label: 'Brazil' },
-  { code: 'MX', label: 'Mexico' },
-  { code: 'JP', label: 'Japan' },
-];
+/**
+ * The catalogue as the combobox wants it: a name to show, a group beside it,
+ * and the other words a person might type for it. The rest of an entry — its
+ * search terms, its subreddits — is the worker's business.
+ */
+export const CATEGORY_CHOICES: readonly Choice[] = CATEGORIES.map((category) => ({
+  code: category.code,
+  label: category.label,
+  group: category.group,
+  aliases: category.aliases,
+}));
+
+const CATEGORY_LABELS = new Map(CATEGORIES.map((category) => [category.code, category.label]));
+
+/** The name for a code, or the code itself for one this build's catalogue does not know. */
+export function categoryLabel(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return CATEGORY_LABELS.get(code) ?? code;
+}
+
+/**
+ * Where a run looks and what it is about, for a schedule's one-line summary:
+ * "United Kingdom · Football (soccer)", or "default region" when it left both
+ * to the worker.
+ */
+export function describeScope(
+  options: Pick<ResearchOptions, 'region' | 'category'> | null | undefined,
+): string {
+  const where = regionLabel(options?.region) ?? 'default region';
+  const what = categoryLabel(options?.category);
+  return what ? `${where} · ${what}` : where;
+}
 
 /** How far back "now" reaches. The feeds only come in day, week and month. */
 export const LOOKBACKS: readonly { hours: number; label: string }[] = [

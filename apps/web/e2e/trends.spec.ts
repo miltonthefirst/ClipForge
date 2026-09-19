@@ -184,6 +184,41 @@ test('Compile this gathers the trend and the Compile page makes a COMPILE job', 
   expect(compile?.stages.map((stage) => stage.name)).toEqual(['GATHER', 'SELECT', 'ASSEMBLE']);
 });
 
+test('where and what kind are typed for, optional, and ride on the job', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/trends');
+
+  // Country: type part of a name, pick from what is left.
+  const where = page.getByRole('combobox', { name: 'Where' });
+  await where.fill('united k');
+  await page.getByRole('option', { name: 'United Kingdom' }).click();
+  await expect(where).toHaveValue('United Kingdom');
+
+  // Category: found by an alias, chosen with the keyboard.
+  const category = page.getByRole('combobox', { name: 'Category' });
+  await category.fill('soccer');
+  await expect(page.getByRole('option', { name: /Football \(soccer\)/ })).toBeVisible();
+  await category.press('Enter');
+  await expect(category).toHaveValue('Football (soccer)');
+
+  await page.getByRole('button', { name: "Find what's trending" }).click();
+  await expect(page).toHaveURL(/run=/);
+
+  await expect.poll(async () => (await listDocs('jobs')).length).toBe(1);
+  const asked = (await listDocs('jobs')).map(unwrap) as {
+    researchOptions: { region: string | null; category: string | null; topics: string[] };
+  }[];
+  expect(asked[0]?.researchOptions.region).toBe('GB');
+  expect(asked[0]?.researchOptions.category).toBe('football');
+  expect(asked[0]?.researchOptions.topics).toEqual([]);
+
+  // The form keeps what was asked; the cross puts a field back to "none".
+  await expect(where).toHaveValue('United Kingdom');
+  await page.getByRole('button', { name: 'Clear Where' }).click();
+  await expect(where).toHaveValue('');
+  await expect(where).toHaveAttribute('placeholder', 'Worker’s default');
+});
+
 test('a dismissed trend leaves the list and can be brought back', async ({ page }) => {
   const uid = await signIn(page);
   await write('jobs/job-research-1', researchJob(uid));
@@ -223,7 +258,7 @@ test('saving the form as a schedule writes what the worker fires, and the list s
     at: string | null;
     everyHours: number | null;
     timezone: string | null;
-    options: { topics: string[]; region: string };
+    options: { topics: string[]; region: string | null; category: string | null };
     lastJobId: string | null;
   }[];
   expect(schedules).toHaveLength(1);
@@ -234,6 +269,9 @@ test('saving the form as a schedule writes what the worker fires, and the list s
   expect(schedules[0]?.everyHours).toBeNull();
   expect(typeof schedules[0]?.timezone).toBe('string');
   expect(schedules[0]?.options.topics).toEqual(['premier league']);
+  // Left alone, both are null: the worker's default region, nothing steered.
+  expect(schedules[0]?.options.region).toBeNull();
+  expect(schedules[0]?.options.category).toBeNull();
   expect(schedules[0]?.lastJobId).toBeNull();
 
   await row.getByRole('button', { name: 'Switch off' }).click();

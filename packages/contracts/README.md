@@ -66,6 +66,23 @@ pointless: CI regenerates and compares.
 | `LlmClipResponse`, `LlmClipProposal` | The model's schema-constrained reply |
 | `Clip` | Render output, review state, where the file lives |
 | `WorkerHeartbeat`, `GpuInfo` | Worker status indicator in the PWA |
+| `Publication`, `MetricSnapshot`, `CalibrationReport` | Publishing, analytics, and whether the scoring predicted anything |
+| `RemakeOptions`, `AppliedRemake`, `Preference` | Correcting a clip, and what the worker learned from the correction |
+| `ClipOptions` | The brief on a clip job: what to clip, how many, how long |
+| `ResearchOptions`, `Trend`, `LlmTrendVerdict` | A trend run's question, its rows, and the model's verdict on each |
+| `ResearchSchedule` | A standing research request the worker fires on its own |
+| `CompileOptions`, `AppliedCompile` | One clip from several videos, and the provenance of each piece |
+| `AgentReport`, `Channel`, `UserProfile` | The machine agent, YouTube channels, and who may use the app |
+
+## The category catalogue
+
+`data/categories.json` is the one piece of *data* here rather than a type: the categories a
+research run may say it is about — a code, a label and group, aliases to search by, and what the
+worker does with it (a hint for video lookups, search terms for a run with no topics, subreddits
+for a run that names none). Both generators render it, into `generated/typescript/categories.ts`
+and `clipforge_contracts.categories`, and both `--check` modes compare it. Add a category by
+adding an entry and regenerating; the rules check only the code's shape, so no rules deploy is
+needed. See [ADR-0025](../../docs/adr/0025-a-category-catalogue-as-data.md).
 
 The root `ClipForgeContracts` object exists so that every definition is reachable from the schema
 root: both generators emit only what is referenced, and a type that nothing referenced would silently

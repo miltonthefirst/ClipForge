@@ -2254,7 +2254,7 @@
 
     "ResearchOptions": {
       "title": "ResearchOptions",
-      "description": "What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.",
+      "description": "What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, wherever the worker looks by default'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -2266,10 +2266,16 @@
           "description": "What the channel is about, in the operator's words. Each one is searched on YouTube and used to judge relevance; with none, the run reports what is trending regardless."
         },
         "region": {
-          "type": "string",
+          "type": ["string", "null"],
           "pattern": "^[A-Z]{2}$",
-          "default": "US",
-          "description": "ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US."
+          "default": null,
+          "description": "ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US. Null leaves it to the worker's configured default region."
+        },
+        "category": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z0-9-]{1,40}$",
+          "default": null,
+          "description": "A code from the category catalogue (packages/contracts/data/categories.json): what the channel is about, more broadly than its topics. Steers which subreddits are read when none are named, what is searched on YouTube when there are no topics, how a feed phrase is looked up, and what the model judges relevance against. A code the worker does not know is ignored, not refused, so a newer client does not break an older worker."
         },
         "lookbackHours": { "type": "integer", "minimum": 6, "maximum": 168, "default": 48 },
         "videosPerTopic": { "type": "integer", "minimum": 1, "maximum": 10, "default": 5 },

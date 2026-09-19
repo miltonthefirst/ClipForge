@@ -34,19 +34,32 @@
   </label>
 
   <div class="mt-4 flex flex-wrap items-end gap-4">
-    <label class="block text-sm">
+    <!-- Both optional, both searchable: a hundred and twenty countries and two
+         hundred categories are typed for, not scrolled to. The placeholder is
+         where each says what leaving it empty means. -->
+    <div class="block w-52 text-sm">
       <span class="text-ink-muted">Where</span>
-      <select
-        class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+      <app-combobox
+        label="Where"
         name="region"
-        [ngModel]="region()"
-        (ngModelChange)="region.set($event)"
-      >
-        @for (option of regions; track option.code) {
-          <option [value]="option.code">{{ option.label }}</option>
-        }
-      </select>
-    </label>
+        placeholder="Worker’s default"
+        [options]="regions"
+        [value]="region()"
+        (valueChange)="region.set($event)"
+      />
+    </div>
+
+    <div class="block w-60 text-sm">
+      <span class="text-ink-muted">Category</span>
+      <app-combobox
+        label="Category"
+        name="category"
+        placeholder="Any"
+        [options]="categories"
+        [value]="category()"
+        (valueChange)="category.set($event)"
+      />
+    </div>
 
     <label class="block text-sm">
       <span class="text-ink-muted">How recent</span>
@@ -187,7 +200,7 @@
                 <span class="font-normal text-ink-subtle">· {{ row.cadence }}</span>
               </p>
               <p class="mt-0.5 truncate text-xs text-ink-subtle">
-                {{ row.topics }} · {{ row.schedule.options.region || 'US' }} ·
+                {{ row.topics }} · {{ row.scope }} ·
                 @if (row.schedule.enabled) {
                   next {{ row.next }}
                 } @else {
@@ -318,19 +331,28 @@
                 </label>
 
                 <div class="mt-3 flex flex-wrap items-end gap-4">
-                  <label class="block text-sm">
+                  <div class="block w-52 text-sm">
                     <span class="text-ink-muted">Where</span>
-                    <select
-                      class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                    <app-combobox
+                      label="Where"
                       name="editRegion"
-                      [ngModel]="editRegion()"
-                      (ngModelChange)="editRegion.set($event)"
-                    >
-                      @for (option of regions; track option.code) {
-                        <option [value]="option.code">{{ option.label }}</option>
-                      }
-                    </select>
-                  </label>
+                      placeholder="Worker’s default"
+                      [options]="regions"
+                      [value]="editRegion()"
+                      (valueChange)="editRegion.set($event)"
+                    />
+                  </div>
+                  <div class="block w-60 text-sm">
+                    <span class="text-ink-muted">Category</span>
+                    <app-combobox
+                      label="Category"
+                      name="editCategory"
+                      placeholder="Any"
+                      [options]="categories"
+                      [value]="editCategory()"
+                      (valueChange)="editCategory.set($event)"
+                    />
+                  </div>
                   <label class="block text-sm">
                     <span class="text-ink-muted">How recent</span>
                     <select

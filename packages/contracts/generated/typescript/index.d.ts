@@ -607,7 +607,7 @@ export interface ObscureRegion {
   confidence?: number | null;
 }
 /**
- * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
+ * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, wherever the worker looks by default'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
  */
 export interface ResearchOptions {
   /**
@@ -643,9 +643,13 @@ export interface ResearchOptions {
         string
       ];
   /**
-   * ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US.
+   * ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US. Null leaves it to the worker's configured default region.
    */
-  region?: string;
+  region?: string | null;
+  /**
+   * A code from the category catalogue (packages/contracts/data/categories.json): what the channel is about, more broadly than its topics. Steers which subreddits are read when none are named, what is searched on YouTube when there are no topics, how a feed phrase is looked up, and what the model judges relevance against. A code the worker does not know is ignored, not refused, so a newer client does not break an older worker.
+   */
+  category?: string | null;
   lookbackHours?: number;
   videosPerTopic?: number;
   maxTrends?: number;
@@ -2535,7 +2539,7 @@ export interface ResearchSchedule {
   updatedAt: string;
 }
 /**
- * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
+ * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, wherever the worker looks by default'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
  */
 export interface ResearchOptions1 {
   /**
@@ -2571,9 +2575,13 @@ export interface ResearchOptions1 {
         string
       ];
   /**
-   * ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US.
+   * ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US. Null leaves it to the worker's configured default region.
    */
-  region?: string;
+  region?: string | null;
+  /**
+   * A code from the category catalogue (packages/contracts/data/categories.json): what the channel is about, more broadly than its topics. Steers which subreddits are read when none are named, what is searched on YouTube when there are no topics, how a feed phrase is looked up, and what the model judges relevance against. A code the worker does not know is ignored, not refused, so a newer client does not break an older worker.
+   */
+  category?: string | null;
   lookbackHours?: number;
   videosPerTopic?: number;
   maxTrends?: number;

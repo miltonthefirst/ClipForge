@@ -445,12 +445,18 @@ service cloud.firestore {
     function researchOptionsShapeOk(options) {
       return options != null
              && options.keys().hasOnly(
-                  ['topics', 'region', 'lookbackHours', 'videosPerTopic', 'maxTrends',
-                   'sources', 'subreddits', 'curate'])
+                  ['topics', 'region', 'category', 'lookbackHours', 'videosPerTopic',
+                   'maxTrends', 'sources', 'subreddits', 'curate'])
              && (options.get('topics', null) == null
                  || (options.topics is list && options.topics.size() <= 12))
              && (options.get('region', null) == null
                  || (options.region is string && options.region.matches('^[A-Z]{2}$')))
+             // A catalogue code, checked for shape only: the catalogue lives in
+             // the contracts package and the worker ignores a code it does not
+             // know, so the rules need not be redeployed for a new category.
+             && (options.get('category', null) == null
+                 || (options.category is string
+                     && options.category.matches('^[a-z0-9-]{1,40}$')))
              && (options.get('lookbackHours', null) == null
                  || (options.lookbackHours is int
                      && options.lookbackHours >= 6 && options.lookbackHours <= 168))

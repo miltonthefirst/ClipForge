@@ -38,6 +38,7 @@ __all__ = [
     "blend_rank",
     "cluster_signals",
     "dedupe_videos",
+    "lookup_query",
     "matched_interests",
     "rank_trends",
     "score_trend",
@@ -288,6 +289,22 @@ def _velocity(hit: VideoHit, now: datetime) -> float | None:
         return None
     hours = max((now - hit.uploaded_at).total_seconds() / 3600.0, 1.0)
     return hit.view_count / hours
+
+
+def lookup_query(label: str, hint: str | None) -> str:
+    """What to search for when a feed phrase needs videos: the phrase, plus the category.
+
+    A trending name on its own is ambiguous — "starz" is a network and a
+    surname; "portland st vs oregon" is a game in three sports — and a
+    category is the one thing the run said about what it wants. The hint is
+    appended, not substituted, and left off when its words are already in the
+    phrase, so "f1 grand prix" does not become "f1 grand prix f1".
+    """
+    if not hint:
+        return label
+    if topic_tokens(hint) <= topic_tokens(label):
+        return label
+    return f"{label} {hint}"
 
 
 def matched_interests(cluster: Cluster, interests: Sequence[str]) -> list[str]:

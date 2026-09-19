@@ -186,9 +186,13 @@ def job(
 
 
 def context(
-    the_job: Job, *, stage: StageName, checkpoint: dict[str, Any] | None = None
+    the_job: Job,
+    *,
+    stage: StageName,
+    checkpoint: dict[str, Any] | None = None,
+    settings: Settings | None = None,
 ) -> StageContext:
-    settings = Settings(_env_file=None)
+    settings = settings or Settings(_env_file=None)
     return StageContext(
         job=the_job,
         stage_name=stage,
@@ -354,8 +358,95 @@ def test_research_asks_only_the_sources_the_run_named_and_passes_its_topics() ->
     assert youtube.requests[0].topics == ("premier league",)
     assert youtube.requests[0].region == "GB"
     assert youtube.requests[0].lookback_hours == 24
+    assert youtube.requests[0].category is None
     rows = store.for_job("job-research")
     assert [str(m.root) for m in rows[0].matched_topics or []] == ["premier league"]
+
+
+def test_no_region_means_the_worker_s_default() -> None:
+    store = FakeTrendStore()
+    google = FakeProvider(TrendSource.GOOGLE_TRENDS, [sig("x", TrendSource.GOOGLE_TRENDS)])
+    stage = ResearchStage(trends=store, providers=[google], finder=None, clock=lambda: NOW)
+
+    outcome = stage.run(
+        context(
+            job(ResearchOptions(region=None)),
+            stage=StageName.RESEARCH,
+            settings=Settings(_env_file=None, research_region="GB"),
+        )
+    )
+
+    assert google.requests[0].region == "GB"
+    assert outcome.checkpoint is not None
+    assert outcome.checkpoint["region"] == "GB"
+    assert outcome.checkpoint["category"] is None
+
+
+def test_a_category_fills_in_what_the_run_left_blank() -> None:
+    """No topics and no subreddits: the category's own are used, and lookups carry its hint."""
+    store = FakeTrendStore()
+    google = FakeProvider(TrendSource.GOOGLE_TRENDS, [sig("arsenal", TrendSource.GOOGLE_TRENDS)])
+    reddit = FakeProvider(TrendSource.REDDIT, [])
+    youtube = FakeProvider(TrendSource.YOUTUBE, [])
+    finder = FakeFinder({"arsenal football": [hit("aaaaaaaaaaa")]})
+    stage = ResearchStage(
+        trends=store, providers=[google, reddit, youtube], finder=finder, clock=lambda: NOW
+    )
+
+    outcome = stage.run(
+        context(job(ResearchOptions(category="football")), stage=StageName.RESEARCH)
+    )
+
+    request = reddit.requests[0]
+    assert request.category == "football"
+    assert request.category_hint == "football"
+    assert "soccer" in request.subreddits
+    assert request.topics == ("football highlights", "champions league")
+    # The feed phrase was looked up in the category's corner of YouTube.
+    assert finder.asked == ["arsenal football"]
+    rows = store.for_job("job-research")
+    assert [v.external_id for v in rows[0].videos] == ["aaaaaaaaaaa"]
+    # The category's terms are searched, but they are not the run's interests:
+    # nothing is recorded as matched that the operator did not write.
+    assert rows[0].matched_topics in (None, [])
+    assert outcome.checkpoint is not None
+    assert outcome.checkpoint["category"] == "football"
+
+
+def test_a_run_s_own_words_win_over_its_category() -> None:
+    store = FakeTrendStore()
+    reddit = FakeProvider(TrendSource.REDDIT, [sig("x", TrendSource.REDDIT)])
+    youtube = FakeProvider(TrendSource.YOUTUBE, [])
+    stage = ResearchStage(trends=store, providers=[reddit, youtube], finder=None, clock=lambda: NOW)
+
+    stage.run(
+        context(
+            job(ResearchOptions(topics=["arsenal"], subreddits=["Gunners"], category="football")),
+            stage=StageName.RESEARCH,
+        )
+    )
+
+    request = youtube.requests[0]
+    assert request.topics == ("arsenal",)
+    assert request.subreddits == ("Gunners",)
+    assert request.category == "football"
+
+
+def test_an_unknown_category_is_ignored_not_refused() -> None:
+    store = FakeTrendStore()
+    reddit = FakeProvider(TrendSource.REDDIT, [sig("arsenal", TrendSource.REDDIT)])
+    stage = ResearchStage(trends=store, providers=[reddit], finder=None, clock=lambda: NOW)
+
+    outcome = stage.run(
+        context(job(ResearchOptions(category="not-a-thing")), stage=StageName.RESEARCH)
+    )
+
+    assert reddit.requests[0].category is None
+    assert reddit.requests[0].subreddits == ()
+    assert reddit.requests[0].category_hint is None
+    assert len(store.for_job("job-research")) == 1
+    assert outcome.checkpoint is not None
+    assert outcome.checkpoint["category"] is None
 
 
 def test_an_empty_window_is_a_result_not_a_failure() -> None:
@@ -373,6 +464,8 @@ def test_an_empty_window_is_a_result_not_a_failure() -> None:
         "signals": 0,
         "providers": {"REDDIT": 0},
         "failures": {},
+        "region": "US",
+        "category": None,
     }
 
 
@@ -416,16 +509,29 @@ def test_curate_annotates_every_row_and_reorders_by_the_blend() -> None:
     ]
     assert outcome.checkpoint is not None
     assert outcome.checkpoint["curated"] == ["t1", "t2"]
-    assert outcome.checkpoint["promptVersion"] == "curate-v1"
+    assert outcome.checkpoint["promptVersion"] == "curate-v2"
     assert "2 of 2" in (outcome.detail or "")
 
 
 def test_curate_records_no_relevance_when_the_run_named_no_interests() -> None:
     store = FakeTrendStore([trend("t1", "anything", 1)])
-    stage = CurateStage(trends=store, client_factory=lambda _ctx: ScriptedModel())
+    model = ScriptedModel()
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: model)
     stage.run(context(job(ResearchOptions()), stage=StageName.CURATE))
     assert store.annotations[0]["relevance"] is None
     assert store.annotations[0]["angle"] == "What a clip would show."
+    assert "has not said what it is about" in model.prompts[0]
+
+
+def test_curate_tells_the_model_the_category_and_judges_relevance_against_it() -> None:
+    store = FakeTrendStore([trend("t1", "premier league final day", 1)])
+    model = ScriptedModel()
+    stage = CurateStage(trends=store, client_factory=lambda _ctx: model)
+    stage.run(context(job(ResearchOptions(category="football")), stage=StageName.CURATE))
+    # A category is enough to judge against, even with no topics.
+    assert store.annotations[0]["relevance"] == 9
+    assert "Its category is Football (soccer)" in model.prompts[0]
+    assert "football highlights" in model.prompts[0]
 
 
 def test_curate_is_skipped_when_the_run_turned_it_off() -> None:

@@ -1767,7 +1767,7 @@ class Subreddit(RootModel[str]):
 
 class ResearchOptions(BaseModel):
     """
-    What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, everywhere I can look'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
+    What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, wherever the worker looks by default'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
     """
 
     model_config = ConfigDict(
@@ -1778,9 +1778,13 @@ class ResearchOptions(BaseModel):
     """
     What the channel is about, in the operator's words. Each one is searched on YouTube and used to judge relevance; with none, the run reports what is trending regardless.
     """
-    region: str | None = Field("US", pattern="^[A-Z]{2}$")
+    region: str | None = Field(None, pattern="^[A-Z]{2}$")
     """
-    ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US.
+    ISO 3166 country code, for the providers that take one. Trends are local: the same day looks different from GB and from US. Null leaves it to the worker's configured default region.
+    """
+    category: str | None = Field(None, pattern="^[a-z0-9-]{1,40}$")
+    """
+    A code from the category catalogue (packages/contracts/data/categories.json): what the channel is about, more broadly than its topics. Steers which subreddits are read when none are named, what is searched on YouTube when there are no topics, how a feed phrase is looked up, and what the model judges relevance against. A code the worker does not know is ignored, not refused, so a newer client does not break an older worker.
     """
     lookback_hours: int | None = Field(48, alias="lookbackHours", ge=6, le=168)
     videos_per_topic: int | None = Field(5, alias="videosPerTopic", ge=1, le=10)
