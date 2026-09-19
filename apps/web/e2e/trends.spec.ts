@@ -309,6 +309,70 @@ test('a trend has a page that says what became of it', async ({ page }) => {
   expect(queued.submission).toBe('https://www.youtube.com/watch?v=t1bbbbbbbbb');
   // And the page shows the new job at once, from the live listener.
   await expect(made.getByRole('link', { name: 'Job page →' })).toHaveCount(4);
+
+  // A finished job, and what it made, can be forgotten from here. The row
+  // for the job that made the clip has one Delete; the running and queued
+  // ones have none, because deleting a job a worker holds does not stop it.
+  await expect(made.getByRole('button', { name: 'Delete' })).toHaveCount(2);
+  page.once('dialog', (dialog) => void dialog.accept());
+  await made
+    .locator('li', { hasText: 'The late homer' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
+  await expect(made.getByRole('link', { name: 'Job page →' })).toHaveCount(3);
+  await expect.poll(async () => (await listDocs('clips')).length).toBe(0);
+  const remaining = (await listDocs('jobs')).map(unwrap) as { id: string }[];
+  expect(remaining.map((job) => job.id).sort()).not.toContain('job-a');
+});
+
+test('a compilation is deleted, with its job, from where the clip page describes it', async ({
+  page,
+}) => {
+  const uid = await signIn(page);
+  await write(
+    'jobs/job-compile-1',
+    job(uid, { id: 'job-compile-1', type: 'COMPILE', status: 'COMPLETED', submission: null }),
+  );
+  await write(
+    'clips/clip-1',
+    clip(uid, {
+      id: 'clip-1',
+      jobId: 'job-compile-1',
+      sourceId: null,
+      candidateId: 'compile-job-compile-1',
+      title: 'The best of the week',
+      compile: {
+        theme: 'brewers vs orioles',
+        segments: [
+          {
+            sourceId: 'src-1',
+            submission: 'https://www.youtube.com/watch?v=aaaaaaaaaaa',
+            startSec: 10,
+            endSec: 20,
+            durationSec: 10,
+          },
+          {
+            sourceId: 'src-2',
+            submission: 'https://www.youtube.com/watch?v=bbbbbbbbbbb',
+            startSec: 5,
+            endSec: 15,
+            durationSec: 10,
+          },
+        ],
+        titleCard: true,
+        transition: 'FADE',
+      },
+    }),
+  );
+  await write('clips/clip-1/preview/poster', preview());
+
+  await page.goto('/review/clip-1');
+  await expect(page.getByRole('heading', { name: 'Compiled from 2 videos' })).toBeVisible();
+  page.once('dialog', (dialog) => void dialog.accept());
+  await page.getByRole('button', { name: 'Delete this compilation' }).click();
+  await expect(page).toHaveURL(/\/review$/);
+  await expect.poll(async () => (await listDocs('clips')).length).toBe(0);
+  await expect.poll(async () => (await listDocs('jobs')).length).toBe(0);
 });
 
 test('a trend with nothing to clip becomes a drawn video from its page', async ({ page }) => {

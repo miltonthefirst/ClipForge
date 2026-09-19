@@ -271,6 +271,20 @@ export class ResearchRepository {
   }
 
   /**
+   * Forget a job made from a trend, and the clips it produced, together.
+   *
+   * Records only, as every delete here is (docs/adr/0017): the files stay on
+   * the machine that made them until Storage removes them, and a publication
+   * keeps its record. The clips go first, then the job, so a crash between the
+   * two leaves a job with no clips rather than clips with no job — the former
+   * reads as "finished with nothing"; the latter as a queue full of orphans.
+   */
+  async deleteProduced(jobId: string, clipIds: readonly string[]): Promise<void> {
+    for (const clipId of clipIds) await this.db.remove(CLIPS, clipId);
+    await this.db.remove(JOBS, jobId);
+  }
+
+  /**
    * Record what a person made of a trend.
    *
    * The only thing a client may change on a trend, and the rules pin it to

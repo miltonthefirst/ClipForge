@@ -26,7 +26,12 @@ import { newestFirst } from '../../core/data/jobs';
 import { IN_LIMIT, ResearchRepository } from '../../core/data/research';
 import type { Live } from '../../core/firestore/gateway';
 import { SessionService } from '../../core/session';
-import { activityFor, describeActivity, type TrendActivity } from '../../core/trend-activity';
+import {
+  activityFor,
+  describeActivity,
+  type JobActivity,
+  type TrendActivity,
+} from '../../core/trend-activity';
 import {
   describeSignal,
   readableAge,
@@ -272,6 +277,36 @@ export class TrendPage implements OnDestroy {
     this.error.set(null);
     try {
       await this.actions.decide(trend, status);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
+  /**
+   * Forget one job made from this trend, and the clips it produced.
+   *
+   * Only once it has stopped: deleting a job a worker still holds does not
+   * stop the worker, and the record would come back marked finished (the Jobs
+   * page says the same). The live listeners take the row away.
+   */
+  protected async deleteMade(row: JobActivity): Promise<void> {
+    const job = row.job;
+    if (job.status === 'QUEUED' || job.status === 'RUNNING') return;
+    const clips = row.clips.length;
+    const what =
+      `Delete this ${row.kind.toLowerCase()}` +
+      (clips ? ` and the ${clips} clip${clips === 1 ? '' : 's'} it made` : '') +
+      '? Video files stay on the machine that made them until you remove them in Storage.';
+    if (!confirm(what)) return;
+    this.busy.set(job.id);
+    this.error.set(null);
+    try {
+      await this.research.deleteProduced(
+        job.id,
+        row.clips.map((clip) => clip.id),
+      );
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {

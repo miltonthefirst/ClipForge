@@ -1476,6 +1476,11 @@ See [ADR-0026](adr/0026-what-became-of-a-trend.md).
 creates a `COMPOSE` job; see Phase 13's delivered note and
 [ADR-0027](adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
 
+**And what a trend made can be forgotten** (2026-09-19). Each finished job under "what became of
+it" has a *Delete* that removes the job and the clips it made; a compilation or a drawn video has
+one beside the section of its clip page that says what it is, which removes the clip and its job
+together. Records only, as [ADR-0017](adr/0017-deleting-a-record-is-not-deleting-a-file.md) has it.
+
 The gate — *Phase 9 producing evidence* — was settled in a way the plan did not anticipate. Phase 9's
 honest output is "we cannot tell yet" for months, and what it is waiting on is volume. A trend list
 does not automate the scorer; it feeds it.
@@ -2022,7 +2027,7 @@ where noted:
 | Worker integration | 127 | Firestore emulator; the seven ASSEMBLE and DRAW tests need only ffmpeg |
 | Security rules | 274 | Auth + Firestore + Storage emulators |
 | Web unit | 346 | nothing |
-| Playwright E2E | 84 | Auth + Firestore emulators, stubbed worker |
+| Playwright E2E | 85 | Auth + Firestore emulators, stubbed worker |
 | Worker GPU (opt-in) | 27 | RTX 3050, Ollama, ffmpeg |
 | `doctor` | 18 checks | the real machine |
 

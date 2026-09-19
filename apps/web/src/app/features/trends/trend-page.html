@@ -321,6 +321,17 @@
                   class="ml-auto text-xs text-accent-ink hover:underline"
                   >Job page →</a
                 >
+                @if (row.job.status !== 'QUEUED' && row.job.status !== 'RUNNING') {
+                  <button
+                    type="button"
+                    class="text-xs text-ink-subtle hover:text-danger-ink disabled:opacity-50"
+                    [disabled]="busy() === row.job.id"
+                    [title]="'Delete this ' + row.kind.toLowerCase() + ' and what it made'"
+                    (click)="deleteMade(row)"
+                  >
+                    Delete
+                  </button>
+                }
               </div>
               @if (row.note; as note) {
                 <p class="mt-1 text-xs text-ink-muted">{{ note }}</p>

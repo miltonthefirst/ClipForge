@@ -741,6 +741,14 @@
           <p class="mt-3 text-xs text-ink-subtle">
             Stick figures named by role. No real person is depicted.
           </p>
+          <button
+            type="button"
+            class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-xs text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="deleteMade('drawn video')"
+          >
+            Delete this drawn video
+          </button>
         </section>
       }
 
@@ -783,6 +791,14 @@
               }
             </ul>
           }
+          <button
+            type="button"
+            class="mt-3 rounded-lg border border-danger-line px-3 py-1.5 text-xs text-danger-ink hover:bg-danger-bg disabled:opacity-50"
+            [disabled]="busy()"
+            (click)="deleteMade('compilation')"
+          >
+            Delete this compilation
+          </button>
           @if (made.warnings?.length) {
             <ul class="mt-2 space-y-1 rounded-lg bg-panel-soft p-2 text-xs text-ink-muted">
               @for (warning of made.warnings; track warning) {

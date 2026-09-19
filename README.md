@@ -349,6 +349,9 @@ join the lot behind a title card with captions. It fetches nothing and needs no 
 are drawn by the worker, named by role, and no real person is ever depicted. The result lands in
 Review like any clip, with the script, the scenes and the seed recorded on it, so the same request
 draws the same video. See [ADR-0027](docs/adr/0027-drawn-cartoons-as-the-first-visual-mode.md).
+To get rid of one — or of a compilation — *Delete* on its row under "what became of it" removes
+the job and its clips; the same button sits beside the section of the clip's page that says what
+it was made from. The video files stay until Storage removes them.
 
 **Or on a schedule.** *Do this automatically…* under the same form saves its settings as a
 schedule — daily at a time of day, or every so many hours — and the worker fires it on its own

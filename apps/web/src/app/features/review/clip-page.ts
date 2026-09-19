@@ -1221,6 +1221,39 @@ export class ClipPage implements OnDestroy {
     });
   }
 
+  /**
+   * Delete a compilation or a drawn video: the clip, and the job that made it.
+   *
+   * Offered beside the section that says what the clip is, because a clip
+   * with no single source is deleted as a whole — there is no source page it
+   * belongs to, and the job is the only other record of it. Records only,
+   * as ever (docs/adr/0017-deleting-a-record-is-not-deleting-a-file.md).
+   */
+  protected async deleteMade(kind: 'compilation' | 'drawn video'): Promise<void> {
+    const clip = this.clip();
+    if (!clip) return;
+    const name = clip.title?.trim() || clip.id;
+    if (
+      !confirm(
+        `Delete the ${kind} "${name}" and the job that made it? The video file stays on this ` +
+          'machine until you remove it in Settings, Storage.',
+      )
+    ) {
+      return;
+    }
+    await this.run(`${kind[0]!.toUpperCase()}${kind.slice(1)} deleted`, async () => {
+      await this.clips.deleteClip(clip.id);
+      if (clip.jobId) {
+        try {
+          await this.jobs.deleteJob(clip.jobId);
+        } catch {
+          // The job may already be gone; the clip is what was asked about.
+        }
+      }
+      await this.router.navigate(['/review']);
+    });
+  }
+
   protected async remake(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
