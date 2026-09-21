@@ -2026,7 +2026,7 @@ where noted:
 
 | Suite | Count | Needs |
 | --- | --- | --- |
-| Worker unit | 1175 | nothing |
+| Worker unit | 1182 | nothing |
 | Worker integration | 127 | Firestore emulator; the seven ASSEMBLE and DRAW tests need only ffmpeg |
 | Security rules | 274 | Auth + Firestore + Storage emulators |
 | Web unit | 346 | nothing |

@@ -183,6 +183,17 @@ description *of* it; open with the most interesting thing inside six words;
 never mention the clip, the scene or the camera — with the invention fence
 left standing, because asking for stakes is asking a model to make them up.
 
+The first cut of that rewrite overcorrected. "Say less where you know nothing"
+read as a preference for brevity, and the first two real remakes came back with
+eight words over a thirty-seven second clip and thirteen over a sixteen-second
+one. Both read well; both are three seconds of voice and then nothing, which is
+the same dull video by another route. So the word range is stated in seconds as
+well as words, the prompt says the bottom of it is as real as the top, and
+`too_thin` counts that too. A line far under the floor gets the same single
+retry, with its own correction; if the second is also short, the longer of the
+two is used and nothing is warned about, because a thin narration is a
+disappointment rather than a defect.
+
 A prompt alone does not fix this, for the reason the language gate exists: a
 model is not a witness to its own output. `echoes_the_picture` counts, the way
 `reads_as` counts. Two arithmetic tests — a phrase list for talking about the

@@ -76,6 +76,8 @@ __all__ = [
     "build_narration_prompt",
     "echoes_the_picture",
     "reads_as",
+    "too_thin",
+    "word_floor",
     "write_narration",
 ]
 
@@ -91,6 +93,12 @@ _WORDS_PER_SECOND = 2.4
 # the ceiling — there is no penalty for a line that ends early, and a real one
 # for a line that runs past the picture.
 _BUDGET_FLOOR = 0.6
+
+# And how far under that floor is a different problem rather than a short line.
+# Deliberately generous: a narration that ends a couple of seconds early is
+# fine, and the failure this catches is the one that is over before the clip
+# has started.
+_FAR_UNDER = 0.7
 
 # The most common function words in each language a voice exists for, as one
 # string each so the table stays readable.
@@ -185,22 +193,38 @@ def write_narration(
     if first is None:
         return None
 
+    floor = word_floor(duration_sec)
     echo = echoes_the_picture(first.script, visual)
-    if echo is None:
+    thin = None if echo else too_thin(first.script, floor)
+    if echo is None and thin is None:
         return first
 
     # Sent back once, told exactly what it did. Warmer than the first ask
     # because the point is a different line, and a model handed back its own
     # prompt at the same temperature tends to return its own answer.
-    log.info("narrate.echoed", reason=echo, words=len(first.script.split()))
+    reason = echo or thin or ""
+    log.info("narrate.rejected", reason=reason, words=len(first.script.split()))
+    correction = _CORRECTION if echo else _TOO_SHORT
     second = _ask(
         client,
-        f"{prompt}\n\n{_CORRECTION.format(reason=echo)}",
+        f"{prompt}\n\n{correction.format(reason=reason)}",
         temperature=0.6,
         grounded=visual is not None,
     )
-    if second is not None and echoes_the_picture(second.script, visual) is None:
+    if (
+        second is not None
+        and echoes_the_picture(second.script, visual) is None
+        and too_thin(second.script, floor) is None
+    ):
         return second
+
+    if echo is None:
+        # Only ever short. Keep whichever of the two says more: a thin line is
+        # a disappointment, not a defect, and there is nothing here worth
+        # failing a clip over or warning a reviewer about.
+        if second is not None and len(second.script.split()) > len(first.script.split()):
+            return second
+        return first
 
     # Both describe the picture. The first is kept rather than the second: it
     # was written from a clean prompt, and a second attempt that failed the
@@ -292,8 +316,13 @@ recording of the thing.
 fade into another description.
 
 None of this is a licence to invent. Stakes you cannot see are not yours to \
-claim, and where you know nothing beyond the picture the right answer is to say \
-less — a short, true line beats a long one padded out with description.
+claim, and a sentence you are unsure of is better left out than dressed up.
+
+**Fill the clip.** You are given a range of words, and the bottom of it is as \
+real as the top: a line that is over in two seconds leaves the rest of the video \
+with nothing being said over it, which is the same dull result by another route. \
+Ask a question and answer it, or follow the thought one step further. Say more \
+about what you know, never more about the picture.
 
 Rules that hold either way:
 
@@ -337,7 +366,7 @@ def build_narration_prompt(
     this module is that the pictures are the more trustworthy of the two.
     """
     budget = max(8, int(duration_sec * _WORDS_PER_SECOND))
-    floor = max(6, int(budget * _BUDGET_FLOOR))
+    floor = word_floor(duration_sec)
     lines: list[str] = [f"Target language: {target_language}", f"Clip length: {duration_sec:.0f}s"]
     if source_title:
         lines.append(f"It was cut from a video called: {source_title}")
@@ -358,7 +387,10 @@ def build_narration_prompt(
         "Machine transcription of the clip's audio (may be wrong):",
         transcript.strip() or "(the recogniser returned nothing)",
         "",
-        f"Write {floor} to {budget} words, in {target_language}.",
+        f"Write {floor} to {budget} words in {target_language} — roughly "
+        f"{floor / _WORDS_PER_SECOND:.0f} to {budget / _WORDS_PER_SECOND:.0f} seconds of "
+        f"speech, over a clip {duration_sec:.0f} seconds long. Fewer than {floor} words "
+        f"is too little.",
     ]
     return "\n".join(lines)
 
@@ -452,9 +484,41 @@ That attempt was rejected: {reason}
 The viewer is already looking at the picture, so describing it is the one thing \
 the line must not do. Write a different one that says something they cannot see \
 — why it matters, what is at stake, what the question is — and open with that. \
-Do not mention the video, the clip, the scene, the frames or the camera. If you \
-genuinely know nothing beyond what is on the screen, write one short line and \
-stop rather than padding it out."""
+Do not mention the video, the clip, the scene, the frames or the camera. Stay \
+inside the same range of words: a shorter line is not the fix."""
+
+
+def word_floor(duration_sec: float) -> int:
+    """The fewest words worth speaking over a clip this long."""
+    return max(6, int(max(8, int(duration_sec * _WORDS_PER_SECOND)) * _BUDGET_FLOOR))
+
+
+def too_thin(script: str, floor: int) -> str | None:
+    """Is there so little here that most of the clip has nothing said over it?
+
+    The first two remakes written to the rewritten prompt came back with eight
+    words on a thirty-seven second clip and thirteen on a sixteen-second one.
+    Both read well. Both are two or three seconds of voice and then silence,
+    which is the same dull video the rewrite was for.
+
+    The bar is well under the floor the prompt asks for, because a line that
+    ends a little early is fine and this is only meant to catch the one that
+    barely starts.
+    """
+    words = len(script.split())
+    if words >= floor * _FAR_UNDER:
+        return None
+    return f"it is {words} words where the clip has room for {floor}"
+
+
+_TOO_SHORT = """\
+That attempt was rejected: {reason}.
+
+It reads well, and it is over long before the picture is. Write a longer line \
+that covers the clip — ask a question and answer it, or take the thought one \
+step further — and stay inside the range of words you were given. More about \
+what you know, not more about what is on the screen, and nothing invented to \
+fill the space."""
 
 
 def reads_as(text: str, language: str) -> bool:

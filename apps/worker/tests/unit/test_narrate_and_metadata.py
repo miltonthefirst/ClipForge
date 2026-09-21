@@ -20,6 +20,8 @@ from clipforge.analysis.narrate import (
     build_narration_prompt,
     echoes_the_picture,
     reads_as,
+    too_thin,
+    word_floor,
     write_narration,
 )
 from clipforge.media.vision import VisualContext
@@ -255,6 +257,12 @@ class FakeOllama:
 GOOD = (
     "Nobody in that room expected the thing in the dark to answer back. What would you have done?"
 )
+LONG = (
+    "Nobody in that room expected the thing in the dark to answer back, and now nobody "
+    "knows which of them it came for. They have been arguing about who owes what to whom "
+    "since the lights went out, which is a luxury they are about to lose. What would you "
+    "have done with thirty seconds and no way out?"
+)
 ECHO = (
     "This is a dramatic anime moment with characters showing concern, determination, "
     "distress, and shock against a dark background."
@@ -421,3 +429,58 @@ def test_the_language_is_stated_twice() -> None:
 def test_knowing_nothing_is_said_rather_than_hidden() -> None:
     prompt = build_metadata_prompt(language="en-us", spoken_text="", duration_sec=12.0, visual=None)
     assert "Nothing is known about this clip" in prompt
+
+
+# ── Long enough to cover the clip ────────────────────────────────────────────
+
+
+def test_the_floor_follows_the_clip_length() -> None:
+    assert word_floor(16.4) == 23
+    assert word_floor(37.3) == 53
+
+
+def test_the_line_that_was_over_in_two_seconds_is_caught() -> None:
+    """Verbatim from the first remake written to the rewritten prompt: eight
+    words of narration on a thirty-seven second clip."""
+    assert too_thin("Why does he think this forest belongs to him?", word_floor(37.3))
+
+
+def test_a_line_that_ends_a_little_early_is_left_alone() -> None:
+    """The bar is under the floor on purpose. Ending early is not a defect."""
+    assert too_thin(" ".join(["word"] * 40), word_floor(37.3)) is None
+
+
+def test_a_short_clip_wants_a_short_line() -> None:
+    assert too_thin("He never saw it coming, and neither did anyone else.", word_floor(4.0)) is None
+
+
+def test_a_thin_line_is_sent_back_and_the_fuller_one_used() -> None:
+    client = FakeOllama("Why does he think this forest belongs to him?", LONG)
+    answer = written(client)
+    assert answer is not None
+    assert answer.script == LONG
+    assert answer.echoed is False
+    assert len(client.prompts) == 2
+    assert "It reads well, and it is over long before the picture is" in client.prompts[1]
+
+
+def test_a_thin_line_twice_keeps_whichever_says_more() -> None:
+    """A thin narration is a disappointment, not a defect: no warning, no
+    failure, and certainly not the shorter of the two."""
+    client = FakeOllama(
+        "Eight words is not very many at all.",
+        "Nine words here, but that is more than before, truly.",
+    )
+    answer = written(client)
+    assert answer is not None
+    assert answer.script.startswith("Nine words here")
+    assert answer.echoed is False
+
+
+def test_reciting_the_picture_is_corrected_before_length() -> None:
+    """Two different failures want two different corrections, and a recital
+    that is also short is a recital first."""
+    client = FakeOllama(ECHO, GOOD)
+    written(client)
+    assert "over long before the picture is" not in client.prompts[1]
+    assert "already looking at the picture" in client.prompts[1]
