@@ -484,3 +484,27 @@ def test_reciting_the_picture_is_corrected_before_length() -> None:
     written(client)
     assert "over long before the picture is" not in client.prompts[1]
     assert "already looking at the picture" in client.prompts[1]
+
+
+def test_pointing_at_the_picture_is_caught_without_naming_the_footage() -> None:
+    """Straight from a remake: the description again, in the imperative."""
+    assert echoes_the_picture(
+        "When we fight together, do we win this? Look at their faces, fear and determination.",
+        anime(),
+    )
+
+
+def test_commentary_about_an_action_is_left_alone() -> None:
+    """Bare "look at that" is idiomatic about a move, not a frame."""
+    assert (
+        echoes_the_picture(
+            "Look at that strike from the left, and the keeper never moved a muscle.", visual()
+        )
+        is None
+    )
+
+
+def test_the_football_examples_are_marked_as_examples() -> None:
+    """A clip about anime came back talking about a scoreline, which is a word
+    this prompt taught it: every concrete example in it is football."""
+    assert "They are not a vocabulary to borrow" in NARRATE_SYSTEM_PROMPT

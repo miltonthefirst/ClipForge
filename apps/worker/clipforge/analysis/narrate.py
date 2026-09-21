@@ -331,10 +331,15 @@ Rules that hold either way:
 transcription or visible on screen. If you do not know who scored, say what \
 happened without naming anyone. Do not expand an abbreviation on the score bug \
 into a club name you are guessing at: "BOD" is "BOD".
-- **Never assert an outcome.** Do not say a goal was scored, a save was made, a \
-card was shown or a point was won unless the transcription says so or it is \
-written on screen. A few stills are evidence that something was attempted, never \
-that it succeeded: the frames stop, the move does not.
+- **Never assert an outcome.** Do not say a thing succeeded — in sport, that a \
+goal was scored, a save was made, a card was shown or a point was won — unless \
+the transcription says so or it is written on screen. A few stills are evidence \
+that something was attempted, never that it succeeded: the frames stop, the move \
+does not.
+- **The examples in these instructions are about football because that is where \
+this went wrong first.** They are not a vocabulary to borrow. A clip that is not \
+sport has no scoreline, no competition and no minute, and reaching for one is \
+inventing a fact.
 - **Use the transcription's content wherever it reads as real words**, even when \
 you have judged it unusable overall. These two things are not in tension: a \
 transcript can be half nonsense and half a perfectly clear phrase, and throwing \
@@ -422,6 +427,16 @@ _ABOUT_THE_FOOTAGE: tuple[str, ...] = (
     "cuts to black",
     "watch as",
     "in this moment",
+    # Pointing at the picture without naming it. "Look at their faces" is the
+    # description again, in the imperative. Bare "look at that" is left alone:
+    # it is idiomatic commentary about an action rather than a frame.
+    "look at their",
+    "look at his face",
+    "look at her face",
+    "look at these",
+    "look at those",
+    "notice the",
+    "notice how",
 )
 
 # Below this there is not enough of a line to judge, and a short one is not the
