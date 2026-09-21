@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,10 +25,11 @@ from clipforge.config import Settings
 from clipforge.media.ffprobe import probe
 from clipforge.media.scoring import apply_music
 from clipforge.media.speech import Utterance
+from clipforge.media.vision import VisualContext
 from clipforge.models.broker import ModelBroker
 from clipforge.stages import remake as remake_module
 from clipforge.stages.base import StageContext
-from clipforge.stages.remake import RemakeStage, RemakeStageError
+from clipforge.stages.remake import RemakeStage, RemakeStageError, _Run
 from clipforge.store.blobs import BlobRef
 from clipforge_contracts import (
     AppliedMusic,
@@ -1438,3 +1440,79 @@ def test_a_long_explanation_is_cut_to_what_the_record_will_hold(tmp_path: Path) 
         warnings=stage._notes,
         refusals=stage._refusals,
     )
+
+
+# ── One stage, three jobs at a time ──────────────────────────────────────────
+
+
+def test_two_remakes_running_at_once_keep_their_notes_apart(tmp_path: Path) -> None:
+    """The worker runs `cpu_lane_depth` jobs through one stage instance.
+
+    Two clips reached Review a minute apart, each carrying the other's warning
+    as well as its own: the same sentence, twice, on both. That was the visible
+    half. See `_Run` for the half that was not.
+    """
+    stage, _, _ = build(tmp_path)
+    seen: dict[str, list[str]] = {}
+    at_the_same_time = threading.Barrier(2)
+
+    def remake(name: str) -> None:
+        stage._local.state = _Run()  # what `run` does at the top
+        stage._note(f"{name} lost its captions")
+        at_the_same_time.wait(timeout=5)  # both are mid-run together
+        stage._note(f"{name} lost its music")
+        seen[name] = list(stage._notes)
+
+    threads = [threading.Thread(target=remake, args=(name,)) for name in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert seen["first"] == ["first lost its captions", "first lost its music"]
+    assert seen["second"] == ["second lost its captions", "second lost its music"]
+
+
+def test_two_remakes_running_at_once_do_not_share_a_look_at_the_footage(
+    tmp_path: Path,
+) -> None:
+    """The expensive half, and the one nothing in the clip record would show.
+
+    `_visual` is cached behind `_looked` so the vision model is paid once per
+    run. Shared, the second job skipped its own look and narrated its clip from
+    the first job's frames — and when both are cuts of the same source, the
+    result reads perfectly.
+    """
+    stage, _, _ = build(tmp_path)
+    looked = VisualContext(
+        subject="a football match", happens="a shot", on_screen_text=[], model="v"
+    )
+    seen: dict[str, VisualContext | None] = {}
+    at_the_same_time = threading.Barrier(2)
+
+    def remake(name: str, mine: VisualContext | None) -> None:
+        stage._local.state = _Run()
+        stage._looked = True
+        stage._visual = mine
+        at_the_same_time.wait(timeout=5)
+        seen[name] = stage._visual
+
+    threads = [
+        threading.Thread(target=remake, args=("with a look", looked)),
+        threading.Thread(target=remake, args=("without one", None)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert seen["with a look"] is looked
+    assert seen["without one"] is None, "a clip must never be narrated from another's frames"
+
+
+def test_the_same_warning_twice_is_recorded_once(tmp_path: Path) -> None:
+    stage, _, _ = build(tmp_path)
+    stage._local.state = _Run()
+    stage._note("captions could not be rebuilt")
+    stage._note("captions could not be rebuilt")
+    assert stage._notes == ["captions could not be rebuilt"]

@@ -32,6 +32,23 @@ saying. `LlmNarration.transcriptUsable` is where that licence is granted, and it
 comes first in the schema so the judgement is made before the script that
 depends on it.
 
+## The second failure: a line that is only the picture
+
+Two clips reached Review narrated with *"This is a dramatic anime moment with
+characters showing concern, determination, distress, and shock against a dark
+background"* and *"Then the scene cuts. We see humans lying there."* Both are
+accurate. Both are the description of the frames, above in the same prompt,
+read back to somebody who is already looking at them, and the operator's verdict
+was that they make the video not worth watching.
+
+The prompt caused it — "write from the pictures instead" is an instruction to
+paraphrase the one paragraph of prose in front of the model — but a prompt alone
+does not fix it, for the reason the language gate exists: a model is not a
+witness to its own output. So `echoes_the_picture` counts, the way `reads_as`
+counts, and a line that trips it is sent back once with what it did wrong. What
+comes back the second time is used when it is clean; when it is not, the
+reviewer is told the narration is dull rather than left to discover it.
+
 ## What still refuses
 
 Grounding is not a guarantee, so `clipforge.analysis.feedback` keeps every gate
@@ -43,7 +60,7 @@ report that it produced English.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from clipforge_contracts import LlmNarration
 
@@ -57,6 +74,7 @@ __all__ = [
     "NARRATE_SYSTEM_PROMPT",
     "Narration",
     "build_narration_prompt",
+    "echoes_the_picture",
     "reads_as",
     "write_narration",
 ]
@@ -66,6 +84,13 @@ __all__ = [
 # short": narration that overruns the picture is the single most common way a
 # re-voiced clip goes wrong, and it is invisible until someone watches the end.
 _WORDS_PER_SECOND = 2.4
+
+# And how little is too little. A sixteen-second clip came back with nineteen
+# words in it: eight seconds of voice and eight of nothing, which reads as an
+# afterthought rather than as restraint. The floor is deliberately well under
+# the ceiling — there is no penalty for a line that ends early, and a real one
+# for a line that runs past the picture.
+_BUDGET_FLOOR = 0.6
 
 # The most common function words in each language a voice exists for, as one
 # string each so the table stays readable.
@@ -122,6 +147,11 @@ class Narration:
     # What the model said about that judgement, for the log and nothing else.
     reasoning: str
     grounded: bool  # was there a visual context to work from at all
+    # True when what came back was still mostly the description of the frames
+    # after being sent back once. The clip is made either way — a dull narration
+    # is worth more than a failed job — but the reviewer is told, because this
+    # is invisible in a transcript that reads as perfectly good English.
+    echoed: bool = False
 
 
 def write_narration(
@@ -140,21 +170,55 @@ def write_narration(
     and one that was mostly about the framing might reasonably go on without a
     new narration.
     """
+    prompt = build_narration_prompt(
+        transcript=transcript,
+        target_language=target_language,
+        duration_sec=duration_sec,
+        visual=visual,
+        source_title=source_title,
+    )
+
+    # A little sampling. Writing one sentence has more than one right answer,
+    # and at temperature 0 a small model locks onto the transcript's own
+    # wording even when it has just said it is unusable.
+    first = _ask(client, prompt, temperature=0.3, grounded=visual is not None)
+    if first is None:
+        return None
+
+    echo = echoes_the_picture(first.script, visual)
+    if echo is None:
+        return first
+
+    # Sent back once, told exactly what it did. Warmer than the first ask
+    # because the point is a different line, and a model handed back its own
+    # prompt at the same temperature tends to return its own answer.
+    log.info("narrate.echoed", reason=echo, words=len(first.script.split()))
+    second = _ask(
+        client,
+        f"{prompt}\n\n{_CORRECTION.format(reason=echo)}",
+        temperature=0.6,
+        grounded=visual is not None,
+    )
+    if second is not None and echoes_the_picture(second.script, visual) is None:
+        return second
+
+    # Both describe the picture. The first is kept rather than the second: it
+    # was written from a clean prompt, and a second attempt that failed the
+    # same way is not evidence of anything better. The flag is what matters.
+    log.info("narrate.echoed_twice")
+    return replace(first, echoed=True)
+
+
+def _ask(
+    client: OllamaClient, prompt: str, *, temperature: float, grounded: bool
+) -> Narration | None:
+    """One call, cleaned up. None when the model cannot be reached or said nothing."""
     try:
         answer = client.generate_structured(
             schema_model=LlmNarration,
             system=NARRATE_SYSTEM_PROMPT,
-            prompt=build_narration_prompt(
-                transcript=transcript,
-                target_language=target_language,
-                duration_sec=duration_sec,
-                visual=visual,
-                source_title=source_title,
-            ),
-            # A little sampling. Writing one sentence has more than one right
-            # answer, and at temperature 0 a small model locks onto the
-            # transcript's own wording even when it has just said it is unusable.
-            temperature=0.3,
+            prompt=prompt,
+            temperature=temperature,
         )
     except OllamaError as exc:
         log.warning("narrate.unavailable", error=str(exc))
@@ -167,14 +231,14 @@ def write_narration(
     log.info(
         "narrate.written",
         usable=answer.transcript_usable,
-        grounded=visual is not None,
+        grounded=grounded,
         words=len(script.split()),
     )
     return Narration(
         script=script,
         from_transcript=bool(answer.transcript_usable),
         reasoning=(answer.reasoning or "").strip(),
-        grounded=visual is not None,
+        grounded=grounded,
     )
 
 
@@ -193,13 +257,43 @@ usable when it is word salad, when the names are obviously garbled, or when it \
 describes something the pictures contradict. Say which, and say why in one \
 sentence, before you write anything.
 
+Recognisable words are not usable ones. "how selfish my brother the monster say \
+domain about to hit five punches" has half a dozen words you can make out in it \
+and is still not a sentence anybody said. A few phrases you recognise inside a \
+wreck is what an unusable transcription looks like from the inside.
+
 Then write the line.
 
-- If the transcription is usable, carry its content across into the target \
+- If the transcription is usable, carry its **content** across into the target \
 language, correcting names and terms using what is visible. A commentator saying \
-a player's name badly transcribed is still that player.
-- If it is not usable, write from the pictures instead. Describe what is \
-happening as a commentator would, and say only what the pictures support.
+a player's name badly transcribed is still that player. Never copy the \
+transcription's own broken wording across: whatever you write, write it as \
+sentences, with a subject, a verb and punctuation, that a person could read \
+aloud without stumbling. If the words you were given will not make one, they \
+were not usable and you should have said so.
+- If it is not usable, work from the pictures instead — but write ABOUT what is \
+happening, not a description OF it.
+
+**The viewer is already watching the picture.** Telling them what is on the \
+screen is the single fastest way to make them leave: they can see it, you are \
+just slower than their eyes. What they cannot see is what it means, what is at \
+stake, who these people are to each other, or what the question is. That is your \
+half of the job, and the only reason the clip has a voice on it at all.
+
+- **Open with the most interesting thing you have**, inside the first six words. \
+Not a label, not a setting, not "this is". If all you have is a question, ask it.
+- **Never read the pictures back.** "Characters look shocked against a dark \
+background" is the description you were handed, said aloud to someone looking \
+straight at it.
+- **Never mention the footage.** No "this clip", no "this video", no "we see", \
+no "the scene cuts", no "the camera". Talk about the thing, never about the \
+recording of the thing.
+- **End on something.** A question, or the one point worth taking away. Not a \
+fade into another description.
+
+None of this is a licence to invent. Stakes you cannot see are not yours to \
+claim, and where you know nothing beyond the picture the right answer is to say \
+less — a short, true line beats a long one padded out with description.
 
 Rules that hold either way:
 
@@ -243,6 +337,7 @@ def build_narration_prompt(
     this module is that the pictures are the more trustworthy of the two.
     """
     budget = max(8, int(duration_sec * _WORDS_PER_SECOND))
+    floor = max(6, int(budget * _BUDGET_FLOOR))
     lines: list[str] = [f"Target language: {target_language}", f"Clip length: {duration_sec:.0f}s"]
     if source_title:
         lines.append(f"It was cut from a video called: {source_title}")
@@ -263,9 +358,103 @@ def build_narration_prompt(
         "Machine transcription of the clip's audio (may be wrong):",
         transcript.strip() or "(the recogniser returned nothing)",
         "",
-        f"Write at most {budget} words, in {target_language}.",
+        f"Write {floor} to {budget} words, in {target_language}.",
     ]
     return "\n".join(lines)
+
+
+# Talking about the recording rather than about what is in it. Every one of
+# these was written by the model at some point, and none of them belongs in a
+# voice-over: a viewer holding a phone does not need to be told they are
+# watching a video.
+_ABOUT_THE_FOOTAGE: tuple[str, ...] = (
+    "this is a",
+    "this is the",
+    "we see",
+    "we can see",
+    "you can see",
+    "you see",
+    "here we",
+    "the video",
+    "this video",
+    "this clip",
+    "the clip",
+    "the footage",
+    "the frames",
+    "the first frame",
+    "the camera",
+    "the screen shows",
+    "the scene cuts",
+    "the scene shifts",
+    "it cuts to",
+    "cuts to black",
+    "watch as",
+    "in this moment",
+)
+
+# Below this there is not enough of a line to judge, and a short one is not the
+# failure anyway: "Nobody walks away from this" shares every content word it has
+# with the picture and is a perfectly good hook.
+_RECITAL_MIN_WORDS = 8
+
+# How much of a line has to come from the description before it IS the
+# description. Set high on purpose: narration that shares vocabulary with what
+# is on screen is normal and correct, and the failure is the line that shares
+# nearly all of it.
+_RECITAL_SHARE = 0.7
+
+
+def _content_words(text: str) -> set[str]:
+    """The words that carry the meaning: no function words, nothing tiny."""
+    stop = frozenset(_COMMON["en"].split())
+    words = (word.strip(".,!?;:\"'()[]{}<>\u00ab\u00bb\u2014-").lower() for word in text.split())
+    return {word for word in words if len(word) > 2 and word not in stop}
+
+
+def echoes_the_picture(script: str, visual: VisualContext | None) -> str | None:
+    """Is this narration just the description of the frames, read aloud?
+
+    The reason it failed, or None when the line says something of its own.
+
+    Counted rather than asked, for the same reason `reads_as` is counted: a
+    model that has just paraphrased the paragraph above its own answer reports
+    that it wrote an original line. Two arithmetic tests, both cheap:
+
+    * it talks about the footage, which no voice-over should ever do;
+    * or nearly every content word in it came from the description it was
+      handed, which is what "read the pictures back" looks like from outside.
+
+    Deliberately blunt about false positives. Tripping this costs one more
+    model call and a differently-worded line; missing it costs a clip nobody
+    watches to the end.
+    """
+    text = " ".join(script.split()).lower()
+    for phrase in _ABOUT_THE_FOOTAGE:
+        if phrase in text:
+            return f"it talks about the footage itself ({phrase!r})"
+
+    if visual is None:
+        return None
+    mine = _content_words(text)
+    if len(mine) < _RECITAL_MIN_WORDS:
+        return None
+    theirs = _content_words(visual.as_prompt())
+    if not theirs:
+        return None
+    if len(mine & theirs) / len(mine) >= _RECITAL_SHARE:
+        return "it is the description of the pictures, read back"
+    return None
+
+
+_CORRECTION = """\
+That attempt was rejected: {reason}
+
+The viewer is already looking at the picture, so describing it is the one thing \
+the line must not do. Write a different one that says something they cannot see \
+— why it matters, what is at stake, what the question is — and open with that. \
+Do not mention the video, the clip, the scene, the frames or the camera. If you \
+genuinely know nothing beyond what is on the screen, write one short line and \
+stop rather than padding it out."""
 
 
 def reads_as(text: str, language: str) -> bool:

@@ -159,6 +159,60 @@ brokered function from inside a brokered block" is an invisible rule about code
 somebody else wrote, and it was broken within a day of the broker gaining a
 second caller.
 
+## Amended 2026-09-21: accurate, and not worth listening to
+
+Two clips reached Review narrated like this:
+
+> This is a dramatic anime moment with characters showing concern, determination,
+> distress, and shock against a dark background.
+
+> After that, how selfish is my brother? [...] Then the scene cuts. We see humans
+> lying there.
+
+Both are true. Both are the description this ADR added, above in the same prompt,
+read back to somebody already looking at it. The operator's verdict was that the
+narration is what makes the video not worth watching, and they were right: a
+viewer can see the picture faster than a voice can describe it, so a line that
+only describes it is a line that tells them to leave.
+
+The prompt caused it. "If it is not usable, write from the pictures instead.
+Describe what is happening as a commentator would" is, to a 4B model, an
+instruction to paraphrase the one paragraph of prose in front of it. So the
+prompt now says the opposite — write *about* what is happening, never a
+description *of* it; open with the most interesting thing inside six words;
+never mention the clip, the scene or the camera — with the invention fence
+left standing, because asking for stakes is asking a model to make them up.
+
+A prompt alone does not fix this, for the reason the language gate exists: a
+model is not a witness to its own output. `echoes_the_picture` counts, the way
+`reads_as` counts. Two arithmetic tests — a phrase list for talking about the
+footage, and the share of the line's content words that came from the
+description — and a line that trips either is sent back once, told exactly what
+it did. Clean on the retry, it is used; still reciting, the clip is made anyway
+and the reviewer is told the narration is dull. A failed job would be worse
+than a boring one.
+
+## Amended 2026-09-21: whose frames were those?
+
+The same two clips arrived carrying an identical warning **twice**, which is how
+the second bug was found. `RemakeStage` kept five per-run attributes on `self`
+— the notes, the refusals, the corner to search, and the cached look at the
+footage — while the worker runs `cpu_lane_depth` jobs at once (three) through a
+registry built once. One stage instance, three concurrent remakes, one set of
+fields.
+
+The duplicated warning was the harmless half. `_visual` is cached behind
+`_looked` so a minute of vision model is paid once per run, and shared, the
+second job skipped its own look and narrated **its clip from the other clip's
+frames**. Both of these were cuts of the same source, so nothing about the
+result looked wrong — which is the only reason it survived this long.
+
+The state moved into a `_Run` record held in a `threading.local`, reset at the
+top of `run`. Thread-local rather than an argument threaded through a dozen
+private methods: the pool gives each job a thread, and the reset already existed
+in the right place. `_note` also dedupes now, because the same sentence twice was
+never information.
+
 ## Alternatives considered
 
 **Fix the transcription instead.** Whisper `large-v3-turbo` is already the model

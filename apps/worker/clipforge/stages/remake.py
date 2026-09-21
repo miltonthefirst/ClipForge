@@ -56,9 +56,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -232,6 +233,35 @@ class RemakeStageError(RuntimeError):
     """
 
 
+@dataclass
+class _Run:
+    """Everything one remake learns about itself, and nothing another may see.
+
+    This was five attributes on the stage. The worker runs `cpu_lane_depth`
+    jobs at once (three by default) through **one** registry, so one
+    `RemakeStage` instance serves all of them, and two remakes running together
+    shared every field here.
+
+    It showed up first as noise — two clips finished a minute apart, each
+    carrying the other's warning as well as its own, the same sentence twice.
+    The expensive half was silent: `visual` is the look at the footage, cached
+    behind `looked` so a minute of vision model is paid once per run. Whichever
+    job looked first filled it, and the other one then narrated **its own clip
+    from the other clip's frames** — and when both are cuts of the same source,
+    nothing about the result looks wrong.
+
+    Thread-local rather than threaded through every helper: the pool gives each
+    job a thread of its own, `run` resets at the top, and the alternative is a
+    context argument on a dozen private methods that exist to be readable.
+    """
+
+    notes: list[str] = field(default_factory=list)
+    refusals: list[str] = field(default_factory=list)
+    obscure_where: str | None = None
+    visual: VisualContext | None = None
+    looked: bool = False
+
+
 @dataclass(frozen=True)
 class _Cut:
     """Where in the source this remake takes its picture from."""
@@ -308,20 +338,67 @@ class RemakeStage:
         self._speech = speech
         self._transcriber = transcriber
         self._client_factory = client_factory
-        # Anything the stage downgraded rather than refused. Surfaced in the
-        # outcome, so a clip that came back missing something says why — the
-        # alternative is a reviewer looking at an uncaptioned clip with no
-        # explanation anywhere.
-        self._notes: list[str] = []
-        # Parts of the request understood and NOT carried out. Distinct from
-        # `_notes`, which is for things that were done but may disappoint.
-        self._refusals: list[str] = []
-        # A corner the note named for detection to search in, when it named one.
-        self._obscure_where: str | None = None
-        # One look at the footage per run, shared by everything that writes
-        # words about it. A minute is affordable once and not three times.
-        self._visual: VisualContext | None = None
-        self._looked = False
+        # See `_Run`. One instance of this stage serves every REMAKE job the
+        # worker runs, several at a time, so none of what a run learns can live
+        # on `self`.
+        self._local = threading.local()
+
+    # ── What this run knows ──────────────────────────────────────────────────
+
+    @property
+    def _run(self) -> _Run:
+        """This thread's record, created on first ask."""
+        state: _Run | None = getattr(self._local, "state", None)
+        if state is None:
+            state = _Run()
+            self._local.state = state
+        return state
+
+    @property
+    def _notes(self) -> list[str]:
+        """Anything the stage downgraded rather than refused.
+
+        Surfaced in the outcome, so a clip that came back missing something
+        says why — the alternative is a reviewer looking at an uncaptioned clip
+        with no explanation anywhere.
+        """
+        return self._run.notes
+
+    @property
+    def _refusals(self) -> list[str]:
+        """Parts of the request understood and NOT carried out.
+
+        Distinct from `_notes`, which is for things that were done but may
+        disappoint.
+        """
+        return self._run.refusals
+
+    @property
+    def _obscure_where(self) -> str | None:
+        """A corner the note named for detection to search in, if it named one."""
+        return self._run.obscure_where
+
+    @_obscure_where.setter
+    def _obscure_where(self, value: str | None) -> None:
+        self._run.obscure_where = value
+
+    @property
+    def _visual(self) -> VisualContext | None:
+        """One look at the footage per run, shared by everything that writes
+        words about it. A minute is affordable once and not three times."""
+        return self._run.visual
+
+    @_visual.setter
+    def _visual(self, value: VisualContext | None) -> None:
+        self._run.visual = value
+
+    @property
+    def _looked(self) -> bool:
+        return self._run.looked
+
+    @_looked.setter
+    def _looked(self, value: bool) -> None:
+        self._run.looked = value
 
     # ── Saying what happened ─────────────────────────────────────────────────
 
@@ -336,7 +413,12 @@ class RemakeStage:
         (yt-dlp's are paragraphs), and the cost of exceeding it is not a
         truncated sentence but the loss of a clip that was already made.
         """
-        self._notes.append(sentence[:300])
+        note = sentence[:300]
+        # Said once. Two identical warnings carry no more than one and read
+        # like a bug, which is what they were before the state moved off the
+        # stage: the duplicate a reviewer saw was the other job's copy.
+        if note not in self._notes:
+            self._notes.append(note)
 
     def _refuse(self, sentence: str) -> None:
         """Record a part of the request understood and not carried out.
@@ -357,19 +439,15 @@ class RemakeStage:
         if original is None:
             raise RemakeStageError(f"no such clip: {job.clip_id}")
 
-        # Per run, not per stage instance, and **before anything writes to
-        # them**. This used to sit below `_resolve`, which is where refusals and
-        # conflicts are recorded — so every one of them was collected and then
-        # thrown away a line later, and the live clips show it: a remake whose
-        # note asked for a watermark to be removed reached the reviewer with
-        # `refusals: null`, which is exactly the silence the field exists to
-        # prevent. The stage is long-lived and reused across jobs, so the reset
-        # cannot simply be dropped either.
-        self._notes = []
-        self._refusals = []
-        self._obscure_where = None
-        self._visual = None
-        self._looked = False
+        # Per run, and **before anything writes to it**. This used to sit below
+        # `_resolve`, which is where refusals and conflicts are recorded — so
+        # every one of them was collected and then thrown away a line later,
+        # and the live clips show it: a remake whose note asked for a watermark
+        # to be removed reached the reviewer with `refusals: null`, which is
+        # exactly the silence the field exists to prevent. The stage is
+        # long-lived and reused across jobs, so the reset cannot simply be
+        # dropped either. What it resets is this thread's record; see `_Run`.
+        self._local.state = _Run()
 
         accepted = self._accepted_preferences(original)
         resolved, interpretation = self._resolve(context, options, original, accepted)
@@ -900,6 +978,15 @@ class RemakeStage:
                 self._note(
                     "the clip's own commentary transcribed too poorly to carry across, so "
                     "the narration was written from what is on screen as well"
+                )
+            if written.echoed:
+                # Said plainly, because it is the difference between a clip
+                # worth posting and one nobody watches to the end, and it is
+                # invisible in a transcript that reads as perfectly good
+                # English.
+                self._note(
+                    "the narration mostly describes what is already on the screen, which is "
+                    "dull to listen to — write the line you want spoken to fix it"
                 )
             script = written.script
             translated = True

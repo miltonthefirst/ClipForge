@@ -16,10 +16,15 @@ from clipforge.analysis.metadata import (
 )
 from clipforge.analysis.narrate import (
     NARRATE_SYSTEM_PROMPT,
+    Narration,
     build_narration_prompt,
+    echoes_the_picture,
     reads_as,
+    write_narration,
 )
 from clipforge.media.vision import VisualContext
+from clipforge.models.ollama import OllamaError
+from clipforge_contracts import LlmNarration
 
 pytestmark = pytest.mark.unit
 
@@ -117,8 +122,8 @@ def test_the_word_budget_follows_the_clip_length() -> None:
     long = build_narration_prompt(
         transcript="x", target_language="en-us", duration_sec=40.0, visual=None
     )
-    assert "at most 19 words" in short
-    assert "at most 96 words" in long
+    assert "11 to 19 words" in short
+    assert "57 to 96 words" in long
 
 
 def test_with_no_pictures_the_prompt_says_so() -> None:
@@ -138,6 +143,170 @@ def test_the_on_screen_text_reaches_the_prompt() -> None:
 
 def test_the_narration_prompt_forbids_asserting_an_outcome() -> None:
     assert "Never assert an outcome" in NARRATE_SYSTEM_PROMPT
+
+
+def test_the_narration_prompt_forbids_describing_the_picture() -> None:
+    """The whole complaint: a voice-over that says what the viewer can see."""
+    assert "Never read the pictures back" in NARRATE_SYSTEM_PROMPT
+    assert "Never mention the footage" in NARRATE_SYSTEM_PROMPT
+
+
+def test_the_narration_prompt_still_refuses_to_invent() -> None:
+    """The new rules ask for stakes, which is exactly where a model starts
+    making things up. The old fence has to stay standing."""
+    assert "None of this is a licence to invent" in NARRATE_SYSTEM_PROMPT
+
+
+# ── Is the line only the picture, read back? ─────────────────────────────────
+
+
+def anime() -> VisualContext:
+    """The real one, from the two clips that produced this gate."""
+    return VisualContext(
+        subject="Animated characters in a dark setting, one facing a shadowy creature.",
+        happens=(
+            "Characters show concern, determination, distress and shock against a dark background."
+        ),
+        on_screen_text=[],
+        model="test-vision",
+    )
+
+
+def test_the_line_that_shipped_is_caught() -> None:
+    """Verbatim from a clip in Review, and the reason this exists."""
+    assert echoes_the_picture(
+        "This is a dramatic anime moment with characters showing concern, determination, "
+        "distress, and shock against a dark background.",
+        anime(),
+    )
+
+
+def test_narrating_the_edit_is_caught() -> None:
+    """The other one. A viewer can see that the scene cut."""
+    assert echoes_the_picture(
+        "After that, how selfish is my brother? Then the scene cuts. We see humans lying there.",
+        anime(),
+    )
+
+
+def test_a_hook_that_says_something_passes() -> None:
+    assert (
+        echoes_the_picture(
+            "Nobody in that room expected the thing in the dark to answer back. "
+            "What would you have done?",
+            anime(),
+        )
+        is None
+    )
+
+
+def test_sharing_vocabulary_with_the_picture_is_not_reciting_it() -> None:
+    """The common, correct case: narration about a match, over a match."""
+    assert (
+        echoes_the_picture(
+            "Pavlovic finds the pass and Bayern are through the first line, with the keeper "
+            "already off his line.",
+            visual(),
+        )
+        is None
+    )
+
+
+def test_a_paraphrase_of_the_description_is_caught_without_a_banned_phrase() -> None:
+    """The phrase list is the cheap half; the count is what catches a rewrite."""
+    assert echoes_the_picture(
+        "Animated characters, concern and determination and distress and shock, "
+        "a shadowy creature, a dark background.",
+        anime(),
+    )
+
+
+def test_a_short_line_is_left_alone() -> None:
+    """Too little to judge, and a short line is not the failure anyway."""
+    assert echoes_the_picture("Shadows. Shock. Nothing else moves.", anime()) is None
+
+
+def test_with_no_pictures_only_the_footage_talk_is_caught() -> None:
+    assert echoes_the_picture("In this video, the fight begins.", None)
+    assert (
+        echoes_the_picture("He never saw it coming, and neither did anyone watching.", None) is None
+    )
+
+
+# ── The retry ────────────────────────────────────────────────────────────────
+
+
+class FakeOllama:
+    """Returns each script in turn, and remembers what it was asked."""
+
+    def __init__(self, *scripts: str) -> None:
+        self._scripts = list(scripts)
+        self.prompts: list[str] = []
+
+    def generate_structured(self, **kwargs: object) -> LlmNarration:
+        self.prompts.append(str(kwargs.get("prompt")))
+        return LlmNarration(
+            transcript_usable=False,
+            reasoning="word salad",
+            script=self._scripts[min(len(self.prompts) - 1, len(self._scripts) - 1)],
+        )
+
+
+GOOD = (
+    "Nobody in that room expected the thing in the dark to answer back. What would you have done?"
+)
+ECHO = (
+    "This is a dramatic anime moment with characters showing concern, determination, "
+    "distress, and shock against a dark background."
+)
+
+
+def written(client: object) -> Narration | None:
+    return write_narration(
+        client,  # type: ignore[arg-type]
+        transcript="tres mal a beaude glim",
+        target_language="en-us",
+        duration_sec=16.0,
+        visual=anime(),
+    )
+
+
+def test_a_line_that_says_something_is_used_as_it_is() -> None:
+    client = FakeOllama(GOOD)
+    answer = written(client)
+    assert answer is not None
+    assert answer.script == GOOD
+    assert answer.echoed is False
+    assert len(client.prompts) == 1, "a clean line must not cost a second call"
+
+
+def test_a_recital_is_sent_back_once_with_what_it_did() -> None:
+    client = FakeOllama(ECHO, GOOD)
+    answer = written(client)
+    assert answer is not None
+    assert answer.script == GOOD
+    assert answer.echoed is False
+    assert len(client.prompts) == 2
+    assert "That attempt was rejected" in client.prompts[1]
+    assert "this is a" in client.prompts[1], "it is told which phrase, not just that it failed"
+
+
+def test_when_both_attempts_recite_the_clip_is_still_made_and_flagged() -> None:
+    """A dull narration is worth more than a failed job. The reviewer is told."""
+    client = FakeOllama(ECHO, ECHO)
+    answer = written(client)
+    assert answer is not None
+    assert answer.script == ECHO
+    assert answer.echoed is True
+    assert len(client.prompts) == 2, "one retry, not a loop"
+
+
+def test_the_model_being_unreachable_gives_nothing_back() -> None:
+    class Dead:
+        def generate_structured(self, **_: object) -> LlmNarration:
+            raise OllamaError("no model")
+
+    assert written(Dead()) is None
 
 
 # ── Titles ───────────────────────────────────────────────────────────────────
