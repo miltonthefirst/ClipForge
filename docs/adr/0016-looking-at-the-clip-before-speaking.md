@@ -194,6 +194,12 @@ retry, with its own correction; if the second is also short, the longer of the
 two is used and nothing is warned about, because a thin narration is a
 disappointment rather than a defect.
 
+The retry also needed its own seed. `generate_structured` defaults to seed 0,
+so asking again with the same prompt returns the same words, and two remakes of
+one clip produced byte-identical narration on both the attempt and the
+correction. A constant keeps the pair reproducible while making the second ask
+an actual second sample.
+
 A prompt alone does not fix this, for the reason the language gate exists: a
 model is not a witness to its own output. `echoes_the_picture` counts, the way
 `reads_as` counts. Two arithmetic tests — a phrase list for talking about the

@@ -100,6 +100,14 @@ _BUDGET_FLOOR = 0.6
 # has started.
 _FAR_UNDER = 0.7
 
+# The retry's own seed. `OllamaClient.generate_structured` defaults to seed 0,
+# so asking again with the same prompt returns the same words: two remakes of
+# one clip, days apart, produced byte-identical narration on both the first
+# attempt and the correction. Sampling needs somewhere else to start from, and
+# a constant keeps the pair reproducible: the same clip always gets the same
+# two attempts.
+_RETRY_SEED = 7
+
 # The most common function words in each language a voice exists for, as one
 # string each so the table stays readable.
 _COMMON: dict[str, str] = {
@@ -209,6 +217,7 @@ def write_narration(
         client,
         f"{prompt}\n\n{correction.format(reason=reason)}",
         temperature=0.6,
+        seed=_RETRY_SEED,
         grounded=visual is not None,
     )
     second_echo = echoes_the_picture(second.script, visual) if second is not None else "none"
@@ -237,7 +246,12 @@ def write_narration(
 
 
 def _ask(
-    client: OllamaClient, prompt: str, *, temperature: float, grounded: bool
+    client: OllamaClient,
+    prompt: str,
+    *,
+    temperature: float,
+    grounded: bool,
+    seed: int = 0,
 ) -> Narration | None:
     """One call, cleaned up. None when the model cannot be reached or said nothing."""
     try:
@@ -246,6 +260,7 @@ def _ask(
             system=NARRATE_SYSTEM_PROMPT,
             prompt=prompt,
             temperature=temperature,
+            seed=seed,
         )
     except OllamaError as exc:
         log.warning("narrate.unavailable", error=str(exc))

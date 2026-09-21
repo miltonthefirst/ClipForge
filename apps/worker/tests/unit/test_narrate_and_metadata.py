@@ -244,9 +244,12 @@ class FakeOllama:
     def __init__(self, *scripts: str) -> None:
         self._scripts = list(scripts)
         self.prompts: list[str] = []
+        self.seeds: list[int] = []
 
     def generate_structured(self, **kwargs: object) -> LlmNarration:
         self.prompts.append(str(kwargs.get("prompt")))
+        seed = kwargs.get("seed")
+        self.seeds.append(seed if isinstance(seed, int) else 0)
         return LlmNarration(
             transcript_usable=False,
             reasoning="word salad",
@@ -526,3 +529,13 @@ def test_a_longer_retry_that_recites_the_picture_is_not_taken() -> None:
     answer = written(client)
     assert answer is not None
     assert answer.script == short, "a recital is a defect; a thin line is only a disappointment"
+
+
+def test_the_retry_samples_somewhere_else() -> None:
+    """Ollama defaults to seed 0, so asking again with the same prompt returns
+    the same words. Two remakes of one clip produced byte-identical narration
+    on both the first attempt and the correction."""
+    client = FakeOllama(ECHO, GOOD)
+    written(client)
+    assert len(client.seeds) == 2
+    assert client.seeds[0] != client.seeds[1], "a re-sample of the same seed is not a second try"
