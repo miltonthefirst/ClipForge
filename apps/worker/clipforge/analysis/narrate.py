@@ -211,18 +211,21 @@ def write_narration(
         temperature=0.6,
         grounded=visual is not None,
     )
-    if (
-        second is not None
-        and echoes_the_picture(second.script, visual) is None
-        and too_thin(second.script, floor) is None
-    ):
+    second_echo = echoes_the_picture(second.script, visual) if second is not None else "none"
+    if second is not None and second_echo is None and too_thin(second.script, floor) is None:
         return second
 
     if echo is None:
-        # Only ever short. Keep whichever of the two says more: a thin line is
-        # a disappointment, not a defect, and there is nothing here worth
-        # failing a clip over or warning a reviewer about.
-        if second is not None and len(second.script.split()) > len(first.script.split()):
+        # Only ever short. Keep whichever of the two says more, unless saying
+        # more meant reciting the picture: asking for a longer line is an
+        # invitation to pad it out with description, and a clip shipped
+        # saying "Look at their faces" is what this costs when it is not
+        # checked. A thin line is a disappointment; a recital is the defect.
+        if (
+            second is not None
+            and second_echo is None
+            and len(second.script.split()) > len(first.script.split())
+        ):
             return second
         return first
 

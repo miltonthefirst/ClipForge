@@ -508,3 +508,21 @@ def test_the_football_examples_are_marked_as_examples() -> None:
     """A clip about anime came back talking about a scoreline, which is a word
     this prompt taught it: every concrete example in it is football."""
     assert "They are not a vocabulary to borrow" in NARRATE_SYSTEM_PROMPT
+
+
+def test_a_longer_retry_that_recites_the_picture_is_not_taken() -> None:
+    """The bug that shipped: a thin first line, a longer second one that says
+    "Look at their faces", and the length branch took it without looking.
+
+    A clip reached Review with exactly that, unflagged, while the gate that
+    would have caught it was never asked.
+    """
+    short = "Fear keeps them quiet."
+    longer = (
+        "Why do they let one person hold all the power? Because fear makes them obey. "
+        "Look at their faces, shadows hide what they really think."
+    )
+    client = FakeOllama(short, longer)
+    answer = written(client)
+    assert answer is not None
+    assert answer.script == short, "a recital is a defect; a thin line is only a disappointment"
