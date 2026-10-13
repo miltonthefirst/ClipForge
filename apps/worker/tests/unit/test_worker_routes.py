@@ -31,12 +31,16 @@ class FakeWorker:
         self.started_at = datetime.now(UTC) - timedelta(seconds=uptime_s)
         self._active = active or []
         self.stop_requested = 0
+        self.pings: list[str] = []
 
     def active_job_ids(self) -> list[str]:
         return list(self._active)
 
     def request_stop(self) -> None:
         self.stop_requested += 1
+
+    def ping(self, token: str) -> None:
+        self.pings.append(token)
 
 
 def routes(worker: FakeWorker, *, pid: int = 4242) -> WorkerRoutes:
@@ -47,11 +51,13 @@ def routes(worker: FakeWorker, *, pid: int = 4242) -> WorkerRoutes:
 
 
 def test_the_table_offers_exactly_the_routes_it_documents() -> None:
-    """Reads, and one stop. Nothing else that could change how the worker behaves."""
+    """Reads, one stop, and one ping. Nothing else that could change how the
+    worker behaves."""
     assert set(routes(FakeWorker()).table()) == {
         ("GET", "/worker"),
         ("GET", "/worker/settings"),
         ("POST", "/worker/shutdown"),
+        ("POST", "/worker/ping"),
     }
 
 
@@ -63,9 +69,13 @@ def test_stopping_is_the_only_thing_this_surface_can_do() -> None:
     docs/adr/0011-local-control-api.md stop describing this surface, so that is
     what is pinned, rather than a count that has to be edited every time
     something new becomes visible.
+
+    The ping is a POST because it makes the worker *write* — its own document,
+    with the token — but it changes nothing about what the worker does, and it
+    is named here so that a third POST still has to argue its way in.
     """
     writes = {path for method, path in routes(FakeWorker()).table() if method != "GET"}
-    assert writes == {"/worker/shutdown"}
+    assert writes == {"/worker/shutdown", "/worker/ping"}
 
 
 # ── Status ───────────────────────────────────────────────────────────────────
@@ -127,6 +137,29 @@ def test_shutdown_asks_the_worker_rather_than_killing_it() -> None:
     assert result["stopping"] is True
 
 
+def test_shutdown_is_honoured_even_when_it_cannot_be_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stop comes before the log line, not after it.
+
+    A worker whose console had gone away raised on every log call, and this
+    handler logged first — so every Stop failed before it asked for anything,
+    and the worker could only be killed.
+    """
+
+    class DeadLog:
+        def info(self, *_args: object, **_kwargs: object) -> None:
+            raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr("clipforge.scheduler.control.log", DeadLog())
+    worker = FakeWorker()
+
+    with pytest.raises(OSError):
+        routes(worker).shutdown({})
+
+    assert worker.stop_requested == 1
+
+
 def test_shutdown_returns_what_was_in_flight_when_it_was_asked() -> None:
     """So the caller can say what is being interrupted, before it is gone."""
     result = routes(FakeWorker(active=["job-7"]), pid=99).shutdown({})
@@ -148,3 +181,31 @@ def test_a_second_shutdown_request_is_not_an_error() -> None:
     assert first["stopping"] is True
     assert second["stopping"] is True
     assert worker.stop_requested == 2
+
+
+# ── Ping ─────────────────────────────────────────────────────────────────────
+
+
+def test_a_ping_is_handed_to_the_worker_and_answered_at_once() -> None:
+    """The agent relays a client's ping here; the worker answers it by writing
+    its own document, from its own loop. The route only hands the token over —
+    a loopback caller must get a quick answer even when Firestore is slow."""
+    worker = FakeWorker()
+
+    result = routes(worker, pid=77).ping({"token": "tok-123"})
+
+    assert worker.pings == ["tok-123"]
+    assert result == {"pinged": True, "pid": 77}
+
+
+@pytest.mark.parametrize("payload", [{}, {"token": ""}, {"token": 7}, {"token": "x" * 65}])
+def test_a_ping_without_a_usable_token_is_refused(payload: dict[str, object]) -> None:
+    """The token is echoed into a document every member reads, and the rules
+    never let a client write one longer than 64 characters — so anything else
+    did not come from a client, and is not passed on."""
+    worker = FakeWorker()
+
+    with pytest.raises(ValueError, match="token"):
+        routes(worker).ping(payload)
+
+    assert worker.pings == []

@@ -98,6 +98,48 @@ def test_cutting_in_late_moves_the_start_earlier(client: OllamaClient) -> None:
     assert resolved.start_delta_sec < 0
 
 
+def read_for(client: OllamaClient, note: str, duration_sec: float) -> RemakeOptions:
+    options = RemakeOptions(notes=note)
+    answer, _ = interpret_note(
+        client, note, options=options, clip_language="English", duration_sec=duration_sec
+    )
+    return apply_interpretation(options, answer).options
+
+
+def test_the_split_request_that_started_this_is_two_parts_and_no_trim(
+    client: OllamaClient,
+) -> None:
+    """Verbatim, typo and all. Before the SPLIT topic existed this came back as
+    "moved the start by -30s" and one longer clip."""
+    resolved = read_for(
+        client,
+        "Let's split this into two, 1 video from beginning to 35s then the 2nd video "
+        "fro 35s to the end",
+        50.7,
+    )
+    parts = [(r.start_sec, r.end_sec) for r in resolved.splits or []]
+    assert len(parts) == 2
+    assert parts[0] == pytest.approx((0, 35), abs=0.5)
+    assert parts[1][0] == pytest.approx(35, abs=0.5)
+    assert parts[1][1] == pytest.approx(50.7, abs=1.0)
+    assert resolved.start_delta_sec == 0
+    assert resolved.end_delta_sec == 0
+
+
+def test_equal_parts_with_no_times_are_worked_out_from_the_length(client: OllamaClient) -> None:
+    resolved = read_for(client, "split it into three equal parts", 60)
+    parts = [(r.start_sec, r.end_sec) for r in resolved.splits or []]
+    assert len(parts) == 3
+    assert parts[0][0] == pytest.approx(0, abs=0.5)
+    assert parts[-1][1] == pytest.approx(60, abs=1.0)
+
+
+def test_a_note_about_timing_is_not_mistaken_for_a_split(client: OllamaClient) -> None:
+    resolved = read_for(client, "it starts too late, begin 3 seconds earlier", 42)
+    assert not resolved.splits
+    assert (resolved.start_delta_sec or 0) < 0
+
+
 # ── The two rules that keep it honest ────────────────────────────────────────
 
 

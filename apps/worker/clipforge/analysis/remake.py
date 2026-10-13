@@ -55,6 +55,7 @@ from clipforge_contracts import (
     ObscureOptions,
     RemakeOptions,
     SpeechMode,
+    SplitRange,
     UnsupportedAsk,
     VoiceCaptions,
     VoiceOptions,
@@ -106,7 +107,13 @@ cutting the middle out, recolouring. When that happens, name it in \
 `unsupported` and leave the controls alone. Do NOT bend the request into the \
 nearest control that exists — "remove the watermark in the top right" is not a \
 framing change, and answering it with one produces a clip that is differently \
-wrong and still has the watermark."""
+wrong and still has the watermark.
+
+A note asking for the clip to become several clips — "split this in two", \
+"part one up to 35 seconds, part two after that" — is SPLIT, not TIMING. \
+Give the parts in `splits` and leave `startDeltaSec` and `endDeltaSec` at 0: \
+splitting keeps every second of the clip and moves neither its start nor its \
+end."""
 
 _FRAMING_GUIDE = """\
 Framing controls which part of a wide video ends up in a tall clip:
@@ -145,7 +152,7 @@ def build_note_prompt(
         _FRAMING_GUIDE,
         "",
         "First answer `topics`: which of FRAMING, LANGUAGE, AUDIO, TIMING, "
-        "OBSCURE and CAPTIONS this "
+        "OBSCURE, CAPTIONS and SPLIT this "
         "note actually raises. Usually one. Anything you say about a topic you "
         "did not list is discarded, so listing a topic the note did not raise "
         "changes something nobody asked to change.",
@@ -159,6 +166,12 @@ def build_note_prompt(
         "- startDeltaSec / endDeltaSec: seconds to move the cut's start or end, "
         "and 0 if the note does not say it begins or ends at the wrong moment. "
         "Negative starts earlier; positive ends later.",
+        "- splits: when the note asks for the clip to be split into several "
+        "clips, one entry per part, each a startSec and an endSec in seconds from "
+        "the clip's first frame. 'Split at 35 seconds' on a 50-second clip is "
+        "two parts, 0 to 35 and 35 to 50. 'The end' is the clip's length. "
+        "'Split it into three' with no times means three equal parts. An empty "
+        "list when the note does not ask for a split.",
         "- captions: REMOVE if the note asks for the captions, subtitles or "
         "on-screen words to come off, KEEP if it mentions them and wants them "
         "left, NOT_MENTIONED if it says nothing about them. This is about the "
@@ -186,7 +199,9 @@ def build_note_prompt(
     if clip_language:
         lines.append(f"\nThe clip is currently in {clip_language}.")
     if duration_sec:
-        lines.append(f"It is {duration_sec:.0f} seconds long.")
+        # One decimal, because a part that ends "at the end" is written as this
+        # number, and a rounded one either stops short or runs past the clip.
+        lines.append(f"It is {duration_sec:.1f} seconds long.")
     if standing:
         # What this reviewer has taught before. Context, not instruction: a note
         # that contradicts one of these is the reviewer changing their mind, and
@@ -454,9 +469,25 @@ def apply_interpretation(options: RemakeOptions, answer: LlmRemakeNote | None) -
             where = f" in the {obscure_where.lower().replace('_', ' ')}" if obscure_where else ""
             changes.append(f"looked for a fixed mark to hide{where}")
 
+    # ── Splitting ────────────────────────────────────────────────────────────
+    # The form wins here, unlike language. A form cannot tell a chosen
+    # language from an untouched default, which is why the note beats it
+    # there; parts are never a default — the list is empty until somebody
+    # types times into it — so parts in the form were chosen, to the second.
+    if NoteTopic.SPLIT in topics and answer.splits:
+        if updated.splits:
+            conflicts.append("the note described its own parts; the ones set in the form were used")
+        else:
+            updated.splits = list(answer.splits)
+            changes.append(f"split it into {_parts_phrase(answer.splits)}")
+
     # ── Trims ────────────────────────────────────────────────────────────────
     # `0` is this schema's "not mentioned", so a falsy answer never overwrites.
-    if NoteTopic.TIMING in topics:
+    # Skipped when there are parts: each part says exactly where it starts and
+    # ends, and a model that files "split at 35s" under TIMING as well answers
+    # it with a trim — which is how the first split request came back as one
+    # longer clip.
+    if NoteTopic.TIMING in topics and not updated.splits:
         if not updated.start_delta_sec and answer.start_delta_sec:
             updated.start_delta_sec = answer.start_delta_sec
             changes.append(f"moved the start by {answer.start_delta_sec:+g}s")
@@ -606,7 +637,20 @@ def _stated_fields(options: RemakeOptions) -> list[str]:
         stated.append("the end of the cut")
     if options.obscure is not None and (options.obscure.auto or options.obscure.regions):
         stated.append("what to hide in the picture")
+    if options.splits:
+        stated.append("how to split it")
     return stated
+
+
+def _parts_phrase(splits: list[SplitRange]) -> str:
+    """'2 parts (0-35s, 35-50.7s)' — what the change said, in the reviewer's units."""
+    ranges = ", ".join(f"{_seconds(r.start_sec)}-{_seconds(r.end_sec)}s" for r in splits[:6])
+    more = ", …" if len(splits) > 6 else ""
+    return f"{len(splits)} part{'s' if len(splits) != 1 else ''} ({ranges}{more})"
+
+
+def _seconds(value: float) -> str:
+    return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 # ── Translation ──────────────────────────────────────────────────────────────

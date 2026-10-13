@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -35,12 +36,20 @@ def run(
         help="Claim and run a single job, then exit. Useful for smoke tests.",
     ),
 ) -> None:
-    """Start the worker: claim jobs, run their stages, heartbeat, and reap.
+    """Start the worker: claim jobs, run their stages, renew their leases, and reap.
 
     Stops cleanly on Ctrl-C — running stages are asked to checkpoint, their jobs
     are returned to the queue so another worker can take them immediately, and
     the heartbeat flips to OFFLINE.
     """
+    # Before the imports below, so no library they pull in can take a reference
+    # to the raw streams first. The parent that is reading this worker's output
+    # can exit before the worker does; see `_SurvivingStream`.
+    settings = get_settings()
+    configure_logging(
+        level=settings.log_level, fmt=settings.log_format, fallback=settings.worker_log_file
+    )
+
     from clipforge.localapi import LocalControlApi, read_or_create_token
     from clipforge.localserver import LocalFileServer
     from clipforge.media.trash import Trash
@@ -66,9 +75,6 @@ def run(
         firestore_client,
     )
     from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
-
-    settings = get_settings()
-    configure_logging(level=settings.log_level, fmt=settings.log_format)
 
     client = firestore_client(settings)
     workspace = Workspace(settings.workspace_dir, max_gb=settings.workspace_max_gb)
@@ -246,7 +252,7 @@ def agent(
         store=AgentStore(firestore_client(settings), settings),
         supervisor=supervisor,
         tick_seconds=settings.agent_tick_seconds,
-        heartbeat_seconds=settings.agent_heartbeat_seconds,
+        listener_check_seconds=settings.listener_check_seconds,
     )
     runner.install_signal_handlers()
 
@@ -346,6 +352,39 @@ def status(job_id: str = typer.Argument(..., help="Job id to inspect.")) -> None
 
 
 @app.command()
+def resubmit(job_id: str = typer.Argument(..., help="The FAILED job to send back.")) -> None:
+    """Send a failed job back to the queue, keeping every stage it finished.
+
+    The same thing the Resubmit button does on the phone: the same job with the
+    same options, its attempts reset, resuming at the stage that failed.
+    """
+    from clipforge_contracts import StageStatus
+
+    from clipforge.scheduler.lease import LeaseError
+    from clipforge.store.firestore import JobStore, firestore_client
+
+    settings = get_settings()
+    store = JobStore(firestore_client(settings), settings)
+
+    try:
+        job = store.resubmit(job_id)
+    except LeaseError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if job is None:
+        typer.echo(f"no such job: {job_id}", err=True)
+        raise typer.Exit(code=1)
+
+    finished = sum(
+        1 for stage in job.stages if stage.status in (StageStatus.DONE, StageStatus.SKIPPED)
+    )
+    typer.echo(
+        f"{job.id} {job.type.value} QUEUED — {finished} of {len(job.stages)} stages "
+        "already done and will not be redone"
+    )
+
+
+@app.command()
 def workspace() -> None:
     """Report workspace usage against its cap.
 
@@ -364,6 +403,29 @@ def workspace() -> None:
     typer.echo(f"  free   {manager.free_disk_bytes() / gb:.2f} GB on the volume")
     over = manager.over_budget_by()
     typer.echo(f"  over budget by {over / gb:.2f} GB" if over else "  within budget")
+
+
+def _parse_part(text: str) -> tuple[float, float] | None:
+    """`0-35`, `35-50.7` or `0:35-0:50.7` as a pair of seconds; None if unreadable.
+
+    Split on the hyphen that separates two times rather than on every hyphen, so
+    a part that starts before the clip does (`-5-20`) still reads.
+    """
+    match = re.fullmatch(r"\s*(-?[\d:.]+)\s*-\s*(-?[\d:.]+)\s*", text)
+    if match is None:
+        return None
+    try:
+        return _seconds(match.group(1)), _seconds(match.group(2))
+    except ValueError:
+        return None
+
+
+def _seconds(text: str) -> float:
+    """`35`, `35.5`, `0:35` or `-5` as seconds."""
+    negative = text.startswith("-")
+    minutes, _, seconds = text.lstrip("-").rpartition(":")
+    value = (float(minutes) * 60 if minutes else 0.0) + float(seconds)
+    return -value if negative else value
 
 
 @app.command()
@@ -385,6 +447,13 @@ def remake(
     ),
     start: float = typer.Option(0.0, help="Move the cut's start, in seconds. Negative is earlier."),
     end: float = typer.Option(0.0, help="Move the cut's end, in seconds. Positive is later."),
+    split: list[str] = typer.Option(  # noqa: B008 - typer's own idiom for a repeated option
+        [],
+        help=(
+            "One part to cut, FROM-TO on the clip as it plays, e.g. 0-35 or 0:35-0:50.7. "
+            "Repeat for each part; two or more make that many clips."
+        ),
+    ),
     uid: str = typer.Option("cli", help="Who is asking. Recorded on the job."),
 ) -> None:
     """Queue a correction to a finished clip.
@@ -402,6 +471,7 @@ def remake(
         ObscureOptions,
         RemakeOptions,
         SpeechMode,
+        SplitRange,
         VoiceCaptions,
         VoiceOptions,
     )
@@ -450,12 +520,24 @@ def remake(
             captions=VoiceCaptions.REBUILD,
         )
 
+    splits: list[SplitRange] = []
+    for part in split:
+        bounds = _parse_part(part)
+        if bounds is None:
+            typer.echo(
+                f"could not read the part {part!r}; write it as FROM-TO, e.g. 0-35 or 0:35-0:50.7",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        splits.append(SplitRange(start_sec=bounds[0], end_sec=bounds[1]))
+
     options = RemakeOptions(
         notes=notes or None,
         framing=framing_option,
         voice=voice_option,
         start_delta_sec=start,
         end_delta_sec=end,
+        splits=splits,
         # Only ever the search here. A rectangle is a thing you point at, and a
         # terminal cannot show you the frame to point at — so the flag asks the
         # worker to look, and what it finds is recorded on the clip where it can
@@ -469,9 +551,10 @@ def remake(
         and not hide
         and not start
         and not end
+        and not splits
     ):
         typer.echo(
-            "nothing to change: give a note, a framing, a language, --hide or a nudge.",
+            "nothing to change: give a note, a framing, a language, --hide, a nudge or --split.",
             err=True,
         )
         raise typer.Exit(code=2)

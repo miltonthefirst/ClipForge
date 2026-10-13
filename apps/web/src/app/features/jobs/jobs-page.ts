@@ -21,6 +21,7 @@ import {
   jobTabSpec,
   jobTitle,
   queueFailure,
+  resubmittable,
   stageProgress,
   type JobTab,
   type StageProgress,
@@ -47,6 +48,8 @@ export interface JobRow {
   /** What the running stage — or the one that died — last said it was doing. */
   readonly note: string | null;
   readonly cancellable: boolean;
+  /** Failed, and so safe to send back to the queue. See `resubmittable`. */
+  readonly resubmittable: boolean;
   readonly deletable: boolean;
   readonly tone: string;
 }
@@ -315,9 +318,10 @@ export class JobsPage implements OnDestroy {
         title: jobTitle(job),
         progress,
         note: jobNote(job),
-        // Mirrors firestore.rules: cancellation is the only transition a client
-        // may drive, and only from these two states.
+        // Mirrors firestore.rules: cancellation and resubmission are the only
+        // transitions a client may drive, and only from these states.
         cancellable: job.status === 'QUEUED' || job.status === 'RUNNING',
+        resubmittable: resubmittable(job),
         // Terminal only. Deleting a job a worker still holds does not stop it —
         // the stage finishes and writes the document back, and the job returns
         // marked COMPLETED. See `isTerminal`.
@@ -380,6 +384,27 @@ export class JobsPage implements OnDestroy {
     this.error.set(null);
     try {
       await this.data.cancel(row.job.id);
+      void this.refreshCounts();
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.busy.set(null);
+    }
+  }
+
+  /**
+   * Send a failed job back to the queue, the same job with the same options.
+   *
+   * No confirmation, unlike Delete: nothing is lost by it, and a job sent back
+   * by mistake can be cancelled. The row leaves the Failed tab as soon as the
+   * listener delivers it as QUEUED.
+   */
+  protected async resubmit(row: JobRow): Promise<void> {
+    if (!row.resubmittable) return;
+    this.busy.set(row.job.id);
+    this.error.set(null);
+    try {
+      await this.data.resubmit(row.job.id);
       void this.refreshCounts();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));

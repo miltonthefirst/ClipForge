@@ -31,6 +31,7 @@ The state machine, from docs/PLAN.md §3.3::
     RUNNING --stage FAILED, attempts >= max-------------------> FAILED
     RUNNING --lease expired (reaper)--------------------------> QUEUED
     any     --user cancels------------------------------------> CANCELLED
+    FAILED  --user resubmits----------------------------------> QUEUED
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ __all__ = [
     "reap",
     "release",
     "renew",
+    "resubmit",
 ]
 
 EventIdFactory = Callable[[], str]
@@ -255,7 +257,17 @@ def claim(
         }
     )
 
-    detail = "reclaimed an expired lease" if reclaiming else None
+    if reclaiming:
+        detail: str | None = "reclaimed an expired lease"
+    elif job.resubmitted_at is not None and job.started_at is None:
+        # The first claim since a person resubmitted it: `resubmit` clears
+        # `startedAt` and every claim sets it, so this is true exactly once per
+        # resubmission. Said here because the client that resubmits may not
+        # write the event log, and without it a FAILED job is followed by a
+        # CLAIMED one with nothing in between to explain how.
+        detail = "resubmitted after it failed"
+    else:
+        detail = None
     return Transition(
         job=claimed,
         events=(
@@ -562,3 +574,43 @@ def cancel(
         job=cancelled,
         events=(_event(cancelled, JobEventKind.CANCELLED, now, event_id=event_id()),),
     )
+
+
+def resubmit(job: Job, *, now: datetime) -> Transition:
+    """Send a FAILED job back to the queue, as a person pressing Resubmit does.
+
+    The same job rather than a new one, with the same options — and the same
+    stages, which is the point: a stage that is DONE is never re-executed, so a
+    CLIP job that failed at RENDER resumes at RENDER instead of downloading and
+    transcribing again. A stage left FAILED, or RUNNING by a reaped attempt, is
+    simply run again; the runner already treats both that way.
+
+    The attempt budget starts again, because a person deciding to try again is
+    not the retry the budget was counting. `startedAt` and `endedAt` are cleared
+    so the job page times this run rather than the one that failed, and so the
+    next claim can tell it is the first since the resubmission.
+
+    FAILED only. A job only reaches FAILED from the worker, which lets go of it
+    on the way, so nothing can still be running it. A CANCELLED job gives no
+    such guarantee: cancelling a running job is a client write the worker only
+    notices at its next checkpoint.
+
+    This is exactly the write firestore.rules allows the PWA to make, which is
+    why it emits no event: the PWA cannot write the event log, and the claim
+    that follows records it for both.
+    """
+    if job.status is not JobStatus.FAILED:
+        raise LeaseError(f"only a FAILED job can be resubmitted, not a {job.status.value} one")
+
+    resubmitted = job.model_copy(
+        update={
+            "status": JobStatus.QUEUED,
+            "attempts": 0,
+            "error": None,
+            "started_at": None,
+            "ended_at": None,
+            "resubmitted_at": now,
+            "updated_at": now,
+        }
+    )
+    return Transition(job=resubmitted, events=())

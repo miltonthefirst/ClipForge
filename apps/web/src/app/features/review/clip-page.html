@@ -469,7 +469,10 @@
            One clip is one row in the queue however many times it has been
            corrected. This is where the rest of the chain lives: what was asked
            for each time, and what came back. -->
-      @if ((clip.version ?? 1) > 1 || clip.derivedFromClipId) {
+      <!-- Not on the first version of a part of a split: a part starts a lineage
+           of its own, so it has no other versions yet, and where it came from
+           is said in the Remade panel below. -->
+      @if ((clip.version ?? 1) > 1 || (clip.derivedFromClipId && !clip.remake?.split)) {
         <section class="rounded-xl border border-line bg-panel p-4">
           <div class="flex items-center justify-between gap-3">
             <h2 class="text-sm font-semibold">
@@ -561,6 +564,15 @@
       @if (clip.remake; as applied) {
         <section class="rounded-xl border border-line bg-panel p-4">
           <h2 class="text-sm font-semibold">Remade</h2>
+          @if (applied.split; as part) {
+            <p class="mt-2 text-sm text-ink">
+              Part {{ part.index }} of {{ part.count }}
+              <span class="text-ink-subtle"
+                >· {{ clock(part.startSec) }}–{{ clock(part.endSec) }} of the clip it was split
+                from</span
+              >
+            </p>
+          }
           @if (applied.notes) {
             <p class="mt-2 text-sm text-ink">“{{ applied.notes }}”</p>
           }
@@ -685,7 +697,11 @@
             <a
               [routerLink]="['/review', originalId]"
               class="mt-2 inline-block text-xs text-accent-ink hover:underline"
-              >← the version this was made from</a
+              >{{
+                applied.split
+                  ? '← the clip this was split from'
+                  : '← the version this was made from'
+              }}</a
             >
           }
         </section>
@@ -1178,78 +1194,194 @@
             <!-- Timing -->
             <fieldset>
               <legend class="text-sm font-medium">Timing</legend>
-              <!-- Steppers beside each field, because a phone's numeric keypad has
-                   no minus key and a negative nudge could not be typed there. -->
-              <div class="mt-2 grid grid-cols-2 gap-3">
-                <div class="block">
-                  <span class="text-xs text-ink-muted">Start (seconds)</span>
-                  <div class="mt-1 flex items-stretch gap-1">
-                    <button
-                      type="button"
-                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
-                      aria-label="Start half a second earlier"
-                      (click)="nudgeTrim('start', -0.5)"
-                    >
-                      −
-                    </button>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="-30"
-                      max="30"
-                      class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm text-ink"
-                      aria-label="Start, seconds"
-                      [ngModel]="remakeStartDelta()"
-                      (ngModelChange)="setTrim('start', $event)"
-                      name="remakeStartDelta"
-                    />
-                    <button
-                      type="button"
-                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
-                      aria-label="Start half a second later"
-                      (click)="nudgeTrim('start', 0.5)"
-                    >
-                      +
-                    </button>
+              @if (splitting()) {
+                <p class="mt-1 text-xs text-ink-subtle">
+                  Set by the parts below: each one says exactly where it starts and ends.
+                </p>
+              } @else {
+                <!-- Steppers beside each field, because a phone's numeric keypad has
+                     no minus key and a negative nudge could not be typed there. -->
+                <div class="mt-2 grid grid-cols-2 gap-3">
+                  <div class="block">
+                    <span class="text-xs text-ink-muted">Start (seconds)</span>
+                    <div class="mt-1 flex items-stretch gap-1">
+                      <button
+                        type="button"
+                        class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                        aria-label="Start half a second earlier"
+                        (click)="nudgeTrim('start', -0.5)"
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="-30"
+                        max="30"
+                        class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm text-ink"
+                        aria-label="Start, seconds"
+                        [ngModel]="remakeStartDelta()"
+                        (ngModelChange)="setTrim('start', $event)"
+                        name="remakeStartDelta"
+                      />
+                      <button
+                        type="button"
+                        class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                        aria-label="Start half a second later"
+                        (click)="nudgeTrim('start', 0.5)"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <div class="block">
+                    <span class="text-xs text-ink-muted">End (seconds)</span>
+                    <div class="mt-1 flex items-stretch gap-1">
+                      <button
+                        type="button"
+                        class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                        aria-label="End half a second earlier"
+                        (click)="nudgeTrim('end', -0.5)"
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="-30"
+                        max="30"
+                        class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm text-ink"
+                        aria-label="End, seconds"
+                        [ngModel]="remakeEndDelta()"
+                        (ngModelChange)="setTrim('end', $event)"
+                        name="remakeEndDelta"
+                      />
+                      <button
+                        type="button"
+                        class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
+                        aria-label="End half a second later"
+                        (click)="nudgeTrim('end', 0.5)"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div class="block">
-                  <span class="text-xs text-ink-muted">End (seconds)</span>
-                  <div class="mt-1 flex items-stretch gap-1">
-                    <button
-                      type="button"
-                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
-                      aria-label="End half a second earlier"
-                      (click)="nudgeTrim('end', -0.5)"
-                    >
-                      −
-                    </button>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="-30"
-                      max="30"
-                      class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm text-ink"
-                      aria-label="End, seconds"
-                      [ngModel]="remakeEndDelta()"
-                      (ngModelChange)="setTrim('end', $event)"
-                      name="remakeEndDelta"
-                    />
-                    <button
-                      type="button"
-                      class="rounded-lg border border-line-strong px-3 text-sm text-ink-muted hover:bg-line"
-                      aria-label="End half a second later"
-                      (click)="nudgeTrim('end', 0.5)"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
+                <p class="mt-1 text-xs text-ink-subtle">
+                  Negative starts earlier; positive ends later. Useful when the action happens
+                  before anyone says anything about it. The − and + step by half a second.
+                </p>
+              }
+            </fieldset>
+
+            <!-- Splitting.
+                 Parts are start-to-end ranges on this clip as it plays above.
+                 The worker applies everything else in this form first and cuts
+                 the result, so each part keeps the framing, captions, voice and
+                 music. Written for "split this into two, beginning to 35s then
+                 35s to the end", which had nowhere to go and came back as one
+                 longer clip. The checks are core/remake-split.ts, mirroring the
+                 worker's, so a part it would refuse is stopped here. -->
+            <fieldset>
+              <legend class="text-sm font-medium">Split into parts</legend>
               <p class="mt-1 text-xs text-ink-subtle">
-                Negative starts earlier; positive ends later. Useful when the action happens before
-                anyone says anything about it. The − and + step by half a second.
+                Each part becomes its own clip in the review queue. Times are on this clip as it
+                plays above: pause on a moment and press <span class="font-medium">here</span>, or
+                type a time like 0:35.
               </p>
+
+              @if (splitting()) {
+                <ol class="mt-2 space-y-2">
+                  @for (part of remakeSplits(); track $index; let i = $index) {
+                    <li class="rounded-lg border border-line p-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-medium text-ink">Part {{ i + 1 }}</span>
+                        <button
+                          type="button"
+                          class="text-xs text-ink-subtle hover:text-danger-ink"
+                          [attr.aria-label]="'Remove part ' + (i + 1)"
+                          (click)="removePart(i)"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <div class="mt-1 grid grid-cols-2 gap-2">
+                        @for (edge of ['start', 'end']; track edge) {
+                          <div>
+                            <span class="text-xs text-ink-muted">{{
+                              edge === 'start' ? 'From' : 'To'
+                            }}</span>
+                            <div class="mt-1 flex items-stretch gap-1">
+                              <input
+                                type="text"
+                                autocomplete="off"
+                                spellcheck="false"
+                                class="min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-2 py-2 text-center text-sm tabular-nums text-ink"
+                                [attr.aria-label]="
+                                  'Part ' + (i + 1) + (edge === 'start' ? ' starts at' : ' ends at')
+                                "
+                                [value]="clock(edge === 'start' ? part.startSec : part.endSec)"
+                                (change)="
+                                  setPartTime(i, edge === 'start' ? 'start' : 'end', $event)
+                                "
+                              />
+                              <button
+                                type="button"
+                                class="rounded-lg border border-line-strong px-2 text-xs text-ink-muted hover:bg-line"
+                                [attr.aria-label]="
+                                  'Part ' +
+                                  (i + 1) +
+                                  (edge === 'start' ? ' starts' : ' ends') +
+                                  ' where the player is'
+                                "
+                                (click)="setPartAtPlayhead(i, edge === 'start' ? 'start' : 'end')"
+                              >
+                                here
+                              </button>
+                            </div>
+                          </div>
+                        }
+                      </div>
+                    </li>
+                  }
+                </ol>
+              }
+
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+                  [disabled]="remakeSplits().length >= maxParts || !clipLength()"
+                  (click)="addPart()"
+                >
+                  + Add a part
+                </button>
+                <span class="text-xs text-ink-subtle">or evenly into</span>
+                @for (count of [2, 3, 4]; track count) {
+                  <button
+                    type="button"
+                    class="rounded-lg border border-line-strong px-2.5 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+                    [disabled]="!clipLength()"
+                    [attr.aria-label]="'Split evenly into ' + count + ' parts'"
+                    (click)="splitEvenly(count)"
+                  >
+                    {{ count }}
+                  </button>
+                }
+              </div>
+
+              @if (splitSummary(); as summary) {
+                <p class="mt-2 text-xs text-ink">{{ summary }}</p>
+              }
+              @for (problem of splitTrouble(); track problem) {
+                <p class="mt-1 text-xs text-danger-ink">{{ problem }}</p>
+              }
+              @if (splitNeedsSource()) {
+                <p class="mt-1 text-xs text-ink-subtle">
+                  A part reaches outside this clip, so it is cut again from the original video,
+                  which has to still be on the worker.
+                </p>
+              }
             </fieldset>
 
             <!-- Music.

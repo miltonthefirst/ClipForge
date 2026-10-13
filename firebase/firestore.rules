@@ -190,6 +190,39 @@ service cloud.firestore {
                     && request.resource.data.desired in ['RUNNING', 'STOPPED']
                     && request.resource.data.requestedBy == request.auth.uid
                     && request.resource.data.requestedAt is string;
+
+      // ── A ping: "are you there?" ───────────────────────────────────────────
+      //
+      // Neither the agent nor the worker writes on a timer any more, because
+      // every write is also a read for every listener open on the document,
+      // all day, to say nothing new. A client that wants to know whether the
+      // machine is on asks instead: a fresh token here, which the agent hears
+      // through its listener and echoes in `answeredPing`, and relays to the
+      // worker, which echoes it in workers/{id}.answeredPing.
+      // See docs/adr/0030-status-on-events-and-pings.md.
+      //
+      // Its own write, never combined with a wish, so each rule stays narrow.
+      // `pingRequestedBy` rather than `requestedBy`: that field says who last
+      // asked for a start or a stop, and somebody merely looking must not
+      // overwrite it.
+      //
+      // `pingRequestedAt` must be the server's own clock, so the throttle below
+      // cannot be dodged by a client stamping a time of its choosing: one ping
+      // per machine per 15 seconds, whoever sends it. A client refused by the
+      // throttle waits on the token already here, which was asked moments ago
+      // and answers the same question. The bound is what keeps a page reloaded
+      // in a loop from turning into a write-and-relay loop on the machine.
+      allow update: if isApproved()
+                    && changed().hasOnly(['pingToken', 'pingRequestedAt', 'pingRequestedBy'])
+                    && changed().hasAll(['pingToken', 'pingRequestedAt'])
+                    && request.resource.data.pingToken is string
+                    && request.resource.data.pingToken.size() >= 8
+                    && request.resource.data.pingToken.size() <= 64
+                    && request.resource.data.pingRequestedBy == request.auth.uid
+                    && request.resource.data.pingRequestedAt == request.time
+                    && (!('pingRequestedAt' in resource.data)
+                        || !(resource.data.pingRequestedAt is timestamp)
+                        || request.time > resource.data.pingRequestedAt + duration.value(15, 's'));
     }
 
     // ── The publish gate, client half ────────────────────────────────────────
@@ -362,7 +395,12 @@ service cloud.firestore {
              && options.keys().hasOnly(
                   ['notes', 'interpretNotes', 'framing', 'voice',
                    'startDeltaSec', 'endDeltaSec', 'profile', 'obscure',
-                   'keepMusic', 'captions'])
+                   'keepMusic', 'captions', 'splits'])
+             // Each part is a render and an upload, so the list is capped the
+             // way keyframes are: by size here, and each part's times by the
+             // contract the worker reads the job through.
+             && (options.get('splits', null) == null
+                 || (options.splits is list && options.splits.size() <= 20))
              // Captions are a property of the picture, so this stands beside
              // `voice` rather than inside it. REBUILD is meaningless without a
              // new narration to transcribe, and the stage ignores it here.
@@ -700,16 +738,59 @@ service cloud.firestore {
                     // A COMPOSE job has no source at all. It asks for a topic.
                     && (request.resource.data.type != 'COMPOSE' || composeOptionsOk());
 
-      // The only state transition a user may drive is cancellation. Everything
-      // else — claiming, progress, stage results — belongs to the worker.
+      // Resubmitting sends the same job back to the queue, exactly as
+      // `lease.resubmit` does on the worker. FAILED only: the worker lets go of
+      // a job on the way to FAILED, so nothing can still be running it — which
+      // a CANCELLED job does not promise, because cancelling a running job is
+      // this client's write and the worker only notices it later.
+      //
+      // `stages` is not writable. Leaving it alone is the point — a stage that
+      // is DONE is not redone — and a client that could write it could mark a
+      // stage DONE that never ran. The options are not writable either: a
+      // resubmission is the request that failed, not a new one, so it needs no
+      // re-validation beyond what may have changed underneath it since —
+      // whether the clip it names still exists, and for a PUBLISH, whether
+      // that clip is still approved.
+      function resubmissionOk() {
+        let next = request.resource.data;
+        return resource.data.status == 'FAILED'
+               && next.status == 'QUEUED'
+               && next.attempts == 0
+               && next.get('error', null) == null
+               && next.get('startedAt', null) == null
+               && next.get('endedAt', null) == null
+               && next.get('workerId', null) == null
+               && next.get('leaseExpiresAt', null) == null
+               && next.resubmittedAt is string
+               && changed().hasOnly(
+                    ['status', 'attempts', 'error', 'startedAt', 'endedAt', 'resubmittedAt', 'updatedAt']
+                  )
+               && (
+                    !(next.type in ['PUBLISH', 'MUSIC', 'UPLOAD', 'REMAKE'])
+                    || (
+                         next.clipId is string
+                         && exists(/databases/$(database)/documents/clips/$(next.clipId))
+                       )
+                  )
+               && (next.type != 'PUBLISH' || publishable(next.clipId));
+      }
+
+      // A user may drive two state transitions: cancelling, and resubmitting
+      // a job that failed. Everything else — claiming, progress, stage
+      // results — belongs to the worker.
       //
       // `changed().hasOnly` is what protects attribution here: `uid` is not in
       // the writable set, so cancelling someone else's job cannot quietly
       // reassign it to the person who cancelled it.
       allow update: if isApproved()
-                    && request.resource.data.status == 'CANCELLED'
-                    && resource.data.status in ['QUEUED', 'RUNNING']
-                    && changed().hasOnly(['status', 'updatedAt', 'endedAt']);
+                    && (
+                         (
+                           request.resource.data.status == 'CANCELLED'
+                           && resource.data.status in ['QUEUED', 'RUNNING']
+                           && changed().hasOnly(['status', 'updatedAt', 'endedAt'])
+                         )
+                         || resubmissionOk()
+                       );
 
       allow delete: if isApproved();
 

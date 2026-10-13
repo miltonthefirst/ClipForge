@@ -28,8 +28,20 @@ dynamic DNS name — real infrastructure, guarding a button.
 Firestore is already there, already authenticated, already has rules that say who
 is approved, and already works from anywhere the PWA works. The agent holds the
 connection *outbound*, so nothing on this machine listens for the internet. The
-cost is a document write a minute and a listener that delivers nothing while
-nothing changes.
+cost is a listener that delivers nothing while nothing changes, and a write when
+something does.
+
+## Why it does not beat
+
+It used to write its report every minute, so a client could call a machine
+that had gone quiet "off". Every one of those writes was also a read for every
+open listener, all day, to say nothing new. Now the report is written when the
+state changes and when a client *pings* — writes a fresh `pingToken` to this
+document, which the listener delivers at once. The agent answers with
+`answeredPing` and passes the token on to the worker over loopback, so the
+client learns in a second or two whether the machine is on and whether a worker
+is running, and nothing is spent while nobody is asking.
+See docs/adr/0030-status-on-events-and-pings.md.
 
 ## What the states mean
 
@@ -66,6 +78,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -79,8 +92,9 @@ from clipforge_contracts import AgentDesired, AgentReport, AgentState
 
 from clipforge.config import Settings
 from clipforge.localapi import read_or_create_token
-from clipforge.observability import get_logger
-from clipforge.store.firestore import AgentStore
+from clipforge.observability import get_logger, open_log_file
+from clipforge.scheduler.control import PING_TOKEN_MAX
+from clipforge.store.firestore import AgentStore, Subscription
 from clipforge.version import __version__
 
 log = get_logger(__name__)
@@ -92,7 +106,9 @@ __all__ = [
     "Supervisor",
     "WorkerProcess",
     "discover_uv",
+    "ping_from",
     "redirect_output",
+    "relay_ping",
 ]
 
 # The repository root, found relative to this file: apps/worker/clipforge/agent.py
@@ -196,17 +212,10 @@ def redirect_output(path: Path, *, max_bytes: int = 5 * 1024 * 1024) -> Path:
     handler would be a scheduled thread and a locking story in aid of a file
     nobody reads until something breaks.
     """
-    path = path.expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and path.stat().st_size > max_bytes:
-        with contextlib.suppress(OSError):
-            previous = path.with_name(path.name + ".1")
-            previous.unlink(missing_ok=True)
-            path.rename(previous)
-    stream = path.open("a", encoding="utf-8", buffering=1)
+    stream = open_log_file(path, max_bytes=max_bytes)
     sys.stdout = stream
     sys.stderr = stream
-    return path
+    return path.expanduser()
 
 
 def probe_worker(settings: Settings, *, timeout: float = 3.0) -> dict[str, Any] | None:
@@ -259,6 +268,31 @@ def ask_worker_to_stop(settings: Settings, *, timeout: float = 5.0) -> bool:
         )
     except (httpx.HTTPError, OSError) as exc:
         log.debug("agent.shutdown_unreachable", error=str(exc))
+        return False
+    return response.status_code == 200
+
+
+def relay_ping(settings: Settings, token: str, *, timeout: float = 3.0) -> bool:
+    """Pass a client's ping on to whatever worker is listening here.
+
+    The worker answers by writing its own document with the token, so the client
+    learns that the worker — not just this agent — is alive. ``False`` for every
+    kind of no-answer, as with :func:`probe_worker`: a worker that cannot be
+    reached simply does not answer the ping, and the client draws its own
+    conclusion when the token never appears.
+    """
+    if not settings.local_api_enabled:
+        return False
+    try:
+        auth = read_or_create_token(settings.local_api_token_file)
+        response = httpx.post(
+            f"http://127.0.0.1:{settings.local_api_port}/worker/ping",
+            headers={"Authorization": f"Bearer {auth}"},
+            json={"token": token},
+            timeout=timeout,
+        )
+    except (httpx.HTTPError, OSError) as exc:
+        log.debug("agent.relay_failed", error=str(exc))
         return False
     return response.status_code == 200
 
@@ -480,8 +514,8 @@ class Snapshot:
         worker emits a line every few seconds, and a document written on each
         one would be thousands of writes an hour telling nobody anything. The
         log still reaches the document — every state change carries the current
-        lines with it, and so does each heartbeat — it just does not *drive* the
-        write.
+        lines with it, and so does each answered ping — it just does not *drive*
+        the write.
         """
         return (
             self.state,
@@ -559,6 +593,15 @@ class Supervisor:
             restarts=self._restarts,
             log=tuple(self._process.log()),
         )
+
+    def refresh(self) -> None:
+        """Ask the worker again on the next tick, however recently it was asked.
+
+        For a ping: somebody wants to know what is running *now*, and an answer
+        up to ten seconds old is the one thing a ping exists to replace. The
+        probe is loopback, so this costs nothing outside the machine.
+        """
+        self._probed_at = None
 
     # ── One tick ─────────────────────────────────────────────────────────────
 
@@ -843,6 +886,19 @@ def desire_from(document: dict[str, Any] | None) -> Desire:
     )
 
 
+def ping_from(document: dict[str, Any] | None) -> str | None:
+    """The client's ping token, if the document carries a usable one.
+
+    Anything that is not a short non-empty string is treated as no ping at all.
+    The rules already refuse such a write; this is for a document that was
+    edited by hand, and the token is echoed into a report every member reads.
+    """
+    token = (document or {}).get("pingToken")
+    if isinstance(token, str) and 0 < len(token) <= PING_TOKEN_MAX:
+        return token
+    return None
+
+
 def _as_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
@@ -860,20 +916,24 @@ def _as_datetime(value: Any) -> datetime | None:
 
 
 class Agent:
-    """The listener, the tick, and the heartbeat.
+    """The listener, the tick, and the answer.
 
-    Three cadences, each for its own reason:
+    Two cadences and no timed write:
 
     - **The listener** delivers a change the moment it is written, so tapping
-      Start on a phone is not waiting out a poll interval.
+      Start — or opening the app, which pings — is not waiting out a poll
+      interval.
     - **The tick** is local and cheap — two seconds, no network — and is what
       notices the child process dying, because nothing external tells it.
-    - **The heartbeat** is both the "this PC is on" signal and the backstop:
-      it re-reads the wish once a minute, so a listener that has silently died
-      costs a minute of lag rather than a supervisor that stops hearing
-      anything. A read a minute is well inside the free daily quota and is the
-      cheapest possible insurance against the one failure that would make this
-      whole thing unreliable.
+
+    The report is written when the supervisor's state changes and when a ping
+    arrives, and at no other time. The old once-a-minute heartbeat doubled as a
+    backstop that re-read the document in case the listener had died quietly;
+    that is now a local check of the listener's own state every
+    ``listener_check_seconds``, and a replacement listener on failure, whose
+    first delivery is the re-read. A ping arriving *through* the listener is
+    itself proof that the listener works, and the document it carries is as
+    fresh as a read. See docs/adr/0030-status-on-events-and-pings.md.
     """
 
     def __init__(
@@ -883,25 +943,40 @@ class Agent:
         store: AgentStore,
         supervisor: Supervisor,
         tick_seconds: float = 2.0,
-        heartbeat_seconds: int = 60,
+        listener_check_seconds: float = 30.0,
+        relay: Callable[[str], bool] | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._supervisor = supervisor
         self._tick_seconds = tick_seconds
-        self._heartbeat = timedelta(seconds=heartbeat_seconds)
+        self._listener_check_seconds = listener_check_seconds
+        # Injected so a test can see what was relayed without a worker; the
+        # default is the loopback call.
+        self._relay = relay or (lambda token: relay_ping(settings, token))
 
         self._stop = threading.Event()
+        # Woken by the listener, so a ping or a wish is acted on at once rather
+        # than at the next tick.
+        self._wake = threading.Event()
         self._wish = Desire()
+        self._ping: str | None = None
         self._wish_lock = threading.Lock()
         self._started_at = datetime.now(UTC)
+
+        self._watch: Subscription | None = None
+        self._listener_checked = time.monotonic()
+        # The last steady snapshot written, and the last ping answered. `None`
+        # for the first so that starting up is itself a reason to write.
+        self._published: tuple[Any, ...] | None = None
+        self._answered: str | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def install_signal_handlers(self) -> None:
         def _handle(signum: int, _frame: FrameType | None) -> None:
             log.info("agent.signal", signal=signum)
-            self._stop.set()
+            self.request_stop()
 
         for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
             sig = getattr(signal, name, None)
@@ -912,6 +987,7 @@ class Agent:
 
     def request_stop(self) -> None:
         self._stop.set()
+        self._wake.set()
 
     def run(self) -> None:
         """Reconcile until asked to stop.
@@ -923,11 +999,7 @@ class Agent:
         finds as FOREIGN rather than duplicating it.
         """
         self._claim()
-        unsubscribe = self._subscribe()
-
-        published: tuple[Any, ...] | None = None
-        last_write = datetime.min.replace(tzinfo=UTC)
-        last_read = datetime.now(UTC)
+        self._subscribe()
 
         log.info(
             "agent.started",
@@ -936,85 +1008,132 @@ class Agent:
             emulators=self._settings.use_emulators,
         )
         try:
-            while True:
-                now = datetime.now(UTC)
-
-                if now - last_read >= self._heartbeat:
-                    last_read = now
-                    self._reread()
-
-                with self._wish_lock:
-                    wish = self._wish
-                snapshot = self._supervisor.reconcile(wish, now=now)
-
-                steady = snapshot.steady()
-                due = steady != published or now - last_write >= self._heartbeat
-                if due and self._publish(wish, snapshot, now):
-                    published = steady
-                    last_write = now
-
-                if self._stop.wait(self._tick_seconds):
-                    break
+            while not self._stop.is_set():
+                self._wake.clear()
+                self.step()
+                self._wake.wait(self._tick_seconds)
         finally:
-            with contextlib.suppress(Exception):
-                unsubscribe()
+            if self._watch is not None:
+                self._watch.close()
             log.info("agent.stopped")
+
+    def step(self, now: datetime | None = None) -> None:
+        """One tick: reconcile, answer a ping if one is waiting, report if due.
+
+        Public so the decision about *when to write* — the thing this class
+        exists to get right — can be tested one tick at a time, without threads
+        or a clock.
+        """
+        now = now or datetime.now(UTC)
+        self._check_listener()
+
+        with self._wish_lock:
+            wish, ping = self._wish, self._ping
+        fresh = ping is not None and ping != self._answered
+        if fresh:
+            self._supervisor.refresh()
+
+        snapshot = self._supervisor.reconcile(wish, now=now)
+
+        if fresh and ping is not None:
+            # Passed on before the agent's own answer is written, so a client
+            # that sees the agent answer is not then kept waiting on a worker
+            # that has not been told yet. Only when a worker may be listening:
+            # asking a port nobody holds is a timeout spent on nothing.
+            relayed = snapshot.state in (
+                AgentState.RUNNING,
+                AgentState.FOREIGN,
+                AgentState.STOPPING,
+            ) and self._relay(ping)
+            log.info("agent.ping", token=ping[:8], relayed=relayed, state=snapshot.state.value)
+
+        steady = snapshot.steady()
+        if steady == self._published and not fresh:
+            return
+        answering = ping if fresh else self._answered
+        if self._publish(wish, snapshot, now, answered=answering):
+            self._published = steady
+            self._answered = answering
 
     # ── Firestore ────────────────────────────────────────────────────────────
 
     def _claim(self) -> None:
-        """Make sure this machine has a document, without overwriting its wish."""
+        """Make sure this machine has a document, without overwriting its wish.
+
+        The one read the agent makes on purpose. A ping already waiting in it —
+        made while this machine was off — is answered by the first report.
+        """
         existing = self._store.read()
         if existing is not None:
-            with self._wish_lock:
-                self._wish = desire_from(existing)
+            answered = existing.get("answeredPing")
+            self._answered = answered if isinstance(answered, str) else None
+            self._take(existing)
             return
 
         log.info("agent.first_run", agent_id=self._store.agent_id)
         self._store.publish(
-            self._report(Desire(), self._supervisor.snapshot(), datetime.now(UTC)), claim=True
+            self._report(Desire(), self._supervisor.snapshot(), datetime.now(UTC), answered=None),
+            claim=True,
         )
 
-    def _subscribe(self) -> Callable[[], None]:
-        def _changed(document: dict[str, Any] | None) -> None:
-            wish = desire_from(document)
-            with self._wish_lock:
-                changed = wish != self._wish
-                self._wish = wish
-            if changed:
-                log.info("agent.wish", desired=wish.state.value, by=wish.requested_by)
-
-        try:
-            return self._store.watch(_changed)
-        except Exception as exc:  # noqa: BLE001 - a listener is an optimisation, not a requirement
-            # Without it the agent is a poller on the heartbeat interval, which
-            # is slower but entirely correct. Worth degrading to rather than
-            # refusing to start.
-            log.warning("agent.listener_unavailable", error=str(exc))
-            return lambda: None
-
-    def _reread(self) -> None:
-        try:
-            document = self._store.read()
-        except Exception as exc:  # noqa: BLE001 - the client raises many shapes of transient
-            log.warning("agent.read_failed", error=str(exc))
-            return
+    def _take(self, document: dict[str, Any] | None) -> None:
+        """Record the wish and the ping a delivery carries, and wake the loop."""
         wish = desire_from(document)
+        ping = ping_from(document)
         with self._wish_lock:
+            changed = wish != self._wish
             self._wish = wish
+            self._ping = ping
+        if changed:
+            log.info("agent.wish", desired=wish.state.value, by=wish.requested_by)
+        self._wake.set()
 
-    def _publish(self, wish: Desire, snapshot: Snapshot, now: datetime) -> bool:
+    def _subscribe(self) -> None:
+        self._listener_checked = time.monotonic()
         try:
-            self._store.publish(self._report(wish, snapshot, now))
-        except Exception as exc:  # noqa: BLE001 - same
+            self._watch = self._store.watch(self._take)
+        except Exception as exc:  # noqa: BLE001 - retried by the listener check
+            # Without it the agent hears nothing until the check replaces it —
+            # thirty seconds, by default — which is slow but not wrong, and
+            # worth degrading to rather than refusing to start.
+            log.warning("agent.listener_unavailable", error=str(exc))
+            self._watch = None
+
+    def _check_listener(self) -> None:
+        """Replace the listener if it has died. Local unless it has.
+
+        ``alive()`` reads the client library's own state and sends nothing, so
+        this replaces the minute-by-minute re-read that used to be the
+        backstop. A replacement delivers the document once, which is that
+        re-read, paid only when something actually broke.
+        """
+        if time.monotonic() - self._listener_checked < self._listener_check_seconds:
+            return
+        self._listener_checked = time.monotonic()
+        if self._watch is not None and self._watch.alive():
+            return
+        if self._watch is not None:
+            log.warning("agent.listener_dead")
+            self._watch.close()
+        self._subscribe()
+
+    def _publish(
+        self, wish: Desire, snapshot: Snapshot, now: datetime, *, answered: str | None
+    ) -> bool:
+        try:
+            self._store.publish(self._report(wish, snapshot, now, answered=answered))
+        except Exception as exc:  # noqa: BLE001 - the client raises many shapes of transient
             # Not fatal, and deliberately not retried here: the next tick will
-            # try again, and a supervisor that stopped supervising because it
-            # could not file a report would have its priorities backwards.
+            # try again, because nothing was recorded as published. A supervisor
+            # that stopped supervising because it could not file a report would
+            # have its priorities backwards.
             log.warning("agent.publish_failed", error=str(exc))
             return False
         return True
 
-    def _report(self, wish: Desire, snapshot: Snapshot, now: datetime) -> AgentReport:
+    def _report(
+        self, wish: Desire, snapshot: Snapshot, now: datetime, *, answered: str | None
+    ) -> AgentReport:
         return AgentReport(
             agent_id=self._store.agent_id,
             hostname=socket.gethostname(),
@@ -1033,4 +1152,5 @@ class Agent:
             project_id=self._settings.firebase_project_id,
             started_at=self._started_at,
             last_seen_at=now,
+            answered_ping=answered,
         )

@@ -9,6 +9,7 @@ import {
   onSnapshot,
   orderBy as orderByField,
   query,
+  serverTimestamp,
   setDoc,
   updateDoc,
   where as whereField,
@@ -208,6 +209,26 @@ export class FirestoreGateway {
 
   async update(path: string, id: string, changes: DocumentData): Promise<void> {
     await updateDoc(doc(this.firebase.db, path, id), changes);
+  }
+
+  /**
+   * An update with one field set to the server's clock rather than this device's.
+   *
+   * For a rule that compares a field with `request.time` — the ping throttle on
+   * `agents/{id}` — where a client-chosen time would let the throttle be dodged
+   * by lying about the hour. Named for the field rather than taking a sentinel
+   * from the caller, so `serverTimestamp` stays one of this file's imports.
+   */
+  async updateStamped(
+    path: string,
+    id: string,
+    changes: DocumentData,
+    stampField: string,
+  ): Promise<void> {
+    await updateDoc(doc(this.firebase.db, path, id), {
+      ...changes,
+      [stampField]: serverTimestamp(),
+    });
   }
 
   async merge(path: string, id: string, changes: DocumentData): Promise<void> {

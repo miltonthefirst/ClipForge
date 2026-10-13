@@ -199,6 +199,39 @@ describe('trims', () => {
 });
 
 /**
+ * Splitting one clip into several. Each part is a render and an upload, so the
+ * list is capped here the way keyframes are; each part's times are checked by
+ * the contract the worker reads the job through.
+ */
+describe('splits', () => {
+  const part = (startSec: number, endSec: number) => ({ startSec, endSec });
+
+  it('accepts a clip split in two', async () => {
+    await assertSucceeds(
+      create(aliceDb(), remakeJob(ALICE, { splits: [part(0, 35), part(35, 50.7)] })),
+    );
+  });
+
+  it('accepts an empty list, which is one clip as always', async () => {
+    await assertSucceeds(create(aliceDb(), remakeJob(ALICE, { splits: [] })));
+  });
+
+  it('accepts twenty parts', async () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => part(i * 2, i * 2 + 2));
+    await assertSucceeds(create(aliceDb(), remakeJob(ALICE, { splits: twenty })));
+  });
+
+  it('refuses more than twenty', async () => {
+    const many = Array.from({ length: 21 }, (_, i) => part(i * 2, i * 2 + 2));
+    await assertFails(create(aliceDb(), remakeJob(ALICE, { splits: many })));
+  });
+
+  it('refuses parts that are not a list', async () => {
+    await assertFails(create(aliceDb(), remakeJob(ALICE, { splits: part(0, 35) })));
+  });
+});
+
+/**
  * The music a scored clip already carries.
  *
  * A remake re-renders, and the music is baked into the rendered file rather

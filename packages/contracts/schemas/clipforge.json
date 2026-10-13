@@ -531,7 +531,7 @@
       "title": "NoteTopic",
       "description": "An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.",
       "type": "string",
-      "enum": ["FRAMING", "LANGUAGE", "AUDIO", "TIMING", "OBSCURE", "CAPTIONS"]
+      "enum": ["FRAMING", "LANGUAGE", "AUDIO", "TIMING", "OBSCURE", "CAPTIONS", "SPLIT"]
     },
 
     "LlmVisualContext": {
@@ -626,6 +626,7 @@
         "endDeltaSec",
         "obscure",
         "captions",
+        "splits",
         "summary"
       ],
       "properties": {
@@ -657,6 +658,11 @@
         },
         "obscure": { "$ref": "#/definitions/NoteObscure" },
         "captions": { "$ref": "#/definitions/NoteCaptions" },
+        "splits": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SplitRange" },
+          "description": "The parts, when the note asks for the clip to become several clips — each a start and an end in seconds from the clip's first frame. Empty when it does not. Splitting is not trimming: 'split at 35 seconds' is two parts, 0 to 35 and 35 to the end, and moves neither the start nor the end."
+        },
         "unsupported": {
           "type": "array",
           "items": { "$ref": "#/definitions/UnsupportedAsk" },
@@ -900,7 +906,42 @@
           "$ref": "#/definitions/VoiceCaptions",
           "default": null,
           "description": "What to do with the captions RENDER burned into the picture, when the remake is not also replacing the voice. REMOVE re-cuts the segment without the subtitle filter; KEEP and null leave the picture alone. REBUILD belongs to a voice change and is ignored here, because with no new narration there is nothing to transcribe.\n\nIt sits beside `voice` rather than inside it because captions are a property of the picture, not of the soundtrack. A reviewer who writes \"remove caption\" is not asking for a different voice, and until this existed there was no way to say it at all: the note was read correctly, had nowhere to go, and the clip came back unchanged with a summary claiming the language had been set to NONE."
+        },
+        "splits": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SplitRange" },
+          "default": [],
+          "description": "Cut the finished remake into these parts, at most 20 — capped by firestore.rules and by the stage rather than here, as keyframes are, because a bounded array generates a union of twenty-one tuple types that no caller can build incrementally. Empty means one clip, as always. Two or more make that many clips, each its own row in the review queue; one is a precise trim of this clip. Every other correction in the request is applied first and the result is what gets cut, so each part keeps the framing, captions, voice and music of the whole.\n\nThe parts say exactly what is cut, so `startDeltaSec` and `endDeltaSec` are ignored when this is set. A part that reaches before the start or past the end widens the cut from the source to cover it, which needs the source video; parts inside the clip need only the rendered file.\n\nAdded after a note reading \"split this into two, beginning to 35s then 35s to the end\" had nowhere to go and was bent into the nearest control: the start moved 30 seconds earlier and one longer clip came back."
         }
+      }
+    },
+
+    "SplitRange": {
+      "title": "SplitRange",
+      "description": "One part of a clip being split. Seconds on the clip as the reviewer watches it — 0 is its first frame — not source seconds, because that is the only timeline the reviewer can see. A part may begin up to 30 seconds before the clip does and end up to 30 seconds after it, the same reach a trim has.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startSec", "endSec"],
+      "properties": {
+        "startSec": { "type": "number", "minimum": -30, "maximum": 3600 },
+        "endSec": { "type": "number", "minimum": -29, "maximum": 3630 }
+      }
+    },
+
+    "AppliedSplit": {
+      "title": "AppliedSplit",
+      "description": "Which part of a split this clip is. Carried on each part, so the review queue can say 'part 2 of 3' and a later correction of one part is understood to be about that part alone. Absent on a clip that was not split, and on a single-range trim, which is the same clip made shorter rather than one of several.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "count", "startSec", "endSec"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1, "description": "1-based, in order of where the parts start." },
+        "count": { "type": "integer", "minimum": 2 },
+        "startSec": {
+          "type": "number",
+          "description": "Where this part began, in seconds on the clip it was split from, as requested."
+        },
+        "endSec": { "type": "number" }
       }
     },
 
@@ -1007,7 +1048,12 @@
           "minimum": 0,
           "description": "The window actually cut from the source, after any nudge. Absolute source seconds, matching Candidate."
         },
-        "endSec": { "type": "number", "minimum": 0 }
+        "endSec": { "type": "number", "minimum": 0 },
+        "split": {
+          "anyOf": [{ "$ref": "#/definitions/AppliedSplit" }, { "type": "null" }],
+          "default": null,
+          "description": "Which part this is, when the remake split the clip into several. `startSec` and `endSec` above are then this part's own window, so a correction of one part re-cuts that part and nothing else."
+        }
       }
     },
 
@@ -1125,7 +1171,13 @@
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
-        "endedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+        "endedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "resubmittedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "When a person last sent this job back to the queue after it FAILED. Resubmitting keeps the job and its stages — anything DONE is not redone — and resets status, attempts, error, startedAt and endedAt. The worker's next claim notes it in the event log. Null on a job that has never been resubmitted."
+        }
       }
     },
 
@@ -2038,7 +2090,7 @@
 
     "WorkerHeartbeat": {
       "title": "WorkerHeartbeat",
-      "description": "Liveness and capability advertisement at workers/{workerId}.",
+      "description": "Capability advertisement and last known state at workers/{workerId}. Written when something happens — the worker starts, claims a job, a running stage says something new (at most once per lease renewal), a job ends, a ping is answered, the worker stops — and never on a timer while idle, so `lastSeenAt` is when it last had something to say, not a liveness beat. Whether it is running *now* is answered by a ping; see AgentReport.pingToken and docs/adr/0030-status-on-events-and-pings.md.",
       "type": "object",
       "additionalProperties": false,
       "required": ["workerId", "uid", "status", "capabilities", "version", "lastSeenAt"],
@@ -2055,7 +2107,13 @@
         "hostname": { "type": ["string", "null"], "default": null },
         "activeJobIds": { "type": "array", "items": { "type": "string" }, "default": [] },
         "lastSeenAt": { "type": "string", "format": "date-time" },
-        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+        "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "answeredPing": {
+          "type": ["string", "null"],
+          "maxLength": 64,
+          "default": null,
+          "description": "The last ping token this worker answered, relayed to it by the agent over loopback. A client that wrote that token to agents/{agentId}.pingToken knows from this that the worker was alive after it asked. Carried on every later write, so an event landing just after the answer does not erase it."
+        }
       }
     },
 
@@ -2075,7 +2133,7 @@
 
     "AgentReport": {
       "title": "AgentReport",
-      "description": "One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. Its `lastSeenAt` answers a question no worker heartbeat can, because a worker that is not running cannot say so: an agent beating with state STOPPED means the PC is on and waiting, while an agent that has gone quiet means the PC is off.",
+      "description": "One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. It answers a question no worker document can, because a worker that is not running cannot say so. It is written when something happens and when a client pings it, never on a timer: a client asks by writing `pingToken`, and an agent that echoes it in `answeredPing` is on and listening, while one that does not answer within a few seconds is off.",
       "type": "object",
       "additionalProperties": false,
       "required": ["agentId", "desired", "state", "version", "lastSeenAt"],
@@ -2109,12 +2167,35 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB and this one is written every heartbeat."
+          "description": "The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB, and the lines travel with every write."
         },
         "useEmulators": { "type": "boolean", "default": false },
         "projectId": { "type": ["string", "null"], "default": null },
         "startedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
-        "lastSeenAt": { "type": "string", "format": "date-time" }
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "pingToken": {
+          "type": ["string", "null"],
+          "maxLength": 64,
+          "default": null,
+          "description": "Written by a client to ask whether this machine is there. Any fresh random string; the agent echoes it in `answeredPing` and relays it to the worker, which echoes it in WorkerHeartbeat.answeredPing. Client-owned, like `desired`: the agent never writes it."
+        },
+        "pingRequestedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "default": null,
+          "description": "The server's time of the last ping, pinned to request.time by the rules, which also refuse a second ping within 15 seconds of it. A client refused by that throttle waits on the token already there."
+        },
+        "pingRequestedBy": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The uid that wrote the last ping. Separate from `requestedBy`, which says who last asked for a start or a stop and must not be overwritten by somebody merely looking."
+        },
+        "answeredPing": {
+          "type": ["string", "null"],
+          "maxLength": 64,
+          "default": null,
+          "description": "The last `pingToken` the agent answered. Written with a fresh `lastSeenAt` the moment the ping arrives."
+        }
       }
     },
 

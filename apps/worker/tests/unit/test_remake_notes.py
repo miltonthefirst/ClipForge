@@ -9,7 +9,7 @@ model which has not noticed the new field still produces the right result.
 from __future__ import annotations
 
 import pytest
-from clipforge.analysis.remake import apply_interpretation
+from clipforge.analysis.remake import apply_interpretation, build_note_prompt
 from clipforge_contracts import (
     LlmRemakeNote,
     NoteAudio,
@@ -22,6 +22,7 @@ from clipforge_contracts import (
     ObscureRegion,
     RemakeOptions,
     SpeechMode,
+    SplitRange,
     UnsupportedAsk,
     VoiceCaptions,
     VoiceOptions,
@@ -41,6 +42,7 @@ def reading(**overrides: object) -> LlmRemakeNote:
         "end_delta_sec": 0,
         "obscure": NoteObscure.NOT_MENTIONED,
         "captions": NoteCaptions.NOT_MENTIONED,
+        "splits": [],
         "summary": "",
     }
     return LlmRemakeNote(**{**base, **overrides})
@@ -300,3 +302,87 @@ def test_what_the_reviewer_set_is_never_reinterpreted() -> None:
     )
 
     assert applied.options.captions is VoiceCaptions.KEEP
+
+
+# ── Splitting ────────────────────────────────────────────────────────────────
+
+
+def test_a_note_asking_for_a_split_becomes_parts() -> None:
+    applied = apply_interpretation(
+        RemakeOptions(notes="split this into two, beginning to 35s then 35s to the end"),
+        reading(
+            topics=[NoteTopic.SPLIT],
+            splits=[
+                SplitRange(start_sec=0, end_sec=35),
+                SplitRange(start_sec=35, end_sec=50.7),
+            ],
+        ),
+    )
+
+    assert [(r.start_sec, r.end_sec) for r in applied.options.splits or []] == [
+        (0, 35),
+        (35, 50.7),
+    ]
+    assert applied.changes == ["split it into 2 parts (0-35s, 35-50.7s)"]
+
+
+def test_a_split_is_never_also_answered_with_a_trim() -> None:
+    """The first split request came back as one clip starting 30s earlier: the
+    model had no split to give, and bent the note into the nearest control. It
+    still files a split under TIMING as well, sometimes — and the trim goes."""
+    applied = apply_interpretation(
+        RemakeOptions(notes="first video up to 0:25, second from 0:30 to the end"),
+        reading(
+            topics=[NoteTopic.TIMING, NoteTopic.SPLIT],
+            start_delta_sec=-30,
+            splits=[
+                SplitRange(start_sec=0, end_sec=25),
+                SplitRange(start_sec=30, end_sec=50.7),
+            ],
+        ),
+    )
+
+    assert applied.options.start_delta_sec == 0
+    assert not any("moved the start" in change for change in applied.changes)
+
+
+def test_parts_typed_into_the_form_beat_parts_read_from_the_note() -> None:
+    """Unlike a language dropdown, the parts list is never an untouched default:
+    it is empty until somebody types times into it."""
+    typed = [SplitRange(start_sec=0, end_sec=20), SplitRange(start_sec=20, end_sec=40)]
+    applied = apply_interpretation(
+        RemakeOptions(notes="split it in two", splits=typed),
+        reading(
+            topics=[NoteTopic.SPLIT],
+            splits=[SplitRange(start_sec=0, end_sec=25), SplitRange(start_sec=25, end_sec=40)],
+        ),
+    )
+
+    assert applied.options.splits == typed
+    assert applied.conflicts == [
+        "the note described its own parts; the ones set in the form were used"
+    ]
+
+
+def test_parts_outside_a_declared_split_are_ignored() -> None:
+    """The topic gate, as for every other control: a note about framing that
+    arrives carrying parts changes the framing and nothing else."""
+    applied = apply_interpretation(
+        RemakeOptions(notes="it keeps losing the ball"),
+        reading(
+            topics=[NoteTopic.FRAMING],
+            framing_mode=NoteFraming.TRACK,
+            splits=[SplitRange(start_sec=0, end_sec=10), SplitRange(start_sec=10, end_sec=20)],
+        ),
+    )
+
+    assert not applied.options.splits
+
+
+def test_the_prompt_offers_the_split_and_the_length_it_is_measured_against() -> None:
+    prompt = build_note_prompt(
+        "split it in two", already_set=[], clip_language=None, duration_sec=50.7
+    )
+
+    assert "SPLIT" in prompt
+    assert "50.7 seconds long" in prompt, "a rounded length puts 'the end' past the clip"

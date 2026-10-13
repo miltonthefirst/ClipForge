@@ -8,8 +8,8 @@ import type { QuerySpec } from '../firestore/spec';
  * The worker, and the agent that can start one.
  *
  * Two collections rather than one, because each is blind where the other sees.
- * A heartbeat says what a worker believes it is doing and cannot say anything at
- * all when no worker is running — which is exactly the state somebody looking at
+ * A worker document says what a worker last reported doing and cannot say
+ * anything at all when no worker is running — which is exactly the state somebody looking at
  * a stalled queue most needs explained. The agent keeps reporting either way.
  *
  * ## A wish, not a command
@@ -22,8 +22,12 @@ import type { QuerySpec } from '../firestore/spec';
  */
 
 /**
- * Anything that beats. Both collections report the same way, and the freshest
+ * Anything that reports. Both collections stamp the same way, and the freshest
  * one is the one that counts in both.
+ *
+ * `lastSeenAt` is when a document last had something to say, not a liveness
+ * beat: neither the agent nor the worker writes on a timer. Whether either is
+ * there *now* is what a ping answers; see `core/presence.ts`.
  */
 interface Beacon {
   readonly lastSeenAt: string;
@@ -69,6 +73,48 @@ function beatAt(report: Beacon): number {
   return Number.isNaN(at) ? 0 : at;
 }
 
+/**
+ * How long a ping is given to come back before the machine is called off.
+ *
+ * The agent hears a ping through a listener it already holds, so on a machine
+ * that is on the answer is a second or two. Fifteen is generous for a slow
+ * network and short enough that "off" is said while someone is still looking.
+ */
+export const PING_ANSWER_MS = 15_000;
+
+/**
+ * The rules refuse a second ping to one machine inside this window, whoever
+ * sends it. A client that asked within it waits on its own ping instead of
+ * writing one the rules will refuse.
+ */
+export const PING_THROTTLE_MS = 15_000;
+
+/** What a ping writes to the agent document, beside the server's clock. */
+export interface PingWrite {
+  readonly pingToken: string;
+  readonly pingRequestedBy: string;
+}
+
+/**
+ * A fresh ping token. Random rather than a timestamp, because the answer is
+ * matched by equality and two devices asking in the same millisecond must not
+ * read each other's answers as their own — and between 8 and 64 characters,
+ * which is what the rules accept.
+ */
+export function newPingToken(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * The fields one ping writes. `pingRequestedAt` is added by the gateway as the
+ * server's timestamp: the rules compare it with `request.time`.
+ */
+export function pingWrite(uid: string, token: string): PingWrite {
+  return { pingToken: token, pingRequestedBy: uid };
+}
+
 /** What a wish writes to the agent document. */
 export interface WishWrite {
   readonly desired: AgentDesired;
@@ -112,9 +158,9 @@ export class WorkersRepository {
    * The companion to {@link heartbeats} and not a replacement for it: a
    * heartbeat says what a worker believes it is doing, and cannot say anything
    * at all when no worker is running — which is the state somebody looking at a
-   * stalled queue most needs explained. An agent beating with state STOPPED
-   * means the PC is on and waiting; an agent that has gone quiet means the PC is
-   * off, and no amount of worker heartbeat can tell those apart.
+   * stalled queue most needs explained. An agent that answers a ping with state
+   * STOPPED means the PC is on and waiting; one that does not answer means the
+   * PC is off, and no worker document can tell those apart.
    *
    * Freshest first, so the first agent is the machine to offer to start.
    */
@@ -133,6 +179,20 @@ export class WorkersRepository {
    */
   async wish(agentId: string, uid: string, desired: AgentDesired): Promise<void> {
     await this.db.update('agents', agentId, { ...wishWrite(uid, desired) });
+  }
+
+  /**
+   * Ask a machine whether it is there.
+   *
+   * Writes a fresh token to the agent document. The agent echoes it in
+   * `answeredPing` the moment its listener delivers it, and passes it to the
+   * worker over loopback, which echoes it in its own document — so both of the
+   * listeners above see the answer arrive with no further request. Rejected by
+   * the rules within fifteen seconds of the last ping to that machine; the
+   * caller waits on that one instead.
+   */
+  async ping(agentId: string, uid: string, token: string): Promise<void> {
+    await this.db.updateStamped('agents', agentId, { ...pingWrite(uid, token) }, 'pingRequestedAt');
   }
 
   /**

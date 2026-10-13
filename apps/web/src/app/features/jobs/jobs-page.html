@@ -247,6 +247,18 @@
               Cancel
             </button>
           }
+          <!-- The same job back in the queue, resuming at the stage that
+               failed. Failed only: see `resubmittable`. -->
+          @if (row.resubmittable) {
+            <button
+              type="button"
+              class="relative z-10 text-xs font-medium text-accent-ink hover:underline disabled:opacity-50"
+              [disabled]="busy() === row.job.id"
+              (click)="resubmit(row)"
+            >
+              Resubmit
+            </button>
+          }
           <!-- Offered only on a job that has stopped. Deleting one a worker is
                still holding does not stop the worker: the stage finishes, writes
                the document back, and the job returns marked COMPLETED. -->

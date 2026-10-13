@@ -7,6 +7,7 @@ Firestore's optimistic transactions and cannot be faked meaningfully.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -103,3 +104,28 @@ def test_enabled_lists_only_what_is_on(schedules: ScheduleStore, client: firesto
     seed(client)
     seed(client, id="sched-2", enabled=False)
     assert [s.id for s in schedules.enabled()] == ["sched-1"]
+
+
+def test_the_schedule_listener_delivers_only_what_is_on(
+    schedules: ScheduleStore, client: firestore.Client
+) -> None:
+    """What replaced the once-a-minute read: a listener the worker holds, and a
+    local alarm at the earliest due time."""
+    seed(client, id="on")
+    seed(client, id="off", enabled=False)
+    deliveries: list[list[str]] = []
+
+    watch = schedules.watch_enabled(lambda found: deliveries.append(sorted(s.id for s in found)))
+    try:
+        deadline = time.monotonic() + 15
+        while not deliveries:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert deliveries[-1] == ["on"]
+
+        client.collection("schedules").document("off").update({"enabled": True})
+        while deliveries[-1] != ["off", "on"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+    finally:
+        watch.close()

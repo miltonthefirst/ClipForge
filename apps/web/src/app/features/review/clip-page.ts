@@ -32,6 +32,7 @@ import type {
   PublishPrivacy,
   RemakeOptions,
   SpeechMode,
+  SplitRange,
   SubScores,
   VoiceCaptions,
 } from '@clipforge/contracts';
@@ -45,6 +46,17 @@ import { youtubePlaylist } from '../../core/music-source';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { publishStateOf, type PublishState } from '../../core/publish-state';
 import { remakeMusicOutlook } from '../../core/remake-music';
+import {
+  MAX_PARTS,
+  clock,
+  describeParts,
+  evenSplits,
+  nextPart,
+  parseTime,
+  reachesOutside,
+  splitProblems,
+  splitWindow,
+} from '../../core/remake-split';
 import { CATEGORIES, PRIVACY_OPTIONS, categoryLabel } from '../../core/youtube';
 import { SessionService } from '../../core/session';
 
@@ -448,6 +460,85 @@ export class ClipPage implements OnDestroy {
   protected readonly remakeKeyframes = signal<PanKeyframe[]>([]);
 
   /**
+   * The parts to split this clip into, each a start and an end on the clip as
+   * it plays here. Empty is one clip, as always. See core/remake-split.ts.
+   *
+   * While there are any, the trim is set aside: each part says exactly where
+   * it starts and ends, and the worker ignores a trim sent alongside them.
+   */
+  protected readonly remakeSplits = signal<SplitRange[]>([]);
+  protected readonly maxParts = MAX_PARTS;
+  protected readonly clock = clock;
+
+  /** How long this clip plays for: the timeline every part is measured on. */
+  protected readonly clipLength = computed(() => this.clip()?.durationSec ?? 0);
+
+  protected readonly splitting = computed(() => this.remakeSplits().length > 0);
+  protected readonly splitTrouble = computed(() =>
+    splitProblems(this.remakeSplits(), this.clipLength()),
+  );
+  protected readonly splitSummary = computed(() =>
+    this.splitting() ? describeParts(this.remakeSplits()) : null,
+  );
+  /** A part reaching outside the clip re-cuts from the original video. */
+  protected readonly splitNeedsSource = computed(() =>
+    reachesOutside(this.remakeSplits(), this.clipLength()),
+  );
+
+  protected addPart(): void {
+    const parts = this.remakeSplits();
+    if (parts.length >= MAX_PARTS) return;
+    this.remakeSplits.set([...parts, nextPart(parts, this.clipLength())]);
+  }
+
+  protected removePart(index: number): void {
+    this.remakeSplits.set(this.remakeSplits().filter((_, i) => i !== index));
+  }
+
+  /** Replace the list with `count` equal parts. */
+  protected splitEvenly(count: number): void {
+    const length = this.clipLength();
+    if (length > 0) this.remakeSplits.set(evenSplits(length, count));
+  }
+
+  /**
+   * A typed time, on change rather than on every keystroke: re-rendering
+   * "0:3" as "0:03" mid-word would move the cursor out from under the typist.
+   * Anything unreadable puts back what the field held.
+   */
+  protected setPartTime(index: number, edge: 'start' | 'end', event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const current = this.remakeSplits()[index];
+    if (!current) return;
+    const seconds = parseTime(input.value);
+    if (seconds === null) {
+      input.value = clock(edge === 'start' ? current.startSec : current.endSec);
+      return;
+    }
+    this.updatePart(index, edge, seconds);
+  }
+
+  /**
+   * Set an edge to wherever the player is. Pause on the moment, press — the
+   * way that works on a phone, where typing a time while watching does not.
+   */
+  protected setPartAtPlayhead(index: number, edge: 'start' | 'end'): void {
+    this.updatePart(index, edge, Math.round(this.playhead() * 10) / 10);
+  }
+
+  private updatePart(index: number, edge: 'start' | 'end', seconds: number): void {
+    this.remakeSplits.set(
+      this.remakeSplits().map((part, i) =>
+        i !== index
+          ? part
+          : edge === 'start'
+            ? { ...part, startSec: seconds }
+            : { ...part, endSec: seconds },
+      ),
+    );
+  }
+
+  /**
    * Hide what is burnt into the picture: a channel bug, a score bar, a
    * watermark.
    *
@@ -525,7 +616,9 @@ export class ClipPage implements OnDestroy {
   protected readonly canRemake = computed(
     () =>
       !this.panNeedsPoints() &&
+      this.splitTrouble().length === 0 &&
       (this.remakeNotes().trim().length > 0 ||
+        this.splitting() ||
         this.remakeFraming() !== 'UNCHANGED' ||
         this.remakeVoiceOn() ||
         this.remakeHideMarks() ||
@@ -548,12 +641,21 @@ export class ClipPage implements OnDestroy {
   protected readonly remakeMusic = computed(() =>
     remakeMusicOutlook(this.clip()?.music, {
       keepMusic: this.remakeKeepMusic(),
-      startDeltaSec: this.remakeStartDelta(),
-      endDeltaSec: this.remakeEndDelta(),
+      ...this.remakeWindow(),
       addsNarration: this.remakeVoiceOn(),
       notes: this.remakeNotes(),
     }),
   );
+
+  /**
+   * The trim this remake will cut with: the form's, or when splitting, the one
+   * the worker derives from the parts — which replaces the form's.
+   */
+  private remakeWindow(): { startDeltaSec: number; endDeltaSec: number } {
+    return this.splitting()
+      ? splitWindow(this.remakeSplits(), this.clipLength())
+      : { startDeltaSec: this.remakeStartDelta(), endDeltaSec: this.remakeEndDelta() };
+  }
 
   /** Where the playhead is, so a pan point can be set against what is on screen. */
   protected readonly playhead = signal(0);
@@ -909,6 +1011,7 @@ export class ClipPage implements OnDestroy {
     this.remakeKeepMusic.set(true);
     this.remakeStartDelta.set(0);
     this.remakeEndDelta.set(0);
+    this.remakeSplits.set([]);
     this.playhead.set(0);
   }
 
@@ -1307,8 +1410,13 @@ export class ClipPage implements OnDestroy {
             captions: this.remakeVoiceCaptions(),
           }
         : null,
-      startDeltaSec: this.remakeStartDelta(),
-      endDeltaSec: this.remakeEndDelta(),
+      // Zero while splitting, because the worker ignores a trim sent beside
+      // parts — and would say so on every part it made.
+      startDeltaSec: this.splitting() ? 0 : this.remakeStartDelta(),
+      endDeltaSec: this.splitting() ? 0 : this.remakeEndDelta(),
+      // Omitted when empty, like `captions`: absent is what "the reviewer did
+      // not raise this" has meant everywhere else in these options.
+      ...(this.splitting() ? { splits: this.remakeSplits() } : {}),
       // Keeping the previous marks and looking for new ones compose: the worker
       // skips anything it finds that overlaps a region already listed, so
       // asking for both never puts two filters over the same pixels.
@@ -1337,6 +1445,7 @@ export class ClipPage implements OnDestroy {
       await this.publishing.requestRemake(uid, clip.id, options);
       this.showRemake.set(false);
       this.remakeNotes.set('');
+      this.remakeSplits.set([]);
     });
   }
 }

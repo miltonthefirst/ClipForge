@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Collection, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from typing import Any
@@ -178,6 +179,59 @@ def _is_contention(exc: BaseException) -> bool:
 
 def _to_job(data: dict[str, Any]) -> Job:
     return _read(Job, data)
+
+
+@dataclass(frozen=True)
+class QueuedJob:
+    """A waiting job as a listener delivered it, with the version it was read at.
+
+    ``version`` is the document's update time. Two deliveries of one job with
+    the same version are the same document; a different version means somebody
+    wrote it in between — resubmitted it, released it, rescheduled it — and a
+    claim that was refused before is worth trying again.
+    """
+
+    job: Job
+    version: datetime | None
+
+
+def _version_of(snapshot: Any) -> datetime | None:
+    stamp = getattr(snapshot, "update_time", None)
+    return stamp if isinstance(stamp, datetime) else None
+
+
+class Subscription:
+    """One Firestore listener, and whether it is still listening.
+
+    The client library's own handle answers both questions, but under names
+    that read as implementation detail (``is_active``, ``unsubscribe``) and on
+    an object whose other methods must never be called from here. This is the
+    two that matter.
+
+    **Why ``alive`` exists at all.** A listener is how the agent and the worker
+    find out anything without asking, and asking is what costs money
+    (docs/adr/0030-status-on-events-and-pings.md). A listener that has died
+    therefore does not fail loudly — it just goes quiet, and quiet is also what
+    a listener with nothing to report sounds like. The library recovers a
+    dropped stream on its own; what it does not recover from is an error it
+    classifies as terminal, after which the handle is closed for good. Checking
+    ``alive`` is local — no request leaves the process — so the owner can do it
+    on a timer and resubscribe when it is false, which costs one delivery of
+    the current documents and only happens after something actually broke.
+    """
+
+    def __init__(self, watch: Any) -> None:
+        self._watch = watch
+
+    def alive(self) -> bool:
+        return bool(getattr(self._watch, "is_active", False))
+
+    def close(self) -> None:
+        """Stop listening. Idempotent, and never raises: it runs on shutdown."""
+        try:
+            self._watch.unsubscribe()
+        except Exception as exc:  # noqa: BLE001 - shutting down; nothing to recover
+            log.debug("store.unsubscribe_failed", error=str(exc))
 
 
 def _read[T: BaseModel](model: type[T], data: dict[str, Any]) -> T:
@@ -342,10 +396,62 @@ class JobStore:
         scale — YouTube's quota allows about six publishes a day — that is not a
         queue depth this can reach.
         """
-        query = (
+        return [_to_job(doc.to_dict() or {}) for doc in self._queued_query(limit).stream()]
+
+    def _queued_query(self, limit: int) -> Any:
+        return (
             self._db.collection(JOBS)
             .where(filter=firestore.FieldFilter("status", "==", JobStatus.QUEUED.value))
             .order_by("createdAt")
+            .limit(limit)
+        )
+
+    def watch_queued(
+        self, on_change: Callable[[list[QueuedJob]], None], *, limit: int = 25
+    ) -> Subscription:
+        """Call ``on_change`` with the waiting jobs whenever that set changes.
+
+        The same query as :meth:`queued`, held open instead of asked again.
+        This is what replaced the worker's one-second poll: a poll paid for the
+        whole result set every second whether or not anything had changed —
+        about eighty-six thousand reads a day for an idle machine — while a
+        listener pays once when attached and then only for what changes.
+
+        Each delivery is the *whole* current set, not the difference, so the
+        caller can replace its view rather than patch it. Every job carries the
+        document's update time, which is how the caller tells "the job I could
+        not claim a moment ago" from "the same job, since changed" without
+        reading it again.
+
+        A document that will not parse is logged and left out rather than
+        allowed to stop the delivery: one bad job must not hide the others.
+        The callback runs on the client library's thread and must not block.
+        """
+
+        def _callback(snapshots: Any, _changes: Any, _read_time: Any) -> None:
+            delivered: list[QueuedJob] = []
+            for snapshot in snapshots:
+                try:
+                    job = _to_job(snapshot.to_dict() or {})
+                except ValidationError as exc:
+                    log.warning("jobs.unreadable", job_id=snapshot.id, error=str(exc)[:200])
+                    continue
+                delivered.append(QueuedJob(job=job, version=_version_of(snapshot)))
+            on_change(delivered)
+
+        return Subscription(self._queued_query(limit).on_snapshot(_callback))
+
+    def running(self, limit: int = 50) -> list[Job]:
+        """Every RUNNING job, whoever holds it, with its lease as last renewed.
+
+        Wider than :meth:`expired` on purpose: the reaper no longer runs on a
+        timer, so after reaping what has lapsed it needs to know when the next
+        lease *will* lapse, and set a local alarm for then rather than asking
+        again every minute. An equality on one field, so no composite index.
+        """
+        query = (
+            self._db.collection(JOBS)
+            .where(filter=firestore.FieldFilter("status", "==", JobStatus.RUNNING.value))
             .limit(limit)
         )
         return [_to_job(doc.to_dict() or {}) for doc in query.stream()]
@@ -399,6 +505,29 @@ class JobStore:
                 _unwrap_enums(event.model_dump(by_alias=True, mode="python")),
             )
         batch.commit()
+
+    def resubmit(self, job_id: str, *, now: datetime | None = None) -> Job | None:
+        """Send a FAILED job back to the queue. ``None`` if there is no such job.
+
+        In a transaction, unlike `apply`: a person is driving this, and the
+        phone can resubmit the same job — and a worker claim it — between a
+        plain read and a plain write. Raises `LeaseError` for a job that is not
+        FAILED, as `lease.resubmit` does.
+        """
+        now = now or datetime.now(UTC)
+        job_ref = self._db.collection(JOBS).document(job_id)
+
+        @firestore.transactional
+        def _resubmit(transaction: firestore.Transaction) -> Job | None:
+            snapshot = job_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            transition = lease.resubmit(_to_job(snapshot.to_dict() or {}), now=now)
+            transaction.set(job_ref, _to_document(transition.job))
+            return transition.job
+
+        resubmitted: Job | None = _resubmit(self._db.transaction())
+        return resubmitted
 
     def try_claim(self, job_id: str, *, now: datetime | None = None) -> Job | None:
         """Attempt to claim one job. Returns the claimed job, or ``None`` if
@@ -516,13 +645,27 @@ class JobStore:
                 raise
             return None
 
-    def reap(self, *, now: datetime | None = None, skip: Collection[str] = ()) -> list[Job]:
+    def reap(
+        self,
+        *,
+        now: datetime | None = None,
+        skip: Collection[str] = (),
+        candidates: Sequence[Job] | None = None,
+    ) -> list[Job]:
         """Reclaim every job whose worker stopped heartbeating.
 
-        This is the reaper. It is bound to a periodic worker task rather than a
-        Cloud Function — the logic is a pure function either way, so the binding
-        is a deployment choice, and the worker task costs nothing.
-        See docs/adr/0006-lease-based-job-claiming.md.
+        This is the reaper. It is bound to the worker rather than a Cloud
+        Function — the logic is a pure function either way, so the binding is a
+        deployment choice, and the worker costs nothing. It runs when something
+        happens rather than on a timer: at startup, on a ping, after a job ends,
+        and at the moment a lease it has seen is due to lapse.
+        See docs/adr/0006-lease-based-job-claiming.md and
+        docs/adr/0030-status-on-events-and-pings.md.
+
+        ``candidates`` lets a caller that has just listed the RUNNING jobs hand
+        them over rather than pay for :meth:`expired` as well. Each is re-read
+        inside its own transaction regardless, so a stale list can only cost a
+        transaction that finds nothing to do — never a wrong reap.
 
         ``skip`` is how a worker refuses to reap its own work. An expired lease
         normally means "the owner is gone", but the owner can also be *right
@@ -535,8 +678,8 @@ class JobStore:
         now = now or datetime.now(UTC)
         reaped: list[Job] = []
 
-        for job in self.expired(now):
-            if job.id in skip:
+        for job in self.expired(now) if candidates is None else candidates:
+            if job.id in skip or not lease.is_lease_expired(job, now):
                 continue
             job_ref = self._db.collection(JOBS).document(job.id)
 
@@ -918,6 +1061,36 @@ class ScheduleStore:
                 log.warning("schedules.unreadable", schedule_id=doc.id, error=str(exc)[:200])
         return found
 
+    def watch_enabled(
+        self, on_change: Callable[[list[ResearchSchedule]], None], *, limit: int = 50
+    ) -> Subscription:
+        """Call ``on_change`` with every enabled schedule whenever that set changes.
+
+        What replaced the once-a-minute :meth:`enabled` read. A schedule says
+        when it is next due, so the worker can hold the list and set a local
+        alarm for the earliest one; Firestore only needs to be consulted when a
+        person edits a schedule or a firing advances one, and a listener is
+        exactly that. Same bounds and the same forgiveness as :meth:`enabled`.
+        """
+
+        def _callback(snapshots: Any, _changes: Any, _read_time: Any) -> None:
+            found: list[ResearchSchedule] = []
+            for snapshot in snapshots:
+                try:
+                    found.append(_read(ResearchSchedule, snapshot.to_dict() or {}))
+                except ValidationError as exc:
+                    log.warning(
+                        "schedules.unreadable", schedule_id=snapshot.id, error=str(exc)[:200]
+                    )
+            on_change(found)
+
+        query = (
+            self._db.collection(SCHEDULES)
+            .where(filter=firestore.FieldFilter("enabled", "==", True))
+            .limit(limit)
+        )
+        return Subscription(query.on_snapshot(_callback))
+
     def fire(
         self,
         schedule: ResearchSchedule,
@@ -1256,7 +1429,11 @@ class PublicationStore:
 
 
 class WorkerStore:
-    """Heartbeat and capability advertisement at ``workers/{workerId}``."""
+    """Capability advertisement and last known state at ``workers/{workerId}``.
+
+    Written on events, never on a timer while idle; see
+    docs/adr/0030-status-on-events-and-pings.md.
+    """
 
     def __init__(self, client: firestore.Client, settings: Settings) -> None:
         self._db = client
@@ -1282,12 +1459,12 @@ class AgentStore:
     """The wish and the report at ``agents/{agentId}``.
 
     One document, two writers, and a line between them that is the whole reason
-    this collection exists. The PWA — a phone, usually — writes ``desired`` and
-    nothing else. The agent writes everything else and never writes ``desired``,
-    so a Start pressed while the agent was mid-heartbeat is not quietly undone by
-    a report that was assembled before the press. That is what ``merge=True``
-    with the wish removed buys, and it is cheaper and easier to reason about than
-    a transaction around a document written every minute.
+    this collection exists. The PWA — a phone, usually — writes the wish
+    (``desired``) and the ping (``pingToken``) and nothing else. The agent writes
+    everything else and never writes either, so a Start pressed while the agent
+    was mid-report is not quietly undone by a report that was assembled before
+    the press. That is what ``merge=True`` with the client's fields removed
+    buys, and it is cheaper and easier to reason about than a transaction.
 
     The one exception is creation. The rules forbid the client from creating this
     document, precisely so that "no agent has ever run here" stays distinguishable
@@ -1329,14 +1506,23 @@ class AgentStore:
         return snapshot.to_dict() or {}
 
     def publish(self, report: AgentReport, *, claim: bool = False) -> None:
-        """Write what the agent knows, leaving what the client owns alone."""
+        """Write what the agent knows, leaving what the client owns alone.
+
+        The ping fields are dropped even on the claiming write. The model has
+        to declare them — the PWA reads this document as an `AgentReport`, and
+        the contracts forbid unknown fields — but the agent has no value for
+        them, and writing its ``None`` over a client's token would answer a
+        ping by deleting it.
+        """
         document = _to_document(report)
+        for owned_by_the_client in ("pingToken", "pingRequestedAt", "pingRequestedBy"):
+            document.pop(owned_by_the_client, None)
         if not claim:
             for owned_by_the_client in ("desired", "requestedBy", "requestedAt"):
                 document.pop(owned_by_the_client, None)
         self._ref().set(document, merge=True)
 
-    def watch(self, on_change: Callable[[dict[str, Any] | None], None]) -> Callable[[], None]:
+    def watch(self, on_change: Callable[[dict[str, Any] | None], None]) -> Subscription:
         """Call ``on_change`` whenever the document changes, until unsubscribed.
 
         A listener rather than a poll, for responsiveness and for cost in that
@@ -1353,8 +1539,7 @@ class AgentStore:
             for snapshot in snapshots:
                 on_change(snapshot.to_dict() if snapshot.exists else None)
 
-        watch = self._ref().on_snapshot(_callback)
-        return watch.unsubscribe  # type: ignore[no-any-return]
+        return Subscription(self._ref().on_snapshot(_callback))
 
 
 def iter_all_jobs(client: firestore.Client) -> Iterator[Job]:

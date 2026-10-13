@@ -37,7 +37,7 @@ firebase emulators:start --config ../../firebase.json --project demo-clipforge -
 # Terminal 2
 uv run clipforge-worker submit          # enqueue an ECHO job, prints its id
 uv run clipforge-worker submit URL --brief "the goals" --clips 3 --min 20 --max 45
-uv run clipforge-worker run             # claim, run, heartbeat, reap; Ctrl-C to stop
+uv run clipforge-worker run             # listen, claim, run, renew, reap; Ctrl-C to stop
 uv run clipforge-worker status <job-id> # the job document and its event log
 uv run clipforge-worker gpu             # what is currently holding VRAM
 uv run clipforge-worker research -t "premier league"   # what is trending, as a job
@@ -73,7 +73,7 @@ request from a fork with no secrets configured.
 | --- | --- |
 | `scheduler/lease.py` | The job state machine as **pure functions**. No I/O — it does not know Firestore exists |
 | `scheduler/runner.py` | Executes a claimed job's stages in order, skipping `DONE` ones and persisting checkpoints |
-| `scheduler/worker.py` | The process: claim loop, heartbeat, reaper, schedule tick, graceful shutdown |
+| `scheduler/worker.py` | The process: queue and schedule listeners, claim loop, lease renewal, reaper, pings, graceful shutdown — and nothing on a timer while idle ([ADR-0030](../../docs/adr/0030-status-on-events-and-pings.md)) |
 | `scheduler/schedule.py` | When a standing research schedule is due, as pure functions, and the tick that fires it |
 | `store/firestore.py` | Reads, applies and compare-and-swaps. Contains no rules of its own |
 | `models/broker.py` | Exclusive GPU residency. Its lock **is** the depth-1 GPU lane |
@@ -108,10 +108,29 @@ The runner cannot enforce this for you. See
 leaves it `PENDING`. Returning a normal outcome would mark it `DONE` and silently
 skip work that never happened.
 
-**The heartbeat must be comfortably shorter than the lease.** They are configured
-independently, so `CLIPFORGE_HEARTBEAT_SECONDS` at or above
+**The lease renewal must be comfortably shorter than the lease.** They are
+configured independently, so `CLIPFORGE_HEARTBEAT_SECONDS` at or above
 `CLIPFORGE_LEASE_SECONDS` would have every job reaped mid-flight. The worker
-warns at startup if they are set that way.
+warns at startup if they are set that way. Renewal only happens while a job runs.
+
+**Nothing may touch Firestore on a timer while the worker is idle.** Every read
+and write is billed, and every write again for each open listener. Work arrives
+through listeners (`JobStore.watch_queued`, `ScheduleStore.watch_enabled`);
+times — a scheduled job's `notBefore`, a schedule's `nextDueAt`, another
+worker's lease — become local alarms; and anything else waits for an event: a
+job ending, a ping, startup. A new periodic loop that queries "just in case" is
+exactly what [ADR-0030](../../docs/adr/0030-status-on-events-and-pings.md)
+removed. `tests/unit/test_worker_events.py` fails if an idle worker makes a call.
+
+**The worker can outlive whatever is reading its output.** The desktop app and
+the agent both start it with stdout and stderr piped to themselves, and either
+can exit first. From then on the worker writes to `~/.clipforge/worker.log`
+instead — so if a worker started that way has gone quiet, look there. Before
+this fallback existed every write to the dead pipe raised, each thread died at
+its next log line, and jobs sat RUNNING behind expired leases while the
+heartbeat went on reporting a healthy worker. Anything a thread must do even
+when it cannot log — honouring a stop, say — goes before the log call, not
+after it.
 
 ## Why there is no PyTorch here
 

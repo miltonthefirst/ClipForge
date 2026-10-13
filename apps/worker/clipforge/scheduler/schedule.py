@@ -20,11 +20,20 @@ fires each due schedule once when it comes back, not once per missed slot.
 `next_due` and `is_due` are pure so they can be tested against a clock. Firing
 is a transaction in the store, because two workers can look at the same
 schedule in the same minute and exactly one of them may create the job.
+
+## Why nothing here reads on a timer
+
+Every schedule carries the moment it is next due, so the worker listens to the
+enabled schedules and sets a local alarm for the earliest (`next_wake`).
+Firestore is consulted when a person edits a schedule, when one fires, and
+when the alarm goes off — not once a minute to learn that nothing is due yet.
+See docs/adr/0030-status-on-events-and-pings.md.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -32,15 +41,20 @@ from clipforge_contracts import JobStatus, ResearchSchedule, ScheduleCadence
 
 from clipforge.observability import get_logger
 from clipforge.stages.pipeline import new_research_job
-from clipforge.store.firestore import JobStore, ScheduleStore
+from clipforge.store.firestore import JobStore, ScheduleStore, Subscription
 
 log = get_logger(__name__)
 
-__all__ = ["ResearchScheduler", "is_due", "next_due"]
+__all__ = ["Attempt", "ResearchScheduler", "is_due", "may_fire", "next_due", "next_wake"]
 
 #: When the previous run is still going, look again this much later rather
 #: than on every tick. Research runs take about a minute.
 DEFER = timedelta(minutes=15)
+
+#: How long a due schedule that was tried and did not advance waits before it
+#: is tried again. Normally the listener delivers the advanced schedule within a
+#: second and this never matters; it bounds the cost when it does not.
+RETRY = timedelta(minutes=5)
 
 
 def next_due(schedule: ResearchSchedule, *, now: datetime) -> tuple[datetime, str | None]:
@@ -79,6 +93,60 @@ def is_due(schedule: ResearchSchedule, *, now: datetime) -> bool:
     return schedule.next_due_at is None or schedule.next_due_at <= now
 
 
+@dataclass(frozen=True)
+class Attempt:
+    """A due time this worker has already tried to fire, and when it may try again.
+
+    A firing advances the schedule, and the listener delivers the new time —
+    which no longer matches ``due_at``, so the next one is free to fire. A
+    schedule that did *not* advance (another worker won it and the delivery is
+    still on its way, or the network failed) would otherwise be due on every
+    pass of the claim loop, and every pass would be a transaction.
+    """
+
+    due_at: datetime | None
+    retry_at: datetime
+
+    @classmethod
+    def after(cls, schedule: ResearchSchedule, *, now: datetime) -> Attempt:
+        return cls(due_at=schedule.next_due_at, retry_at=now + RETRY)
+
+
+def may_fire(schedule: ResearchSchedule, *, now: datetime, attempts: Mapping[str, Attempt]) -> bool:
+    """Due, and not already tried at this due time unless the retry has come."""
+    if not is_due(schedule, now=now):
+        return False
+    tried = attempts.get(schedule.id)
+    return tried is None or tried.due_at != schedule.next_due_at or now >= tried.retry_at
+
+
+def next_wake(
+    schedules: Sequence[ResearchSchedule],
+    *,
+    now: datetime,
+    attempts: Mapping[str, Attempt] | None = None,
+) -> datetime | None:
+    """When the earliest of these schedules may next fire, or ``None`` if none will.
+
+    A schedule that was never given a time is due already, so it answers
+    ``now`` — unless it was just tried, in which case its retry. The worker
+    sleeps until this, locally; nothing is read to find out that the answer has
+    not changed, because a change arrives through the listener and the worker
+    asks again.
+    """
+    attempts = attempts or {}
+    wakes: list[datetime] = []
+    for schedule in schedules:
+        if not schedule.enabled:
+            continue
+        wake = now if schedule.next_due_at is None else schedule.next_due_at
+        tried = attempts.get(schedule.id)
+        if tried is not None and tried.due_at == schedule.next_due_at:
+            wake = max(wake, tried.retry_at)
+        wakes.append(wake)
+    return min(wakes, default=None)
+
+
 class ResearchScheduler:
     """One tick: fire whatever is due, exactly once each."""
 
@@ -95,11 +163,20 @@ class ResearchScheduler:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._defer = defer
 
-    def tick(self) -> list[str]:
-        """Fire every due schedule. Returns the ids of the ones that fired."""
+    def watch(self, on_change: Callable[[list[ResearchSchedule]], None]) -> Subscription:
+        """Listen to the enabled schedules. See :meth:`ScheduleStore.watch_enabled`."""
+        return self._schedules.watch_enabled(on_change)
+
+    def tick(self, schedules: Sequence[ResearchSchedule] | None = None) -> list[str]:
+        """Fire every due schedule. Returns the ids of the ones that fired.
+
+        ``schedules`` is the list the caller already holds from its listener,
+        which is the normal case and costs no read. Without one the enabled
+        schedules are read, which is what a caller with no listener does.
+        """
         now = self._clock()
         fired: list[str] = []
-        for schedule in self._schedules.enabled():
+        for schedule in self._schedules.enabled() if schedules is None else schedules:
             if not is_due(schedule, now=now):
                 continue
 

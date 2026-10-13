@@ -1,6 +1,6 @@
 # ADR-0012 — An agent on the machine, so the worker can be started from a phone
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [ADR-0030](0030-status-on-events-and-pings.md) (2026-10-13) — the agent no longer writes a heartbeat or re-reads its document on a timer. It reports when its state changes and answers pings; the rest stands.
 - **Date:** 2026-09-12
 - **Related:** [ADR-0006](0006-lease-based-job-claiming.md) (why there is no server-side executor), [ADR-0011](0011-local-control-api.md) (the loopback API this uses and deliberately does not expose), [ADR-0009](0009-spark-tier-local-artefacts.md) (the free-tier posture this stays inside)
 
@@ -120,6 +120,16 @@ have.
 - **Windows only, for now.** The supervisor is portable Python; the installer is
   Task Scheduler. A `launchd` plist or a systemd user unit would be a small
   addition to `tools/`, not a redesign.
+
+## Superseded in part
+
+The once-a-minute report and the once-a-minute backstop read are gone
+([ADR-0030](0030-status-on-events-and-pings.md)). Each was a write or a read all day, and each write
+was a read again for every open listener, to say that nothing had changed. The agent now writes when
+its state changes and when a client *pings* it — writes a fresh `pingToken` to this same document,
+under its own narrow rule — and passes the ping on to the worker over loopback. The backstop is a local
+check of the listener's own state and a resubscribe if it has died. "The PC is on" is therefore an
+answer to a question, not the age of a heartbeat; everything else above stands.
 
 ## Alternatives considered
 

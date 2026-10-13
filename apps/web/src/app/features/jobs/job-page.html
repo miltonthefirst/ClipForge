@@ -39,6 +39,9 @@
         @if (elapsed(); as took) {
           · {{ took }}
         }
+        @if (job.resubmittedAt; as at) {
+          · resubmitted {{ clock(at) }}
+        }
         @if (job.trendId ?? job.compileOptions?.trendId; as trendId) {
           ·
           <a [routerLink]="['/trends', trendId]" class="text-accent-ink hover:underline"
@@ -80,6 +83,31 @@
     >
       {{ message }}
     </p>
+  }
+
+  <!-- ── Trying again ─────────────────────────────────────────────────────
+       Right under the diagnosis, because for a failed job it is the next
+       thing to do. The same job goes back to the queue: finished stages are
+       kept, so it picks up where it died rather than starting over. -->
+  @if (resubmittable(job)) {
+    <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+      <button
+        type="button"
+        class="rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+        [disabled]="resubmitting()"
+        (click)="resubmit()"
+      >
+        {{ resubmitting() ? 'Resubmitting…' : 'Resubmit this job' }}
+      </button>
+      <p class="text-xs text-ink-subtle">
+        @if (resumesAt(); as stage) {
+          Picks up at {{ stage }}. The {{ settled() }} stage{{ settled() === 1 ? '' : 's' }} already
+          done {{ settled() === 1 ? 'is' : 'are' }} kept.
+        } @else {
+          Runs again with the same settings.
+        }
+      </p>
+    </div>
   }
 
   <!-- ── Facts ────────────────────────────────────────────────────────────── -->

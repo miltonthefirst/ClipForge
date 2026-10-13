@@ -60,6 +60,7 @@ from clipforge_contracts import (
     ReviewState,
     Source,
     SpeechMode,
+    SplitRange,
     Stage,
     StageName,
     StageStatus,
@@ -831,6 +832,7 @@ def test_a_refusal_from_the_note_reaches_the_clip(tmp_path: Path) -> None:
                 end_delta_sec=0,
                 obscure=NoteObscure.NOT_MENTIONED,
                 captions=NoteCaptions.NOT_MENTIONED,
+                splits=[],
                 unsupported=[UnsupportedAsk.SLOW_MOTION],
                 summary="fit the whole frame",
             )
@@ -1516,3 +1518,116 @@ def test_the_same_warning_twice_is_recorded_once(tmp_path: Path) -> None:
     stage._note("captions could not be rebuilt")
     stage._note("captions could not be rebuilt")
     assert stage._notes == ["captions could not be rebuilt"]
+
+
+# ── Splitting into parts ─────────────────────────────────────────────────────
+
+
+def split_into(*pairs: tuple[float, float], **overrides: object) -> RemakeOptions:
+    return RemakeOptions(
+        splits=[SplitRange(start_sec=start, end_sec=end) for start, end in pairs],
+        interpret_notes=False,
+        **overrides,
+    )
+
+
+def test_a_split_makes_one_clip_per_part_from_the_reviewed_file(tmp_path: Path) -> None:
+    """The request that started this, at a size a test can run: the source is
+    gone, and nothing else was asked for, so the reviewed file is what is cut."""
+    make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, clips, blobs = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(None), the_candidate=candidate()
+    )
+
+    outcome = stage.run(context(job(split_into((0, 3), (3, 8)))))
+
+    first, second = clips.saved
+    assert [probe(path).duration_sec for path in blobs.kept] == [
+        pytest.approx(3.0, abs=0.15),
+        pytest.approx(5.0, abs=0.15),
+    ]
+    assert (first.title, second.title) == ("a goal (Part 1/2)", "a goal (Part 2/2)")
+    for part in (first, second):
+        assert part.derived_from_clip_id == "clip-1"
+        # A lineage of its own: the queue shows the newest version of each, so
+        # parts sharing one would hide each other.
+        assert (part.lineage_id, part.version) == (part.id, 1)
+        assert part.review is ReviewState.PENDING
+    assert first.remake is not None and second.remake is not None
+    assert (first.remake.start_sec, first.remake.end_sec) == (100.0, 103.0)
+    assert (second.remake.start_sec, second.remake.end_sec) == (103.0, 108.0)
+    assert first.remake.split is not None and second.remake.split is not None
+    assert (second.remake.split.index, second.remake.split.count) == (2, 2)
+    assert outcome.metadata == {"clipId": first.id, "clipIds": [first.id, second.id]}
+    assert "split into 2 parts" in (outcome.detail or "")
+
+
+def test_one_range_is_the_same_clip_made_shorter(tmp_path: Path) -> None:
+    make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, clips, blobs = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(None), the_candidate=candidate()
+    )
+
+    stage.run(context(job(split_into((2, 6)))))
+
+    (shorter,) = clips.saved
+    assert (shorter.lineage_id, shorter.version) == ("clip-1", 2)
+    assert shorter.title == "a goal"
+    assert shorter.remake is not None
+    assert shorter.remake.split is None
+    assert (shorter.remake.start_sec, shorter.remake.end_sec) == (102.0, 106.0)
+    assert probe(blobs.kept[0]).duration_sec == pytest.approx(4.0, abs=0.15)
+
+
+def test_a_part_past_the_end_without_the_source_says_what_to_do(tmp_path: Path) -> None:
+    make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, clips, blobs = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(None), the_candidate=candidate()
+    )
+
+    with pytest.raises(RemakeStageError, match="reaches outside the clip"):
+        stage.run(context(job(split_into((0, 4), (4, 12)))))
+
+    assert clips.saved == []
+    assert blobs.puts == []
+
+
+def test_a_part_past_the_end_is_cut_from_the_source(tmp_path: Path) -> None:
+    media = make_video(tmp_path / "src" / "source.mp4", seconds=120)
+    stage, clips, blobs = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(media), the_candidate=candidate()
+    )
+
+    stage.run(context(job(split_into((0, 4), (4, 12)))))
+
+    first, second = clips.saved
+    assert first.remake is not None and second.remake is not None
+    assert (first.remake.start_sec, first.remake.end_sec) == (100.0, 104.0)
+    assert (second.remake.start_sec, second.remake.end_sec) == (104.0, 112.0)
+    assert probe(blobs.kept[1]).duration_sec == pytest.approx(8.0, abs=0.15)
+
+
+def test_a_trim_sent_with_parts_is_overruled_and_says_so(tmp_path: Path) -> None:
+    make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, clips, _ = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(None), the_candidate=candidate()
+    )
+
+    stage.run(context(job(split_into((0, 3), (3, 8), start_delta_sec=-2.0))))
+
+    first = clips.saved[0]
+    assert first.remake is not None
+    assert first.remake.start_sec == 100.0
+    assert any("the trim was not used" in str(w) for w in first.remake.warnings or [])
+
+
+def test_parts_that_cannot_be_cut_are_refused_before_anything_renders(tmp_path: Path) -> None:
+    make_video(tmp_path / "clips" / "clip-1.mp4", seconds=8)
+    stage, _, blobs = build(
+        tmp_path, the_clip=clip(tmp_path), the_source=source(None), the_candidate=candidate()
+    )
+
+    with pytest.raises(RemakeStageError, match="at least 1 second"):
+        stage.run(context(job(split_into((0, 0.5), (0.5, 8)))))
+
+    assert blobs.puts == []

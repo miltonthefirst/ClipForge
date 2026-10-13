@@ -81,9 +81,17 @@ class Settings(BaseSettings):
     # ── Identity and scheduling ──────────────────────────────────────────────
     worker_id: str = ""
     lease_seconds: int = Field(default=90, ge=5)
+    # How often a lease is renewed while a job is running. Only then: an idle
+    # worker renews nothing and writes nothing. The name is older than that rule
+    # and kept so existing `.env` files keep meaning what they say.
+    # See docs/adr/0030-status-on-events-and-pings.md.
     heartbeat_seconds: int = Field(default=30, ge=1)
     max_attempts: int = Field(default=3, ge=1)
-    reaper_interval_seconds: int = Field(default=60, ge=5)
+    # How often the worker and the agent check that their Firestore listeners
+    # are still alive. Local — it reads the client library's own state and sends
+    # nothing — so it can be frequent. A dead listener is replaced, which costs
+    # one delivery of the documents it watches.
+    listener_check_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
 
     # The GPU lane must stay at 1: Whisper and the LLM cannot be co-resident in
     # 6 GB of VRAM. See docs/PLAN.md §2.1.
@@ -189,16 +197,15 @@ class Settings(BaseSettings):
     # says, so the worker can be started from a phone rather than only from this
     # machine. See docs/adr/0012-machine-agent.md.
     #
-    # The two intervals are separate because they cost different things. The tick
-    # is local — it notices the child process dying, and nothing external will
-    # tell it — so it is cheap and frequent. The heartbeat is a Firestore write
-    # and a read, so it is neither.
+    # The tick is local — it notices the child process dying, and nothing
+    # external will tell it — so it is cheap and frequent. There is no timed
+    # Firestore write any more: the agent reports when its state changes and
+    # when a client pings it (docs/adr/0030-status-on-events-and-pings.md).
     agent_tick_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
-    agent_heartbeat_seconds: int = Field(default=60, ge=10)
     # How many lines of the worker's output travel with the report. Bounded
-    # because this document is written every heartbeat and Firestore caps a
-    # document at 1 MiB — and because the useful part of a failed start is its
-    # last few lines, not its first thousand.
+    # because they ride on every write and Firestore caps a document at 1 MiB —
+    # and because the useful part of a failed start is its last few lines, not
+    # its first thousand.
     agent_log_lines: int = Field(default=20, ge=0, le=200)
     # How many times a worker that will not stay up is restarted before the
     # agent stops trying. Retrying forever turns one broken install into an
@@ -213,6 +220,9 @@ class Settings(BaseSettings):
     # console, so without a file a failure to start is invisible — which is the
     # one failure it most needs to be able to explain.
     agent_log_file: Path = Path("~/.clipforge/agent.log")
+    # Where the worker's output goes if whatever started it stops reading it —
+    # the desktop app closing, or the agent restarting. Created only then.
+    worker_log_file: Path = Path("~/.clipforge/worker.log")
 
     # ── Research ─────────────────────────────────────────────────────────────
     # Where a RESEARCH job looks, and how it introduces itself. None of the
@@ -234,9 +244,9 @@ class Settings(BaseSettings):
     # default: a schedule is something a person set up on purpose, and a
     # worker that silently ignored it would be the surprise. Off for a second
     # worker that should only run jobs, or a machine that must never start
-    # work unasked. The tick is a single read of a handful of rows.
+    # work unasked. A listener on the enabled schedules and a local alarm at
+    # the earliest due time; nothing is read on a timer.
     research_schedules_enabled: bool = True
-    schedule_tick_seconds: int = Field(default=60, ge=10)
 
     # ── Composing ────────────────────────────────────────────────────────────
     # Drawn videos. Thirty frames a second is the profile's own rate; twenty-four
@@ -321,10 +331,11 @@ class Settings(BaseSettings):
         return self.lease_seconds
 
     def heartbeat_fits_in_lease(self) -> bool:
-        """A heartbeat interval at or above the lease length means the lease
+        """A renewal interval at or above the lease length means the lease
         always lapses before it is renewed, and every job would be reaped
         mid-flight. Checked rather than assumed because the two are configured
-        independently."""
+        independently. Unchanged by renewing only while busy: a lease only
+        exists while a job runs, and that is exactly when renewals happen."""
         return self.heartbeat_seconds * 2 <= self.lease_seconds
 
 

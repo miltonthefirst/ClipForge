@@ -1,6 +1,17 @@
 import { expect, test } from '@playwright/test';
 
-import { candidate, clip, job, preview, readDoc, signIn, wipe, write } from './helpers';
+import {
+  candidate,
+  clip,
+  job,
+  listDocs,
+  plain,
+  preview,
+  readDoc,
+  signIn,
+  wipe,
+  write,
+} from './helpers';
 
 /**
  * Phase 7, exit criterion 2: submit → progress → review → approve, against the
@@ -248,4 +259,85 @@ test('a clip somebody else submitted is still this workspace’s to review', asy
   await write('clips/clip-1', clip('someone-else'));
 
   await expect(page.getByText('Most developers never realise this', { exact: true })).toBeVisible();
+});
+
+test('a clip can be split into parts, each with its own start and end', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('candidates/cand-1', candidate(uid));
+  await write('clips/clip-1', clip(uid));
+  await write('clips/clip-1/preview/poster', preview());
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.goto('/review/clip-1');
+  await page.getByRole('button', { name: 'Remake', exact: true }).click();
+
+  await page.getByRole('button', { name: 'Split evenly into 2 parts' }).click();
+  await expect(page.getByText('2 clips: 0:00–0:19.1 and 0:19.1–0:38.2')).toBeVisible();
+  // The trim steps aside: each part already says where it starts and ends.
+  await expect(page.getByLabel('Start, seconds')).toHaveCount(0);
+
+  // Typed the way a player shows it, and the way the reviewer said it.
+  const firstEnd = page.getByLabel('Part 1 ends at');
+  await firstEnd.fill('0:25');
+  await firstEnd.press('Tab');
+  const secondStart = page.getByLabel('Part 2 starts at');
+  await secondStart.fill('25');
+  await secondStart.press('Tab');
+  await expect(page.getByText('2 clips: 0:00–0:25 and 0:25–0:38.2')).toBeVisible();
+
+  // A part too short to be a clip stops the request here, not after a render.
+  await secondStart.fill('0:38');
+  await secondStart.press('Tab');
+  await expect(
+    page.getByText('Part 2 needs to end at least a second after it starts.'),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remake it' })).toBeDisabled();
+  await secondStart.fill('0:25');
+  await secondStart.press('Tab');
+
+  await page.screenshot({ path: 'test-results/split-parts.png', fullPage: true });
+  await page.getByRole('button', { name: 'Remake it' }).click();
+  await expect(page.getByText(/Remake queued/)).toBeVisible();
+
+  const jobs = await listDocs('jobs');
+  const remake = jobs.find((doc) => plain(doc['type']) === 'REMAKE');
+  expect(plain(remake?.['remakeOptions'])).toMatchObject({
+    startDeltaSec: 0,
+    endDeltaSec: 0,
+    splits: [
+      { startSec: 0, endSec: 25 },
+      { startSec: 25, endSec: 38.2 },
+    ],
+  });
+});
+
+test('a part of a split says which part it is and where it came from', async ({ page }) => {
+  const uid = await signIn(page);
+  await write('candidates/cand-1', candidate(uid));
+  await write(
+    'clips/part-2',
+    clip(uid, {
+      id: 'part-2',
+      title: 'Most developers never realise this (Part 2/2)',
+      derivedFromClipId: 'clip-1',
+      lineageId: 'part-2',
+      version: 1,
+      remake: {
+        framingMode: 'AS_RENDERED',
+        startSec: 125,
+        endSec: 138.2,
+        split: { index: 2, count: 2, startSec: 25, endSec: 38.2 },
+      },
+    }),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.goto('/review/part-2');
+
+  await expect(page.getByText('Part 2 of 2')).toBeVisible();
+  await expect(page.getByText('0:25–0:38.2 of the clip it was split from')).toBeVisible();
+  await expect(page.getByRole('link', { name: '← the clip this was split from' })).toBeVisible();
+  // Its own lineage, so there is no history of versions to offer yet.
+  await expect(page.getByRole('button', { name: 'Show history' })).toHaveCount(0);
+  await page.screenshot({ path: 'test-results/split-part-clip.png', fullPage: true });
 });

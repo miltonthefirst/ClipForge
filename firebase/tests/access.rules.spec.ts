@@ -3,12 +3,21 @@ import {
   assertSucceeds,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, getDocs, collection, setDoc, updateDoc } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  getDocs,
+  collection,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
 
 import {
   ALICE,
   BOB,
+  agentReport,
   createTestEnvironment,
   heartbeat,
   queuedJob,
@@ -89,6 +98,19 @@ describe('a pending account', () => {
     // owner, which makes it worth stating that "any" still stops at the gate.
     await seed('workers/worker-1', heartbeat('local'));
     await assertFails(getDoc(doc(db(ALICE), 'workers/worker-1')));
+  });
+
+  it('cannot ping the worker machine', async () => {
+    // A ping makes the agent and the worker each write a document. Cheap, and
+    // still nothing an account nobody has approved gets to cause.
+    await seed('agents/tower', agentReport());
+    await assertFails(
+      updateDoc(doc(db(ALICE), 'agents/tower'), {
+        pingToken: 'token-from-a-stranger',
+        pingRequestedAt: serverTimestamp(),
+        pingRequestedBy: ALICE,
+      }),
+    );
   });
 
   it('cannot approve itself', async () => {

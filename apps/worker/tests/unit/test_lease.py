@@ -573,3 +573,125 @@ def test_the_last_attempt_is_not_reclaimed() -> None:
 
     assert lease.is_claimable(running_job(max_attempts=3, attempts=1), expired)
     assert not lease.is_claimable(running_job(max_attempts=3, attempts=2), expired)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resubmitting: a person sends a FAILED job back to the queue.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def failed_job(**overrides: object) -> Job:
+    """A job the worker has given up on, as `fail_stage` leaves it."""
+    failed: dict[str, object] = {
+        "status": JobStatus.FAILED,
+        "stages": [
+            Stage(name=StageName.ECHO_ONE, lane=Lane.CPU, status=StageStatus.DONE),
+            Stage(name=StageName.ECHO_TWO, lane=Lane.CPU, status=StageStatus.FAILED, attempts=3),
+        ],
+        "attempts": 3,
+        "error": StageError(type="Boom", message="it broke", retryable=True),
+        "started_at": T0,
+        "ended_at": T0 + timedelta(minutes=5),
+    }
+    return make_job(**{**failed, **overrides})
+
+
+LATER = T0 + timedelta(hours=2)
+
+
+@pytest.mark.unit
+def test_resubmitting_returns_a_failed_job_to_the_queue_with_a_fresh_budget() -> None:
+    result = lease.resubmit(failed_job(), now=LATER)
+
+    assert result.job.status is JobStatus.QUEUED
+    assert result.job.attempts == 0
+    assert result.job.error is None
+    assert result.job.started_at is None
+    assert result.job.ended_at is None
+    assert result.job.resubmitted_at == LATER
+    assert result.job.updated_at == LATER
+    assert result.job.worker_id is None
+    assert result.job.lease_expires_at is None
+
+
+@pytest.mark.unit
+def test_resubmitting_keeps_every_stage_as_it_was() -> None:
+    """A DONE stage is not redone: that is what makes this better than a new job."""
+    job = failed_job()
+
+    result = lease.resubmit(job, now=LATER)
+
+    assert result.job.stages == job.stages
+
+
+@pytest.mark.unit
+def test_resubmitting_writes_nothing_the_pwa_could_not() -> None:
+    """The PWA makes this same write and may not touch the event log."""
+    assert lease.resubmit(failed_job(), now=LATER).events == ()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "status",
+    [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.COMPLETED, JobStatus.CANCELLED],
+)
+def test_only_a_failed_job_can_be_resubmitted(status: JobStatus) -> None:
+    """CANCELLED included: a job cancelled mid-run may still be held by a worker."""
+    job = running_job() if status is JobStatus.RUNNING else make_job(status=status)
+
+    with pytest.raises(LeaseError, match="only a FAILED job"):
+        lease.resubmit(job, now=LATER)
+
+
+@pytest.mark.unit
+def test_a_resubmitted_single_attempt_job_is_claimable_again() -> None:
+    """A REMAKE is created with one attempt; a resubmission is a new one."""
+    job = failed_job(max_attempts=1, attempts=1)
+
+    resubmitted = lease.resubmit(job, now=LATER).job
+
+    assert lease.is_claimable(resubmitted, LATER)
+
+
+@pytest.mark.unit
+def test_the_first_claim_after_a_resubmission_says_so() -> None:
+    resubmitted = lease.resubmit(failed_job(), now=LATER).job
+
+    claimed = lease.claim(
+        resubmitted, worker_id="worker-b", now=LATER, lease_seconds=LEASE_SECONDS, event_id=_ids()
+    )
+
+    assert claimed.events[0].kind is JobEventKind.CLAIMED
+    assert claimed.events[0].detail == "resubmitted after it failed"
+    assert claimed.job.started_at == LATER
+    assert claimed.job.attempts == 0
+
+
+@pytest.mark.unit
+def test_only_the_first_claim_after_a_resubmission_says_so() -> None:
+    """A clean restart releases the job; the claim after that is ordinary."""
+    resubmitted = lease.resubmit(failed_job(), now=LATER).job
+    claimed = lease.claim(
+        resubmitted, worker_id="worker-b", now=LATER, lease_seconds=LEASE_SECONDS
+    ).job
+    released = lease.release(claimed, now=LATER).job
+
+    again = lease.claim(released, worker_id="worker-b", now=LATER, lease_seconds=LEASE_SECONDS)
+
+    assert again.events[0].detail is None
+
+
+@pytest.mark.unit
+def test_a_fresh_job_is_not_mistaken_for_a_resubmitted_one() -> None:
+    claimed = lease.claim(make_job(), worker_id="worker-a", now=T0, lease_seconds=LEASE_SECONDS)
+
+    assert claimed.events[0].detail is None
+
+
+@pytest.mark.unit
+def test_a_resubmitted_job_serialises_to_the_wire_form() -> None:
+    """`resubmittedAt` is camelCase on the wire, like every other timestamp."""
+    wire = lease.resubmit(failed_job(), now=LATER).job.model_dump(by_alias=True, mode="json")
+
+    assert wire["resubmittedAt"] == "2026-09-08T14:00:00Z"
+    assert wire["status"] == "QUEUED"

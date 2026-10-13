@@ -257,11 +257,16 @@ RUNNING ──stage FAILED, attempts < max──▶ QUEUED   (checkpoints retain
 RUNNING ──stage FAILED, attempts >= max──▶ FAILED
 RUNNING ──lease expired (reaper Function, 60s cadence)──▶ QUEUED
 any     ──user cancels──▶ CANCELLED
+FAILED  ──user resubmits (attempts reset, stages kept)──▶ QUEUED   (ADR-0028)
 ```
 
 Per-stage status is `PENDING | RUNNING | DONE | SKIPPED | FAILED`. A stage that is `DONE` is never
 re-executed on retry — this is what makes a crash during `ANALYZE` cost seconds instead of the twenty
 minutes it took to download and transcribe.
+
+A person can send a FAILED job back to the queue with its stages intact. Only FAILED qualifies,
+because a worker always lets go of a job on its way there. See
+[ADR-0028](adr/0028-resubmitting-a-failed-job.md).
 
 ---
 

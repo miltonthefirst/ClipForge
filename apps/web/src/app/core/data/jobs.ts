@@ -196,6 +196,27 @@ export function newJob(
   } satisfies Job;
 }
 
+/**
+ * What resubmitting a failed job writes, and all it writes.
+ *
+ * The same job goes back to the queue with its options and its stages
+ * untouched — a stage that is DONE is not redone, so a clip that failed at
+ * RENDER does not download and transcribe again. Only what says "this failed"
+ * is reset. firestore.rules allows exactly these fields and no others, and
+ * `lease.resubmit` in the worker makes the identical write.
+ */
+export function resubmission(now: string) {
+  return {
+    status: 'QUEUED',
+    attempts: 0,
+    error: null,
+    startedAt: null,
+    endedAt: null,
+    resubmittedAt: now,
+    updatedAt: now,
+  } satisfies Partial<Job>;
+}
+
 // ── The repository ─────────────────────────────────────────────────────────
 
 @Injectable({ providedIn: 'root' })
@@ -287,12 +308,21 @@ export class JobsRepository {
     return id;
   }
 
-  /** Cancel a job. The only job transition the rules let a client drive. */
+  /** Cancel a job. One of the two job transitions the rules let a client drive. */
   async cancel(jobId: string): Promise<void> {
     await this.db.update(JOBS, jobId, {
       status: 'CANCELLED',
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Send a FAILED job back to the queue: the other transition a client may
+   * drive. See {@link resubmission} for what it writes and `resubmittable` in
+   * core/job-list.ts for when it is offered.
+   */
+  async resubmit(jobId: string): Promise<void> {
+    await this.db.update(JOBS, jobId, resubmission(new Date().toISOString()));
   }
 
   /**

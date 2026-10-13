@@ -83,7 +83,6 @@ def worker(jobs: JobStore, workers: WorkerStore, settings: Settings) -> Worker:
         jobs=jobs,
         workers=workers,
         broker=no_gpu_broker(),
-        poll_interval_s=0.05,
     )
 
 
@@ -284,7 +283,6 @@ def test_two_workers_on_one_queue_never_double_execute(
             jobs=JobStore(client, settings.model_copy(update={"worker_id": worker_id})),
             workers=workers,
             broker=no_gpu_broker(),
-            poll_interval_s=0.01,
         )
 
     def drain(worker: Worker) -> None:
@@ -365,7 +363,6 @@ def test_stopping_releases_the_lease_and_goes_offline(
         settings,
         workers,
         "stopper",
-        poll_interval_s=0.01,
         registry_factory=lambda _job_type: registry,
     )
 
@@ -413,7 +410,6 @@ def test_a_released_job_is_immediately_claimable_by_another_worker(
         settings,
         workers,
         "stopper",
-        poll_interval_s=0.01,
         registry_factory=lambda _job_type: registry,
     )
     thread = threading.Thread(target=worker.run_forever, daemon=True)
@@ -434,7 +430,7 @@ def test_a_released_job_is_immediately_claimable_by_another_worker(
 def test_the_worker_advertises_itself_and_its_capabilities(
     workers: WorkerStore, settings: Settings, client: firestore.Client
 ) -> None:
-    worker = make_worker(client, settings, workers, "announcer", poll_interval_s=0.01)
+    worker = make_worker(client, settings, workers, "announcer")
     thread = threading.Thread(target=worker.run_forever, daemon=True)
     thread.start()
 
@@ -567,7 +563,7 @@ def test_vram_snapshot_reaches_the_heartbeat_when_a_gpu_exists(
             used_mb=3758,
         ),
     )
-    worker = make_worker(client, settings, workers, "gpu-worker", poll_interval_s=0.01)
+    worker = make_worker(client, settings, workers, "gpu-worker")
     thread = threading.Thread(target=worker.run_forever, daemon=True)
     thread.start()
     deadline = time.monotonic() + 30

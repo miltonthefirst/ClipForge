@@ -67,6 +67,7 @@ from typing import Protocol
 from clipforge_contracts import (
     AppliedMusic,
     AppliedRemake,
+    AppliedSplit,
     AppliedVoice,
     Clip,
     ClipLocation,
@@ -124,6 +125,7 @@ from clipforge.media.profiles import RenderProfile, load_profile
 from clipforge.media.render import RenderError, RenderRequest, render_clip
 from clipforge.media.scoring import apply_music
 from clipforge.media.speech import DEFAULT_VOICES, SpeechError, SpeechSynth, kokoro_language
+from clipforge.media.split import SplitCutError, cut_part
 from clipforge.media.tracking import TrackError, plan_track
 from clipforge.media.vision import VISION_VRAM_MB, VisualContext, look
 from clipforge.media.workspace import Workspace
@@ -137,6 +139,18 @@ from clipforge.stages.lineage import (
     inherited_mode,
     inherited_profile,
     parent_window,
+)
+from clipforge.stages.splitting import (
+    MIN_PART_SEC,
+    Part,
+    SplitError,
+    SplitPlan,
+    clock,
+    part_music,
+    part_title,
+    part_voice,
+    plan_split,
+    slice_keyframes,
 )
 from clipforge.store.blobs import BlobStore
 from clipforge.store.firestore import (
@@ -194,8 +208,8 @@ _UNSUPPORTED_WORDING: dict[UnsupportedAsk, str] = {
     ),
     UnsupportedAsk.SLOW_MOTION: "changing the speed of the footage is not supported",
     UnsupportedAsk.REORDER_OR_CUT_MIDDLE: (
-        "cutting or reordering the middle of a clip is not supported \u2014 only the "
-        "start and end can be moved"
+        "joining the pieces either side of a cut, or reordering them, is not supported "
+        "\u2014 the clip can be split into separate parts, or its start and end moved"
     ),
     UnsupportedAsk.COLOUR_OR_GRADE: "colour and grading changes are not supported",
     UnsupportedAsk.SOMETHING_ELSE: ("part of that request is not something ClipForge can do yet"),
@@ -452,6 +466,10 @@ class RemakeStage:
         accepted = self._accepted_preferences(original)
         resolved, interpretation = self._resolve(context, options, original, accepted)
         resolved, used = _prefill(resolved, accepted)
+        # Before the cut is computed, because parts reaching outside the clip
+        # widen it, and before anything renders, so parts that cannot be cut are
+        # refused in seconds rather than after a re-cut and a narration.
+        resolved, split = self._plan_split(original, resolved)
         cut = self._cut(original, resolved)
         profile = load_profile(resolved.profile or inherited_profile(original))
 
@@ -511,27 +529,46 @@ class RemakeStage:
                 scratch=scratch,
             )
             metadata = self._metadata(context, original, cut, voice, utterance_text)
-            outcome = self._publish(
-                context,
-                clip_id=clip_id,
-                original=original,
-                final=final,
-                profile=profile,
-                options=resolved,
-                interpretation=interpretation,
-                keyframes=picture.keyframes,
-                obscured=picture.obscured,
-                framing_mode=picture.mode,
-                voice=voice,
-                music=music,
-                cut=cut,
-                scratch=scratch,
-                metadata=metadata,
-            )
+            if split is not None:
+                outcome, made = self._publish_parts(
+                    context,
+                    split=split,
+                    clip_id=clip_id,
+                    original=original,
+                    final=final,
+                    profile=profile,
+                    options=resolved,
+                    interpretation=interpretation,
+                    picture=picture,
+                    voice=voice,
+                    music=music,
+                    cut=cut,
+                    scratch=scratch,
+                    metadata=metadata,
+                )
+            else:
+                outcome = self._publish(
+                    context,
+                    clip_id=clip_id,
+                    original=original,
+                    final=final,
+                    profile=profile,
+                    options=resolved,
+                    interpretation=interpretation,
+                    keyframes=picture.keyframes,
+                    obscured=picture.obscured,
+                    framing_mode=picture.mode,
+                    voice=voice,
+                    music=music,
+                    cut=cut,
+                    scratch=scratch,
+                    metadata=metadata,
+                )
+                made = clip_id
             # After the clip exists, never before. Learning is a bonus pass over
             # a finished result — a model that is unreachable, slow or unhelpful
             # must cost the lesson and nothing else.
-            self._learn(context, clip_id, original, resolved, used, picture.obscured)
+            self._learn(context, made, original, resolved, used, picture.obscured)
             return outcome
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -729,16 +766,7 @@ class RemakeStage:
         The candidate remains the fallback, and the only source of truth for a
         clip that RENDER made.
         """
-        window = parent_window(original)
-        if window is None:
-            candidate = self._candidates.get(original.candidate_id)
-            if candidate is None:
-                raise RemakeStageError(
-                    "this clip's candidate is gone, and it is the only record of where in the "
-                    "source the clip was cut from. A remake cannot re-cut without it."
-                )
-            window = (candidate.start_sec, candidate.end_sec)
-        base_start, base_end = window
+        base_start, base_end = self._base_window(original)
 
         start = max(0.0, base_start + float(options.start_delta_sec or 0.0))
         end = base_end + float(options.end_delta_sec or 0.0)
@@ -748,6 +776,164 @@ class RemakeStage:
                 "Start and end have moved past each other."
             )
         return _Cut(start_sec=start, end_sec=end)
+
+    def _base_window(self, original: Clip) -> tuple[float, float]:
+        """Where in the source the clip being corrected was cut from. See `_cut`."""
+        window = parent_window(original)
+        if window is None:
+            candidate = self._candidates.get(original.candidate_id)
+            if candidate is None:
+                raise RemakeStageError(
+                    "this clip's candidate is gone, and it is the only record of where in the "
+                    "source the clip was cut from. A remake cannot re-cut without it."
+                )
+            window = (candidate.start_sec, candidate.end_sec)
+        return window
+
+    # ── Splitting ────────────────────────────────────────────────────────────
+
+    def _plan_split(
+        self, original: Clip, options: RemakeOptions
+    ) -> tuple[RemakeOptions, SplitPlan | None]:
+        """Check the parts, and widen the window just enough to cover them.
+
+        The parts say exactly what is cut, so they replace any trim rather than
+        composing with it — two ways of saying where a clip starts cannot both
+        be honoured. Said out loud when a trim is overruled, because the
+        reviewer set it and will otherwise wonder where it went.
+
+        Returns a copy of the options rather than editing them: they belong to
+        the job, and the runner writes the job back.
+        """
+        if not options.splits:
+            return options, None
+        base_start, base_end = self._base_window(original)
+        try:
+            plan = plan_split(options.splits, clip_sec=base_end - base_start)
+        except SplitError as exc:
+            raise RemakeStageError(str(exc)) from exc
+
+        stated = (float(options.start_delta_sec or 0.0), float(options.end_delta_sec or 0.0))
+        if any(stated) and stated != (plan.start_delta_sec, plan.end_delta_sec):
+            self._note("the trim was not used: each part's own start and end say what is cut")
+
+        if plan.start_delta_sec or plan.end_delta_sec:
+            # Checked here rather than left to the re-cut, whose own message is
+            # about framing and would send the reviewer looking in the wrong place.
+            try:
+                self._source_media(original)
+            except RemakeStageError as exc:
+                raise RemakeStageError(
+                    "a part reaches outside the clip, which means cutting more footage from "
+                    "the original video, and it is no longer on this machine. Keep every part "
+                    f"between 0:00 and {clock(base_end - base_start)}, or re-ingest the source."
+                ) from exc
+
+        widened = options.model_copy(
+            update={
+                "start_delta_sec": plan.start_delta_sec,
+                "end_delta_sec": plan.end_delta_sec,
+            }
+        )
+        return widened, plan
+
+    def _publish_parts(
+        self,
+        context: StageContext,
+        *,
+        split: SplitPlan,
+        clip_id: str,
+        original: Clip,
+        final: Path,
+        profile: RenderProfile,
+        options: RemakeOptions,
+        interpretation: NoteInterpretation | None,
+        picture: _Picture,
+        voice: AppliedVoice | None,
+        music: AppliedMusic | None,
+        cut: _Cut,
+        scratch: Path,
+        metadata: ClipMetadata | None,
+    ) -> tuple[StageOutcome, str]:
+        """Cut the finished remake into its parts, and save each as a clip.
+
+        Two or more parts are separate clips, each starting a lineage of its
+        own: sharing the parent's would make them versions of one clip, and the
+        review queue shows only the newest version of each — the other parts
+        would vanish, and approving one would settle the rest as superseded.
+        One part is the same clip made shorter, and stays in its lineage.
+        """
+        base_start, _ = self._base_window(original)
+        # Where the file's first frame sits on the reviewer's timeline. The
+        # plan's own start delta, unless the source begins before the window
+        # could reach that far back.
+        offset = cut.start_sec - base_start
+        length = probe(final, ffprobe_bin=self._settings.ffprobe_bin).duration_sec
+
+        made: list[str] = []
+        first: StageOutcome | None = None
+        for part in split.parts:
+            start = part.start_sec - offset
+            end = min(part.end_sec - offset, length)
+            if start < -0.05:
+                raise RemakeStageError(
+                    f"part {part.index} starts at {clock(part.start_sec)}, which is before the "
+                    "video it comes from begins"
+                )
+            start = max(0.0, start)
+            if end - start < MIN_PART_SEC:
+                raise RemakeStageError(
+                    f"part {part.index} ({clock(part.start_sec)} to {clock(part.end_sec)}) lies "
+                    "past the end of the video it comes from, which stops at "
+                    f"{clock(offset + length)}"
+                )
+            try:
+                path = cut_part(
+                    final,
+                    scratch / f"part-{part.index}.mp4",
+                    start_sec=start,
+                    end_sec=end,
+                    ffmpeg_bin=self._settings.ffmpeg_bin,
+                )
+            except SplitCutError as exc:
+                raise RemakeStageError(f"part {part.index}: {exc}") from exc
+
+            part_id = clip_id if part.index == 1 else uuid.uuid4().hex
+            outcome = self._publish(
+                context,
+                clip_id=part_id,
+                original=original,
+                final=path,
+                profile=profile,
+                options=options,
+                interpretation=interpretation,
+                keyframes=slice_keyframes(picture.keyframes, start, end),
+                obscured=picture.obscured,
+                framing_mode=picture.mode,
+                voice=part_voice(voice),
+                music=part_music(music, start),
+                cut=_Cut(start_sec=cut.start_sec + start, end_sec=cut.start_sec + end),
+                scratch=scratch,
+                metadata=metadata,
+                part=part if split.several else None,
+            )
+            first = first or outcome
+            made.append(part_id)
+
+        if first is None:  # pragma: no cover - plan_split refuses an empty list
+            raise RemakeStageError("no parts were cut")
+        if split.several:
+            said = f"split into {len(made)} parts"
+        else:
+            only = split.parts[0]
+            said = f"cut from {clock(only.start_sec)} to {clock(only.end_sec)}"
+        return (
+            StageOutcome(
+                detail=f"{first.detail}; {said}" if first.detail else said,
+                metadata={"clipId": made[0], "clipIds": made},
+            ),
+            made[0],
+        )
 
     # ── The voice ────────────────────────────────────────────────────────────
 
@@ -1680,6 +1866,7 @@ class RemakeStage:
         cut: _Cut,
         scratch: Path,
         metadata: ClipMetadata | None = None,
+        part: Part | None = None,
     ) -> StageOutcome:
         media = probe(final, ffprobe_bin=self._settings.ffprobe_bin)
         ref = self._blobs.put(
@@ -1713,8 +1900,11 @@ class RemakeStage:
             # rather than recomputed, so the chain stays flat: a remake of a
             # remake of a remake all point at the clip RENDER made, and the
             # review queue can group on one equality rather than walking a list.
-            lineage_id=original.lineage_id or original.id,
-            version=(original.version or 1) + 1,
+            # A part of a split is the exception: it is a different clip, not a
+            # version of this one, so it starts a lineage of its own. See
+            # `_publish_parts`.
+            lineage_id=clip_id if part is not None else (original.lineage_id or original.id),
+            version=1 if part is not None else (original.version or 1) + 1,
             location=(
                 ClipLocation.REMOTE
                 if (ref.storage_path or ref.playback_url)
@@ -1732,7 +1922,7 @@ class RemakeStage:
             # Rewritten when the language moved, inherited otherwise. A remake
             # that only reframed should not quietly acquire a new name — the
             # reviewer is comparing it against the version it came from.
-            title=metadata.title if metadata else original.title,
+            title=_titled(metadata.title if metadata else original.title, part),
             description=metadata.description if metadata else original.description,
             tags=list(metadata.tags) if metadata else list(original.tags or []),
             # PENDING, always. The clip that was approved is the one this was
@@ -1755,6 +1945,16 @@ class RemakeStage:
                 warnings=self._notes[:8],
                 start_sec=round(cut.start_sec, 3),
                 end_sec=round(cut.end_sec, 3),
+                split=(
+                    AppliedSplit(
+                        index=part.index,
+                        count=part.count,
+                        start_sec=round(part.start_sec, 3),
+                        end_sec=round(part.end_sec, 3),
+                    )
+                    if part is not None
+                    else None
+                ),
             ),
             created_at=now,
         )
@@ -1850,6 +2050,11 @@ class RemakeStage:
             model=self._settings.ollama_model,
             num_ctx=self._settings.ollama_num_ctx,
         )
+
+
+def _titled(title: str | None, part: Part | None) -> str | None:
+    """The title, with the part's place in the whole when it is one of several."""
+    return part_title(title, part) if part is not None else title
 
 
 def _wanted_captions(options: RemakeOptions) -> VoiceCaptions | None:

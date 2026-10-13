@@ -16,7 +16,7 @@ import { JobsRepository } from '../../core/data/jobs';
 import { SourcesRepository } from '../../core/data/sources';
 import type { Live } from '../../core/firestore/gateway';
 import { describeBrief } from '../../core/clip-brief';
-import { isTerminal, jobTitle, stageNote } from '../../core/job-list';
+import { isTerminal, jobTitle, resubmittable, stageNote } from '../../core/job-list';
 
 /**
  * One job, in enough detail to answer "why is it not moving?"
@@ -98,6 +98,7 @@ export class JobPage implements OnDestroy {
   /** The same, for the log — which loads separately and can fail on its own. */
   protected readonly eventsFailure = signal<string | null>(null);
   protected readonly cancelling = signal(false);
+  protected readonly resubmitting = signal(false);
   protected readonly busy = signal(false);
   protected readonly showLog = signal(true);
 
@@ -249,6 +250,14 @@ export class JobPage implements OnDestroy {
     }
 
     if (job.status === 'QUEUED') {
+      // `startedAt` is cleared by a resubmission and set by the next claim, so
+      // this is true only until a worker takes it back.
+      if (job.resubmittedAt && !job.startedAt) {
+        const resumes = this.resumesAt();
+        return resumes
+          ? `Resubmitted. Waiting for a worker to pick it up again; it resumes at ${resumes}.`
+          : 'Resubmitted. Waiting for a worker to pick it up again.';
+      }
       return 'Waiting for a worker to pick it up.';
     }
 
@@ -291,6 +300,24 @@ export class JobPage implements OnDestroy {
   protected cancellable(job: Job): boolean {
     return job.status === 'QUEUED' || job.status === 'RUNNING';
   }
+
+  /** Failed, and so safe to send back to the queue. See `resubmittable`. */
+  protected resubmittable(job: Job): boolean {
+    return resubmittable(job);
+  }
+
+  /**
+   * The stage a resubmission would pick up at: the first one not already
+   * finished. Null when every stage is still to run, where "resumes at" would
+   * only mean "starts".
+   */
+  protected readonly resumesAt = computed<string | null>(() => {
+    const stages = this.job()?.stages ?? [];
+    const next = stages.find(
+      (stage: Stage) => stage.status !== 'DONE' && stage.status !== 'SKIPPED',
+    );
+    return next && next !== stages[0] ? next.name : null;
+  });
 
   /** Shared with the queue card, which gates Delete on the same answer. */
   protected terminal(job: Job): boolean {
@@ -341,6 +368,25 @@ export class JobPage implements OnDestroy {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.cancelling.set(false);
+    }
+  }
+
+  /**
+   * Send this failed job back to the queue. Its stages are kept, so whatever
+   * already finished is not done again. The page stays on the job, which is
+   * where the next claim and the stages it runs will appear.
+   */
+  protected async resubmit(): Promise<void> {
+    const job = this.job();
+    if (!job || !resubmittable(job)) return;
+    this.resubmitting.set(true);
+    this.error.set(null);
+    try {
+      await this.jobs.resubmit(job.id);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.resubmitting.set(false);
     }
   }
 

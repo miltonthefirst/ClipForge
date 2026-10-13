@@ -14,12 +14,14 @@ forever (a log of identical failures with the reason scrolled off the top).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from clipforge.agent import Desire, Snapshot, Supervisor, desire_from
-from clipforge_contracts import AgentDesired, AgentState
+from clipforge.agent import Agent, Desire, Snapshot, Supervisor, desire_from, ping_from
+from clipforge.config import Settings
+from clipforge_contracts import AgentDesired, AgentReport, AgentState
 
 pytestmark = pytest.mark.unit
 
@@ -500,7 +502,8 @@ def test_the_log_does_not_drive_a_firestore_write() -> None:
     """A running worker emits a line every few seconds.
 
     A document written on each one would be thousands of writes an hour saying
-    nothing. The lines still travel with every state change and every heartbeat.
+    nothing. The lines still travel with every state change and every answered
+    ping.
     """
     quiet = Snapshot(state=AgentState.RUNNING, log=("one",))
     noisy = Snapshot(state=AgentState.RUNNING, log=("one", "two", "three"))
@@ -508,3 +511,268 @@ def test_the_log_does_not_drive_a_firestore_write() -> None:
 
     stopped = Snapshot(state=AgentState.STOPPED, log=("one",))
     assert quiet.steady() != stopped.steady()
+
+
+# ── When the agent writes ────────────────────────────────────────────────────
+#
+# The decision this class exists to get right since it stopped beating: a write
+# when something happens and when somebody asks, and never otherwise. Every
+# write is billed, and billed again as a read on every listener open on the
+# document — so an idle agent that wrote "still here" once a minute cost reads
+# all day, for every phone left open on the Jobs page.
+
+
+class FakeSubscription:
+    def __init__(self) -> None:
+        self.dead = False
+        self.closed = False
+
+    def alive(self) -> bool:
+        return not self.dead
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeAgentStore:
+    """The agent's document, as far as the agent can tell."""
+
+    agent_id = "tower"
+
+    def __init__(self, document: dict[str, Any] | None = None, *, failing: int = 0) -> None:
+        self.document = document
+        self.reports: list[AgentReport] = []
+        self.reads = 0
+        self.subscriptions: list[FakeSubscription] = []
+        self.deliver: Callable[[dict[str, Any] | None], None] | None = None
+        self._failing = failing
+
+    def read(self) -> dict[str, Any] | None:
+        self.reads += 1
+        return self.document
+
+    def publish(self, report: AgentReport, *, claim: bool = False) -> None:
+        if self._failing:
+            self._failing -= 1
+            raise ConnectionError("503 UNAVAILABLE")
+        self.reports.append(report)
+
+    def watch(self, on_change: Callable[[dict[str, Any] | None], None]) -> FakeSubscription:
+        self.deliver = on_change
+        subscription = FakeSubscription()
+        self.subscriptions.append(subscription)
+        return subscription
+
+
+def agent_with(
+    store: FakeAgentStore,
+    *,
+    process: FakeProcess | None = None,
+    foreign: dict[str, Any] | None = None,
+    relayed: list[str] | None = None,
+    listener_check_seconds: float = 3600.0,
+) -> Agent:
+    def relay(token: str) -> bool:
+        if relayed is not None:
+            relayed.append(token)
+        return True
+
+    agent = Agent(
+        settings=Settings(use_emulators=True),
+        store=store,  # type: ignore[arg-type]
+        supervisor=supervisor(process or FakeProcess(), foreign=foreign),
+        listener_check_seconds=listener_check_seconds,
+        relay=relay,
+    )
+    agent._claim()
+    agent._subscribe()
+    return agent
+
+
+def doc(**fields: Any) -> dict[str, Any]:
+    return {"desired": "STOPPED", **fields}
+
+
+def deliver(store: FakeAgentStore, document: dict[str, Any]) -> None:
+    assert store.deliver is not None, "the agent never subscribed"
+    store.deliver(document)
+
+
+def test_starting_up_is_itself_worth_one_report() -> None:
+    """The process starting is an event: a client already waiting on a ping, or
+    reading the panel, should learn that this machine is back."""
+    store = FakeAgentStore(doc())
+    agent = agent_with(store)
+
+    agent.step(START)
+
+    assert len(store.reports) == 1
+
+
+def test_an_idle_agent_writes_nothing_and_reads_nothing() -> None:
+    """The whole point. A thousand ticks of nothing changing cost nothing."""
+    store = FakeAgentStore(doc())
+    agent = agent_with(store)
+    agent.step(START)
+    reads = store.reads
+
+    for tick in range(1, 1000):
+        agent.step(START + timedelta(seconds=2 * tick))
+
+    assert len(store.reports) == 1
+    assert store.reads == reads
+
+
+def test_a_change_of_state_is_reported_once() -> None:
+    store = FakeAgentStore(doc())
+    agent = agent_with(store, process=FakeProcess())
+    agent.step(START)
+
+    deliver(store, doc(desired="RUNNING", requestedAt="2026-09-12T09:00:00Z"))
+    for tick in range(1, 6):
+        agent.step(START + timedelta(seconds=tick))
+
+    states = [report.state for report in store.reports]
+    assert states == [AgentState.STOPPED, AgentState.STARTING, AgentState.RUNNING]
+
+
+def test_a_ping_is_answered_with_its_token_and_passed_on_to_the_worker() -> None:
+    """The agent answers for the machine, the worker answers for itself, and the
+    client needs both: an agent saying RUNNING says a worker was running when it
+    last looked, not that it is answering now."""
+    store = FakeAgentStore(doc())
+    relayed: list[str] = []
+    agent = agent_with(store, foreign={"pid": 4242}, relayed=relayed)
+    agent.step(START)
+
+    deliver(store, doc(pingToken="tok-1"))
+    agent.step(START + timedelta(seconds=30))
+
+    assert relayed == ["tok-1"]
+    answer = store.reports[-1]
+    assert answer.answered_ping == "tok-1"
+    assert answer.last_seen_at == START + timedelta(seconds=30)
+
+
+def test_a_ping_is_answered_once() -> None:
+    """Every delivery of the document carries the token — including the echo of
+    the agent's own answer. Only a token it has not answered is a new question."""
+    store = FakeAgentStore(doc())
+    agent = agent_with(store)
+    agent.step(START)
+
+    deliver(store, doc(pingToken="tok-1"))
+    agent.step(START + timedelta(seconds=1))
+    deliver(store, doc(pingToken="tok-1", answeredPing="tok-1"))
+    for tick in range(2, 20):
+        agent.step(START + timedelta(seconds=tick))
+
+    assert [report.answered_ping for report in store.reports] == [None, "tok-1"]
+
+
+def test_a_ping_with_no_worker_running_is_not_relayed() -> None:
+    """Asking a port nobody holds is a timeout spent on nothing. The agent's own
+    answer — state STOPPED — already tells the client there is no worker."""
+    store = FakeAgentStore(doc())
+    relayed: list[str] = []
+    agent = agent_with(store, relayed=relayed)
+    agent.step(START)
+
+    deliver(store, doc(pingToken="tok-1"))
+    agent.step(START + timedelta(seconds=1))
+
+    assert relayed == []
+    assert store.reports[-1].answered_ping == "tok-1"
+    assert store.reports[-1].state is AgentState.STOPPED
+
+
+def test_the_answer_survives_later_reports() -> None:
+    """A state change landing a moment after the answer must not erase it before
+    the client that asked has seen it."""
+    store = FakeAgentStore(doc())
+    agent = agent_with(store)
+    agent.step(START)
+    deliver(store, doc(pingToken="tok-1"))
+    agent.step(START + timedelta(seconds=1))
+
+    deliver(store, doc(pingToken="tok-1", desired="RUNNING", requestedAt="2026-09-12T09:01:00Z"))
+    agent.step(START + timedelta(seconds=2))
+
+    assert store.reports[-1].state is AgentState.STARTING
+    assert store.reports[-1].answered_ping == "tok-1"
+
+
+def test_a_ping_made_while_the_machine_was_off_is_answered_on_startup() -> None:
+    store = FakeAgentStore(doc(pingToken="tok-early", answeredPing="tok-older"))
+    agent = agent_with(store)
+
+    agent.step(START)
+
+    assert store.reports[-1].answered_ping == "tok-early"
+
+
+def test_a_ping_already_answered_by_an_earlier_run_is_not_a_new_question() -> None:
+    store = FakeAgentStore(doc(pingToken="tok-1", answeredPing="tok-1"))
+    relayed: list[str] = []
+    agent = agent_with(store, foreign={"pid": 1}, relayed=relayed)
+
+    agent.step(START)
+
+    assert relayed == []
+
+
+def test_a_report_that_could_not_be_written_is_tried_again() -> None:
+    """Nothing is recorded as said until it has been said, so a failed answer to
+    a ping is not mistaken for one that arrived."""
+    store = FakeAgentStore(doc(), failing=1)
+    agent = agent_with(store)
+
+    agent.step(START)
+    agent.step(START + timedelta(seconds=2))
+
+    assert len(store.reports) == 1
+
+
+def test_a_dead_listener_is_replaced_and_a_live_one_is_left_alone() -> None:
+    """The backstop for a listener that died quietly used to be a read a minute.
+    It is a local look at the listener's own state now, and a read only when it
+    is actually dead — the replacement's first delivery."""
+    store = FakeAgentStore(doc())
+    agent = agent_with(store, listener_check_seconds=0.0)
+
+    for tick in range(5):
+        agent.step(START + timedelta(seconds=tick))
+    assert len(store.subscriptions) == 1
+
+    store.subscriptions[0].dead = True
+    agent.step(START + timedelta(seconds=10))
+
+    assert len(store.subscriptions) == 2
+    assert store.subscriptions[0].closed
+
+
+def test_a_ping_token_is_a_short_string_or_nothing() -> None:
+    assert ping_from({"pingToken": "abc"}) == "abc"
+    assert ping_from({"pingToken": ""}) is None
+    assert ping_from({"pingToken": 12}) is None
+    assert ping_from({"pingToken": "x" * 65}) is None
+    assert ping_from(None) is None
+
+
+def test_a_refresh_makes_the_next_tick_ask_the_worker_again() -> None:
+    """A ping wants what is running now; the probe is otherwise throttled to ten
+    seconds, which is exactly the staleness a ping exists to remove."""
+    asked: list[int] = []
+
+    def probe() -> dict[str, Any] | None:
+        asked.append(1)
+        return None
+
+    watcher = Supervisor(process=FakeProcess(), probe=probe)  # type: ignore[arg-type]
+    watcher.reconcile(Desire(), now=START)
+    watcher.reconcile(Desire(), now=START + timedelta(seconds=1))
+    assert len(asked) == 1
+
+    watcher.refresh()
+    watcher.reconcile(Desire(), now=START + timedelta(seconds=2))
+    assert len(asked) == 2

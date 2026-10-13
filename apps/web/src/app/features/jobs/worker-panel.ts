@@ -16,6 +16,7 @@ import { WorkersRepository } from '../../core/data/workers';
 import { CLIPFORGE_CONFIG } from '../../core/firebase';
 import type { Live } from '../../core/firestore/gateway';
 import { LocalApiService, type WorkerSelfReport } from '../../core/local-api';
+import { PresenceService, agentPresence, workerPresence } from '../../core/presence';
 import { SessionService } from '../../core/session';
 import { WorkerControlService } from '../../core/worker-control';
 
@@ -30,17 +31,27 @@ import { WorkerControlService } from '../../core/worker-control';
  *
  * ## Two signals, because each is blind where the other sees
  *
- * - The **heartbeat** in Firestore is visible from anywhere, phone included, and
- *   says what the worker believes it is doing. It is up to 30 seconds stale, and
- *   a worker that was killed leaves its last heartbeat behind saying ONLINE
- *   forever — which is why {@link stale} exists and is trusted over `status`.
+ * - The **worker document** in Firestore is visible from anywhere, phone
+ *   included, and says what the worker last reported doing. It is written when
+ *   something happens, never on a timer, so on its own it cannot say whether
+ *   the worker is there *now* — a worker that was killed leaves it saying ONLINE
+ *   for ever. Whether it is there is asked: see {@link workerPresence}.
  * - The **process state** from the desktop shell is instant and works with no
  *   network at all, but only describes this machine.
- * - The **agent** in `agents/{machineId}` is visible from anywhere *and* keeps
- *   reporting when no worker is running, which neither of the others can do: a
- *   worker that is not running cannot send a heartbeat saying so, and a browser
- *   tab has no process table. It is also the only one of the three that can
- *   *act* from a phone.
+ * - The **agent** in `agents/{machineId}` is visible from anywhere *and* answers
+ *   when no worker is running, which neither of the others can do: a worker
+ *   that is not running cannot say so, and a browser tab has no process table.
+ *   It is also the only one of the three that can *act* from a phone.
+ *
+ * ## Asked, not watched
+ *
+ * Opening the panel pings the machine (`core/presence.ts`): a token written to
+ * the agent's document, echoed back by the agent and — relayed over loopback —
+ * by the worker. The panel says "checking" until the token comes back or fifteen
+ * seconds pass, then says when it last checked. It never re-asks on its own;
+ * "Check now" does, and so does pressing Start or Stop. The ninety- and
+ * hundred-and-eighty-second staleness windows this replaced needed the machine
+ * to write every half-minute whether anyone was looking or not.
  *
  * None is dropped in favour of another: on the desktop they are shown together,
  * and a disagreement between them is itself informative — a running process with
@@ -72,6 +83,7 @@ export class WorkerPanel implements OnDestroy {
   private readonly config = inject(CLIPFORGE_CONFIG);
   private readonly local = inject(LocalApiService);
   private readonly session = inject(SessionService);
+  private readonly presence = inject(PresenceService);
   protected readonly control = inject(WorkerControlService);
 
   /** How many jobs are waiting, so the panel can say what that means. */
@@ -79,6 +91,8 @@ export class WorkerPanel implements OnDestroy {
 
   private stopWatching: (() => void) | null = null;
   private ticker: ReturnType<typeof setInterval> | null = null;
+  /** Whether this panel has pinged since it opened. */
+  private asked = false;
 
   /** What the worker on this machine says about itself, if one answers. */
   protected readonly selfReport = signal<WorkerSelfReport | null>(null);
@@ -131,14 +145,17 @@ export class WorkerPanel implements OnDestroy {
   protected readonly agentError = signal<string | null>(null);
 
   /**
-   * Nothing has been read yet, so the panel has nothing to report.
+   * Nothing has been read yet, or the machine has been asked and has not
+   * answered yet, so the panel has nothing to report.
    *
    * Distinct from offline: the headline renders this instead of the state,
-   * because an unread query and a worker that is genuinely not running look the
-   * same from {@link live} and mean opposite things.
+   * because an unanswered question and a worker that is genuinely not running
+   * look the same from {@link live} and mean opposite things.
    */
   protected readonly checking = computed(
-    () => this.heartbeats() === null && this.heartbeatError() === null,
+    () =>
+      (this.heartbeats() === null && this.heartbeatError() === null) ||
+      this.workerPresence() === 'checking',
   );
 
   /** Set between the click and the agent document catching up with it. */
@@ -148,41 +165,53 @@ export class WorkerPanel implements OnDestroy {
   protected readonly repoDraft = signal('');
 
   /**
-   * A clock, so "last seen 40s ago" keeps counting up.
-   *
-   * Without it the panel freezes at whatever the last Firestore delivery said,
-   * and a worker that died two minutes ago still reads "last seen 2s ago" — the
-   * precise lie this panel exists to stop telling.
+   * A clock, so "checked 40s ago" keeps counting up. Local only: nothing here
+   * asks Firestore anything on a timer.
    */
   private readonly now = signal(Date.now());
 
-  /** The freshest, which is the one to read: the repository sorts them. */
-  protected readonly heartbeat = computed(() => this.heartbeats()?.[0] ?? null);
-
   /**
-   * Whether the heartbeat has stopped arriving.
-   *
-   * Ninety seconds, matching `Settings.lease_seconds` rather than the 30-second
-   * heartbeat interval: one missed beat is a slow write, three is a worker that
-   * is no longer there — and 90s is also the point at which the scheduler itself
-   * stops believing the worker owns anything.
+   * The worker on the machine this panel is talking to, else the freshest. The
+   * worker and its agent share an id by construction (`Settings.worker_id`).
    */
-  protected readonly stale = computed(() => {
-    const beat = this.heartbeat();
-    if (!beat) return true;
-    return this.now() - Date.parse(beat.lastSeenAt) > 90_000;
+  protected readonly heartbeat = computed(() => {
+    const beats = this.heartbeats();
+    if (!beats?.length) return null;
+    const machine = this.machine();
+    return beats.find((beat) => beat.workerId === machine?.agentId) ?? beats[0];
+  });
+
+  /** Whether the agent on that machine answered the last ping. */
+  protected readonly agentPresence = computed(() =>
+    agentPresence(this.presence.check(), this.machine()),
+  );
+
+  /** Whether a worker on that machine answered the last ping. */
+  protected readonly workerPresence = computed(() =>
+    workerPresence(this.presence.check(), this.machine(), this.heartbeat()),
+  );
+
+  /** When the question that is now answered was asked, on this device's clock. */
+  protected readonly lastChecked = computed(() => {
+    const check = this.presence.check();
+    return check && this.agentPresence() !== 'checking' ? check.askedAt : null;
   });
 
   /**
-   * What to show as the headline state, heartbeat and process reconciled.
+   * What to show as the headline state, the ping's answer and the worker's own
+   * report reconciled.
    *
-   * "offline" is an answer about heartbeats that arrived, so the template
-   * settles "not read yet" and "could not be read" before it asks — see
-   * {@link checking} and {@link heartbeatError}.
+   * `unknown` is a worker document with nothing to ask about it — no agent on
+   * that machine to ping — so the panel repeats what it last reported and says
+   * that is all it is. "offline" is an answer about a question that was asked,
+   * so the template settles "not read yet" and "could not be read" before it
+   * asks — see {@link checking} and {@link heartbeatError}.
    */
-  protected readonly live = computed<'busy' | 'online' | 'offline'>(() => {
+  protected readonly live = computed<'busy' | 'online' | 'offline' | 'unknown'>(() => {
     const beat = this.heartbeat();
-    if (!beat || this.stale() || beat.status === 'OFFLINE') return 'offline';
+    const presence = this.workerPresence();
+    if (!beat || presence === 'offline' || beat.status === 'OFFLINE') return 'offline';
+    if (presence === 'unknown' || presence === 'checking') return 'unknown';
     return beat.status === 'BUSY' || (beat.activeJobIds?.length ?? 0) > 0 ? 'busy' : 'online';
   });
 
@@ -201,21 +230,12 @@ export class WorkerPanel implements OnDestroy {
   protected readonly machine = computed(() => this.agents()?.[0] ?? null);
 
   /**
-   * The agent has stopped reporting, so the machine is off or asleep.
+   * An agent that answered the last ping, and so could act on a request.
    *
-   * Three minutes, against a heartbeat of one: one missed beat is a slow write,
-   * three is a PC that is not there. Longer than the worker's ninety seconds
-   * because this heartbeat is deliberately slower — it exists to say the machine
-   * is on, not to hold a lease.
+   * As of that ping: the panel does not re-ask on a timer, and pressing Start
+   * or Stop asks again first.
    */
-  protected readonly machineStale = computed(() => {
-    const agent = this.machine();
-    if (!agent) return true;
-    return this.now() - Date.parse(agent.lastSeenAt) > 180_000;
-  });
-
-  /** An agent that is listening right now, and could act on a request. */
-  protected readonly reachable = computed(() => !!this.machine() && !this.machineStale());
+  protected readonly reachable = computed(() => this.agentPresence() === 'online');
 
   /** Whether this device can start the worker at all, by either route. */
   protected readonly canControl = computed(() => this.control.available || this.reachable());
@@ -231,7 +251,8 @@ export class WorkerPanel implements OnDestroy {
     if (this.control.available) return this.running();
     const state = this.machine()?.state;
     if (state === 'RUNNING' || state === 'FOREIGN' || state === 'STARTING') return true;
-    return this.live() !== 'offline';
+    const live = this.live();
+    return live === 'online' || live === 'busy';
   });
 
   /**
@@ -266,15 +287,25 @@ export class WorkerPanel implements OnDestroy {
   /**
    * Jobs are waiting and there is nothing to run them. The actionable case.
    *
-   * Only once the heartbeats have actually been read. `live()` answers
-   * "offline" for a query that has not delivered and for one that failed, and
-   * raising a warning border and "N jobs waiting with nothing to run them" on
-   * the strength of either is an alarm about the worker raised by a page that
-   * has not managed to look at it.
+   * Only once the machine has actually been asked and the answer is no. A
+   * question still in flight, a query that has not delivered and one that
+   * failed all look like "not running" from `live()`, and raising a warning
+   * border and "N jobs waiting with nothing to run them" on the strength of any
+   * of them is an alarm about the worker raised by a page that has not managed
+   * to look at it.
    */
   protected readonly stalled = computed(
-    () => this.queued() > 0 && this.heartbeats() !== null && this.live() === 'offline',
+    () =>
+      this.queued() > 0 &&
+      this.heartbeats() !== null &&
+      (this.workerPresence() === 'offline' || this.heartbeats()?.length === 0),
   );
+
+  /** Asking is in progress, so asking again would only wait on the same answer. */
+  protected readonly asking = computed(() => this.agentPresence() === 'checking');
+
+  /** Why the last ping could not be written, if it could not. */
+  protected readonly pingError = this.presence.error;
 
   protected readonly running = computed(() => {
     const state = this.control.status()?.state;
@@ -325,6 +356,9 @@ export class WorkerPanel implements OnDestroy {
       this.heldAgents.set(null);
       this.heartbeats.set(null);
       this.agents.set(null);
+      // A new session asks its own question; an answer is about who asked.
+      this.asked = false;
+      untracked(() => this.presence.scope(uid ?? null));
 
       if (!uid) return;
       this.heldWorkers.set(this.data.heartbeats());
@@ -365,6 +399,13 @@ export class WorkerPanel implements OnDestroy {
       this.agents.set(agents);
       this.agentError.set(null);
 
+      // Opening the panel is a question: is the machine there? Asked once per
+      // panel, on the first delivery that names a machine — not on a timer.
+      if (!this.asked && agents.length) {
+        this.asked = true;
+        untracked(() => void this.ping());
+      }
+
       // The agent has taken the request on board; the button can stop saying
       // "Starting…" on its own account and start reflecting what the machine
       // actually reports. `untracked` because this effect writes `submitting`
@@ -389,6 +430,22 @@ export class WorkerPanel implements OnDestroy {
     this.heldWorkers()?.release();
     this.heldAgents()?.release();
     if (this.ticker) clearInterval(this.ticker);
+  }
+
+  /** Ask the machine again, now. The "Check now" button. */
+  protected async checkNow(): Promise<void> {
+    await this.ping();
+  }
+
+  /**
+   * Ping the machine this panel is talking to. Quietly does nothing without
+   * one, or without a signed-in user — the rules would refuse it anyway.
+   */
+  private async ping(): Promise<void> {
+    const agent = this.machine();
+    const uid = this.session.user()?.uid;
+    if (!agent || !uid) return;
+    await this.presence.ping(agent, this.heartbeat(), uid);
   }
 
   /** Silent on failure: no worker answering is the normal case here. */
@@ -426,6 +483,10 @@ export class WorkerPanel implements OnDestroy {
 
     this.submitting.set(desired);
     try {
+      // Asked first, so the panel's answer about the machine is as fresh as the
+      // request it is about to make. Not awaited for the answer: the wish is
+      // worth writing either way, and the agent acts on it whenever it hears.
+      await this.ping();
       await this.data.wish(agent.agentId, uid, desired);
     } catch (error) {
       this.submitting.set(null);

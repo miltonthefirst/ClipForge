@@ -11,6 +11,7 @@ import {
   newJob,
   newestFirst,
   publishJobsSpec,
+  resubmission,
 } from './jobs';
 
 /**
@@ -158,5 +159,33 @@ describe('newJob with a brief', () => {
         maxDurationSec: 45,
       }).clipOptions,
     ).toEqual({ instructions: 'the goals', maxClips: 3, minDurationSec: 20, maxDurationSec: 45 });
+  });
+});
+
+describe('resubmission', () => {
+  const now = '2026-09-26T09:00:00.000Z';
+
+  it('writes exactly the fields the rules allow a resubmission to change', () => {
+    // firestore.rules: changed().hasOnly([...]). A field added here and not
+    // there is a Resubmit button that fails on every press.
+    expect(Object.keys(resubmission(now)).sort()).toEqual(
+      ['attempts', 'endedAt', 'error', 'resubmittedAt', 'startedAt', 'status', 'updatedAt'].sort(),
+    );
+  });
+
+  it('sends the job back to the queue with a fresh budget and no error', () => {
+    expect(resubmission(now)).toEqual({
+      status: 'QUEUED',
+      attempts: 0,
+      error: null,
+      startedAt: null,
+      endedAt: null,
+      resubmittedAt: now,
+      updatedAt: now,
+    });
+  });
+
+  it('leaves the stages alone, so nothing already done is done again', () => {
+    expect('stages' in resubmission(now)).toBe(false);
   });
 });

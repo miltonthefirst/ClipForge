@@ -10,7 +10,9 @@ import {
   getDoc,
   getDocs,
   query,
+  serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
 } from 'firebase/firestore';
@@ -511,6 +513,110 @@ describe('the agent document', () => {
   it('lets a member see every machine, so "which PC?" is answerable', async () => {
     await assertSucceeds(getDoc(doc(bobDb(), 'agents/tower')));
     await assertSucceeds(getDocs(collection(bobDb(), 'agents')));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pings: "are you there?", asked rather than beaten.
+//
+// Neither the agent nor the worker writes on a timer any more. A client that
+// wants to know whether the machine is on writes a fresh token and watches for
+// it to come back. See docs/adr/0030-status-on-events-and-pings.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pinging a machine', () => {
+  const ping = (uid: string, token = 'token-0123456789') => ({
+    pingToken: token,
+    pingRequestedAt: serverTimestamp(),
+    pingRequestedBy: uid,
+  });
+
+  beforeEach(async () => {
+    await seed('agents/tower', agentReport());
+  });
+
+  it('lets any approved member ask', async () => {
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), ping(ALICE)));
+  });
+
+  it('refuses a second ping inside fifteen seconds, whoever sends it', async () => {
+    // One per machine, not one per person: the throttle is what keeps a page
+    // reloaded in a loop from becoming a write-and-relay loop on the machine.
+    // The client refused waits on the token already there instead.
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), ping(ALICE, 'token-first-one')));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), ping(ALICE, 'token-second-one')));
+    await assertFails(updateDoc(doc(bobDb(), 'agents/tower'), ping(BOB, 'token-from-bob-1')));
+  });
+
+  it('allows the next ping once fifteen seconds have passed', async () => {
+    await seed(
+      'agents/tower',
+      agentReport({
+        pingToken: 'token-old-enough',
+        pingRequestedAt: Timestamp.fromMillis(Date.now() - 20_000),
+        pingRequestedBy: BOB,
+      }),
+    );
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), ping(ALICE)));
+  });
+
+  it('refuses a ping stamped with a time the client chose', async () => {
+    // The throttle is only worth having if the clock it reads is the server's.
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'agents/tower'), {
+        ...ping(ALICE),
+        pingRequestedAt: Timestamp.fromMillis(Date.now()),
+      }),
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'agents/tower'), {
+        ...ping(ALICE),
+        pingRequestedAt: new Date().toISOString(),
+      }),
+    );
+  });
+
+  it('refuses a ping filed under somebody else', async () => {
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), ping(BOB)));
+  });
+
+  it('refuses a token that is missing, too short, too long or not a string', async () => {
+    const { pingToken, ...untokened } = ping(ALICE);
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), untokened));
+    for (const token of ['short', 'x'.repeat(65), 12345678]) {
+      await assertFails(
+        updateDoc(doc(aliceDb(), 'agents/tower'), { ...ping(ALICE), pingToken: token }),
+      );
+    }
+  });
+
+  it('refuses a ping that also tries to say something else', async () => {
+    // Its own write: a wish rides its own rule, and the answer is the agent's.
+    for (const extra of [
+      { desired: 'RUNNING', requestedBy: ALICE, requestedAt: '2026-09-12T09:00:00.000Z' },
+      { answeredPing: 'token-0123456789' },
+      { lastSeenAt: '2026-09-12T09:00:00.000Z' },
+      { state: 'RUNNING' },
+    ]) {
+      await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...ping(ALICE), ...extra }));
+    }
+  });
+
+  it('does not let a ping overwrite who last asked for a start or a stop', async () => {
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'agents/tower'), { ...ping(ALICE), requestedBy: ALICE }),
+    );
+  });
+
+  it('refuses anyone who is not signed in', async () => {
+    await assertFails(updateDoc(doc(anonDb(), 'agents/tower'), ping(ALICE)));
+  });
+
+  it('cannot answer its own ping on the worker document either', async () => {
+    await seed('workers/tower', heartbeat('local', { workerId: 'tower' }));
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'workers/tower'), { answeredPing: 'token-0123456789' }),
+    );
   });
 });
 

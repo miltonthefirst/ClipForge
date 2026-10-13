@@ -401,6 +401,7 @@ class NoteTopic(StrEnum):
     TIMING = "TIMING"
     OBSCURE = "OBSCURE"
     CAPTIONS = "CAPTIONS"
+    SPLIT = "SPLIT"
 
 
 class OnScreenTextItem(RootModel[str]):
@@ -491,56 +492,6 @@ class LlmClipMetadata(BaseModel):
     tags: list[Tag] = Field(..., max_length=15, min_length=5)
     """
     Search terms, lowercase, broad ones and specific ones together. `minItems` rather than a request in the prompt, because an empty array satisfies an array schema trivially and a small model takes the cheapest answer that validates — the lesson LlmPreferenceProposal paid for.
-    """
-
-
-class LlmRemakeNote(BaseModel):
-    """
-    The schema-constrained reading of a reviewer's note. Handed to Ollama as a format constraint, like LlmClipResponse, so the model cannot answer with prose.
-
-    Three details of this shape are load-bearing, and all three were measured against qwen3.5:4b rather than reasoned about.
-
-    **`topics` comes first and bounds everything after it.** Fields belonging to a topic the model did not declare are discarded by the caller. This exists because the two obvious shapes both fail: with nullable optional fields a 4B writes a summary saying it chose TRACK and then emits null for the mode, and with every field required it fills all of them, inventing a crop and a language for a note about timing. Neither a prompt asking for restraint nor one asking for completeness fixes the other. Declaring scope first is a question the model answers reliably, and it makes the scope a property of the protocol rather than a hope.
-
-    **Every decision is still required, with 'the note did not say' as a value rather than a null,** so that within a declared topic there is no lazy path that satisfies the schema while deciding nothing.
-
-    **`summary` is last.** Constrained decoding emits properties in declaration order, so a model asked to explain itself first explains a decision it has not made yet and then fails to make it.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-    )
-    topics: list[NoteTopic] = Field(..., max_length=4)
-    """
-    Which aspects of the clip this note actually raises. Usually one. An empty array is the correct answer for a note that is a remark rather than an instruction, and the remake then proceeds on whatever was set explicitly.
-    """
-    framing_mode: NoteFraming = Field(..., alias="framingMode")
-    crop: NoteCrop
-    language: str = Field(..., max_length=16)
-    """
-    A BCP-47 tag when the note asks for another language, and the literal string NONE when it does not. A required string rather than a nullable one, for the reason given above.
-    """
-    audio: NoteAudio
-    start_delta_sec: float = Field(..., alias="startDeltaSec", ge=-30.0, le=30.0)
-    """
-    Seconds to move the cut's start. 0 when the note does not say the clip begins at the wrong moment. Negative starts earlier.
-    """
-    end_delta_sec: float = Field(..., alias="endDeltaSec", ge=-30.0, le=30.0)
-    """
-    Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer.
-    """
-    obscure: NoteObscure
-    captions: NoteCaptions
-    unsupported: list[UnsupportedAsk] | None = Field(None, max_length=8)
-    """
-    Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
-    """
-    summary: str = Field(..., max_length=600)
-    """
-    One sentence restating the instruction and naming what was changed. Written last, after the settings it describes.
-
-    It describes this ANSWER, not necessarily the outcome: settings belonging to a topic that was not declared are discarded by the caller afterwards, so a summary can name a change that does not survive. `NoteInterpretation.summary` is rewritten from what was actually applied before it reaches the clip — an early version recorded the model's own wording and told reviewers it had set a crop it had not.
     """
 
 
@@ -698,57 +649,38 @@ class VoiceOptions(BaseModel):
     """
 
 
-class RemakeOptions(BaseModel):
+class SplitRange(BaseModel):
     """
-    A reviewer's corrections to a finished clip. Every field is optional because a remake is usually one complaint, not a rebuild: 'the framing lost the ball' and 'this needs to be in Spanish' are separate errands and should not have to be sent together.
+    One part of a clip being split. Seconds on the clip as the reviewer watches it — 0 is its first frame — not source seconds, because that is the only timeline the reviewer can see. A part may begin up to 30 seconds before the clip does and end up to 30 seconds after it, the same reach a trim has.
     """
 
     model_config = ConfigDict(
         extra="forbid",
         populate_by_name=True,
     )
-    notes: str | None = Field(None, max_length=2000)
-    """
-    What is wrong with the clip, in the reviewer's own words. Always recorded on the new clip, whether or not anything is inferred from it — a remake whose result is still wrong is much easier to reason about when what was asked for is written next to what was done.
-    """
-    interpret_notes: bool | None = Field(True, alias="interpretNotes")
-    """
-    Whether to put the notes to the local model and let it fill in the options the reviewer left unset. Bounded deliberately: it may choose a framing mode, a crop anchor, a language and a voice, and it may not touch anything the reviewer stated explicitly. What it decided is recorded on the clip, so a note that was misread is visible as a misreading rather than as an unexplained result.
-    """
-    framing: Framing | None = None
-    """
-    Null means 'leave the framing alone', which is not the same as AS_RENDERED: an explicit AS_RENDERED with a `crop` set is a reframe to a different fixed anchor.
-    """
-    voice: VoiceOptions | None = None
-    """
-    Null keeps the clip's own audio.
-    """
-    start_delta_sec: float | None = Field(0, alias="startDeltaSec", ge=-30.0, le=30.0)
-    """
-    Nudge the cut's start, in seconds, relative to where the candidate put it. Negative starts earlier. Boundary snapping gets the sentence right and still lands a beat late for an action clip, where the interesting thing happens before anyone says anything about it.
-    """
-    end_delta_sec: float | None = Field(0, alias="endDeltaSec", ge=-30.0, le=30.0)
-    """
-    Nudge the cut's end. Positive runs longer.
-    """
-    obscure: ObscureOptions | None = None
-    """
-    Hide a fixed part of the picture — a channel bug, a scoreboard, a burnt-in caption. Null asks for nothing; an object with `auto` false and no regions is also nothing, and is what an untouched control sends.
-    """
-    profile: str | None = None
-    """
-    Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
-    """
-    keep_music: bool | None = Field(None, alias="keepMusic")
-    """
-    Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one.
-    """
-    captions: VoiceCaptions | None = None
-    """
-    What to do with the captions RENDER burned into the picture, when the remake is not also replacing the voice. REMOVE re-cuts the segment without the subtitle filter; KEEP and null leave the picture alone. REBUILD belongs to a voice change and is ignored here, because with no new narration there is nothing to transcribe.
+    start_sec: float = Field(..., alias="startSec", ge=-30.0, le=3600.0)
+    end_sec: float = Field(..., alias="endSec", ge=-29.0, le=3630.0)
 
-    It sits beside `voice` rather than inside it because captions are a property of the picture, not of the soundtrack. A reviewer who writes "remove caption" is not asking for a different voice, and until this existed there was no way to say it at all: the note was read correctly, had nowhere to go, and the clip came back unchanged with a summary claiming the language had been set to NONE.
+
+class AppliedSplit(BaseModel):
     """
+    Which part of a split this clip is. Carried on each part, so the review queue can say 'part 2 of 3' and a later correction of one part is understood to be about that part alone. Absent on a clip that was not split, and on a single-range trim, which is the same clip made shorter rather than one of several.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    index: int = Field(..., ge=1)
+    """
+    1-based, in order of where the parts start.
+    """
+    count: int = Field(..., ge=2)
+    start_sec: float = Field(..., alias="startSec")
+    """
+    Where this part began, in seconds on the clip it was split from, as requested.
+    """
+    end_sec: float = Field(..., alias="endSec")
 
 
 class NoteInterpretation(BaseModel):
@@ -842,6 +774,10 @@ class AppliedRemake(BaseModel):
     The window actually cut from the source, after any nudge. Absolute source seconds, matching Candidate.
     """
     end_sec: float = Field(..., alias="endSec", ge=0.0)
+    split: AppliedSplit | None = None
+    """
+    Which part this is, when the remake split the clip into several. `startSec` and `endSec` above are then this part's own window, so a correction of one part re-cuts that part and nothing else.
+    """
 
 
 class JobEventKind(StrEnum):
@@ -1523,7 +1459,7 @@ class GpuInfo(BaseModel):
 
 class WorkerHeartbeat(BaseModel):
     """
-    Liveness and capability advertisement at workers/{workerId}.
+    Capability advertisement and last known state at workers/{workerId}. Written when something happens — the worker starts, claims a job, a running stage says something new (at most once per lease renewal), a job ends, a ping is answered, the worker stops — and never on a timer while idle, so `lastSeenAt` is when it last had something to say, not a liveness beat. Whether it is running *now* is answered by a ping; see AgentReport.pingToken and docs/adr/0030-status-on-events-and-pings.md.
     """
 
     model_config = ConfigDict(
@@ -1540,6 +1476,10 @@ class WorkerHeartbeat(BaseModel):
     active_job_ids: list[str] | None = Field([], alias="activeJobIds")
     last_seen_at: AwareDatetime = Field(..., alias="lastSeenAt")
     started_at: AwareDatetime | None = Field(None, alias="startedAt")
+    answered_ping: str | None = Field(None, alias="answeredPing", max_length=64)
+    """
+    The last ping token this worker answered, relayed to it by the agent over loopback. A client that wrote that token to agents/{agentId}.pingToken knows from this that the worker was alive after it asked. Carried on every later write, so an event landing just after the answer does not erase it.
+    """
 
 
 class AgentDesired(StrEnum):
@@ -1566,7 +1506,7 @@ class AgentState(StrEnum):
 
 class AgentReport(BaseModel):
     """
-    One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. Its `lastSeenAt` answers a question no worker heartbeat can, because a worker that is not running cannot say so: an agent beating with state STOPPED means the PC is on and waiting, while an agent that has gone quiet means the PC is off.
+    One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. It answers a question no worker document can, because a worker that is not running cannot say so. It is written when something happens and when a client pings it, never on a timer: a client asks by writing `pingToken`, and an agent that echoes it in `answeredPing` is on and listening, while one that does not answer within a few seconds is off.
     """
 
     model_config = ConfigDict(
@@ -1596,12 +1536,28 @@ class AgentReport(BaseModel):
     """
     log: list[str] | None = []
     """
-    The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB and this one is written every heartbeat.
+    The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB, and the lines travel with every write.
     """
     use_emulators: bool | None = Field(False, alias="useEmulators")
     project_id: str | None = Field(None, alias="projectId")
     started_at: AwareDatetime | None = Field(None, alias="startedAt")
     last_seen_at: AwareDatetime = Field(..., alias="lastSeenAt")
+    ping_token: str | None = Field(None, alias="pingToken", max_length=64)
+    """
+    Written by a client to ask whether this machine is there. Any fresh random string; the agent echoes it in `answeredPing` and relays it to the worker, which echoes it in WorkerHeartbeat.answeredPing. Client-owned, like `desired`: the agent never writes it.
+    """
+    ping_requested_at: AwareDatetime | None = Field(None, alias="pingRequestedAt")
+    """
+    The server's time of the last ping, pinned to request.time by the rules, which also refuse a second ping within 15 seconds of it. A client refused by that throttle waits on the token already there.
+    """
+    ping_requested_by: str | None = Field(None, alias="pingRequestedBy")
+    """
+    The uid that wrote the last ping. Separate from `requestedBy`, which says who last asked for a start or a stop and must not be overwritten by somebody merely looking.
+    """
+    answered_ping: str | None = Field(None, alias="answeredPing", max_length=64)
+    """
+    The last `pingToken` the agent answered. Written with a fresh `lastSeenAt` the moment the ping arrives.
+    """
 
 
 class LlmClipProposal(BaseModel):
@@ -2473,6 +2429,121 @@ class LlmPreferenceProposal(BaseModel):
     preferences: list[Preference1] = Field(..., max_length=3)
 
 
+class LlmRemakeNote(BaseModel):
+    """
+    The schema-constrained reading of a reviewer's note. Handed to Ollama as a format constraint, like LlmClipResponse, so the model cannot answer with prose.
+
+    Three details of this shape are load-bearing, and all three were measured against qwen3.5:4b rather than reasoned about.
+
+    **`topics` comes first and bounds everything after it.** Fields belonging to a topic the model did not declare are discarded by the caller. This exists because the two obvious shapes both fail: with nullable optional fields a 4B writes a summary saying it chose TRACK and then emits null for the mode, and with every field required it fills all of them, inventing a crop and a language for a note about timing. Neither a prompt asking for restraint nor one asking for completeness fixes the other. Declaring scope first is a question the model answers reliably, and it makes the scope a property of the protocol rather than a hope.
+
+    **Every decision is still required, with 'the note did not say' as a value rather than a null,** so that within a declared topic there is no lazy path that satisfies the schema while deciding nothing.
+
+    **`summary` is last.** Constrained decoding emits properties in declaration order, so a model asked to explain itself first explains a decision it has not made yet and then fails to make it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    topics: list[NoteTopic] = Field(..., max_length=4)
+    """
+    Which aspects of the clip this note actually raises. Usually one. An empty array is the correct answer for a note that is a remark rather than an instruction, and the remake then proceeds on whatever was set explicitly.
+    """
+    framing_mode: NoteFraming = Field(..., alias="framingMode")
+    crop: NoteCrop
+    language: str = Field(..., max_length=16)
+    """
+    A BCP-47 tag when the note asks for another language, and the literal string NONE when it does not. A required string rather than a nullable one, for the reason given above.
+    """
+    audio: NoteAudio
+    start_delta_sec: float = Field(..., alias="startDeltaSec", ge=-30.0, le=30.0)
+    """
+    Seconds to move the cut's start. 0 when the note does not say the clip begins at the wrong moment. Negative starts earlier.
+    """
+    end_delta_sec: float = Field(..., alias="endDeltaSec", ge=-30.0, le=30.0)
+    """
+    Seconds to move the cut's end. 0 when the note does not mention it. Positive runs longer.
+    """
+    obscure: NoteObscure
+    captions: NoteCaptions
+    splits: list[SplitRange]
+    """
+    The parts, when the note asks for the clip to become several clips — each a start and an end in seconds from the clip's first frame. Empty when it does not. Splitting is not trimming: 'split at 35 seconds' is two parts, 0 to 35 and 35 to the end, and moves neither the start nor the end.
+    """
+    unsupported: list[UnsupportedAsk] | None = Field(None, max_length=8)
+    """
+    Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
+    """
+    summary: str = Field(..., max_length=600)
+    """
+    One sentence restating the instruction and naming what was changed. Written last, after the settings it describes.
+
+    It describes this ANSWER, not necessarily the outcome: settings belonging to a topic that was not declared are discarded by the caller afterwards, so a summary can name a change that does not survive. `NoteInterpretation.summary` is rewritten from what was actually applied before it reaches the clip — an early version recorded the model's own wording and told reviewers it had set a crop it had not.
+    """
+
+
+class RemakeOptions(BaseModel):
+    """
+    A reviewer's corrections to a finished clip. Every field is optional because a remake is usually one complaint, not a rebuild: 'the framing lost the ball' and 'this needs to be in Spanish' are separate errands and should not have to be sent together.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    notes: str | None = Field(None, max_length=2000)
+    """
+    What is wrong with the clip, in the reviewer's own words. Always recorded on the new clip, whether or not anything is inferred from it — a remake whose result is still wrong is much easier to reason about when what was asked for is written next to what was done.
+    """
+    interpret_notes: bool | None = Field(True, alias="interpretNotes")
+    """
+    Whether to put the notes to the local model and let it fill in the options the reviewer left unset. Bounded deliberately: it may choose a framing mode, a crop anchor, a language and a voice, and it may not touch anything the reviewer stated explicitly. What it decided is recorded on the clip, so a note that was misread is visible as a misreading rather than as an unexplained result.
+    """
+    framing: Framing | None = None
+    """
+    Null means 'leave the framing alone', which is not the same as AS_RENDERED: an explicit AS_RENDERED with a `crop` set is a reframe to a different fixed anchor.
+    """
+    voice: VoiceOptions | None = None
+    """
+    Null keeps the clip's own audio.
+    """
+    start_delta_sec: float | None = Field(0, alias="startDeltaSec", ge=-30.0, le=30.0)
+    """
+    Nudge the cut's start, in seconds, relative to where the candidate put it. Negative starts earlier. Boundary snapping gets the sentence right and still lands a beat late for an action clip, where the interesting thing happens before anyone says anything about it.
+    """
+    end_delta_sec: float | None = Field(0, alias="endDeltaSec", ge=-30.0, le=30.0)
+    """
+    Nudge the cut's end. Positive runs longer.
+    """
+    obscure: ObscureOptions | None = None
+    """
+    Hide a fixed part of the picture — a channel bug, a scoreboard, a burnt-in caption. Null asks for nothing; an object with `auto` false and no regions is also nothing, and is what an untouched control sends.
+    """
+    profile: str | None = None
+    """
+    Render with a different named profile — caption size, bitrate, the rest of the look. Null keeps the one the clip was made with, which is what makes a reframe comparable to the version it replaces.
+    """
+    keep_music: bool | None = Field(None, alias="keepMusic")
+    """
+    Whether a remake of a scored clip keeps its soundtrack. Null and true both keep it; only an explicit false drops it. Keeping is the default because the music is baked into the rendered file and a remake re-renders from the source: before this, a reviewer who asked for a reframe got back a silent clip that still claimed a soundtrack. A boolean rather than a nested MusicOptions, because choosing a different track is a separate MUSIC job and is refused on a remake as CHANGE_MUSIC: there is nothing here to configure and no way to read this field as picking one.
+    """
+    captions: VoiceCaptions | None = None
+    """
+    What to do with the captions RENDER burned into the picture, when the remake is not also replacing the voice. REMOVE re-cuts the segment without the subtitle filter; KEEP and null leave the picture alone. REBUILD belongs to a voice change and is ignored here, because with no new narration there is nothing to transcribe.
+
+    It sits beside `voice` rather than inside it because captions are a property of the picture, not of the soundtrack. A reviewer who writes "remove caption" is not asking for a different voice, and until this existed there was no way to say it at all: the note was read correctly, had nowhere to go, and the clip came back unchanged with a summary claiming the language had been set to NONE.
+    """
+    splits: list[SplitRange] | None = Field([], validate_default=True)
+    """
+    Cut the finished remake into these parts, at most 20 — capped by firestore.rules and by the stage rather than here, as keyframes are, because a bounded array generates a union of twenty-one tuple types that no caller can build incrementally. Empty means one clip, as always. Two or more make that many clips, each its own row in the review queue; one is a precise trim of this clip. Every other correction in the request is applied first and the result is what gets cut, so each part keeps the framing, captions, voice and music of the whole.
+
+    The parts say exactly what is cut, so `startDeltaSec` and `endDeltaSec` are ignored when this is set. A part that reaches before the start or past the end widens the cut from the source to cover it, which needs the source video; parts inside the clip need only the rendered file.
+
+    Added after a note reading "split this into two, beginning to 35s then 35s to the end" had nowhere to go and was bent into the nearest control: the start moved 30 seconds earlier and one longer clip came back.
+    """
+
+
 class PublishDefaults(BaseModel):
     """
     What a publish uses when the clip does not say otherwise. Editable from the app because none of it is secret — unlike the credentials, which never leave the worker.
@@ -2746,6 +2817,10 @@ class Job(BaseModel):
     updated_at: AwareDatetime = Field(..., alias="updatedAt")
     started_at: AwareDatetime | None = Field(None, alias="startedAt")
     ended_at: AwareDatetime | None = Field(None, alias="endedAt")
+    resubmitted_at: AwareDatetime | None = Field(None, alias="resubmittedAt")
+    """
+    When a person last sent this job back to the queue after it FAILED. Resubmitting keeps the job and its stages — anything DONE is not redone — and resets status, attempts, error, startedAt and endedAt. The worker's next claim notes it in the event log. Null on a job that has never been resubmitted.
+    """
 
 
 class ClipForgeContracts(BaseModel):

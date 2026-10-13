@@ -21,14 +21,14 @@
           class="h-2 w-2 shrink-0 rounded-full"
           [class.bg-ok-ink-soft]="live() === 'online'"
           [class.bg-accent-ink]="live() === 'busy'"
-          [class.bg-ink-subtle]="live() === 'offline'"
+          [class.bg-ink-subtle]="live() === 'offline' || live() === 'unknown'"
           aria-hidden="true"
         ></span>
         <h2 class="text-sm font-semibold">
           <!-- "No worker running" is a claim, and the panel is not entitled to
-               it until the heartbeats have actually been read. A query still in
-               flight and one that failed both look like "offline" from here,
-               and they mean something else. -->
+               it until the machine has actually been asked. A query still in
+               flight, one that failed and a ping not yet answered all look like
+               "offline" from here, and they mean something else. -->
           @if (heartbeatError()) {
             Worker status unknown
           } @else if (checking()) {
@@ -40,6 +40,9 @@
               }
               @case ('online') {
                 Worker idle
+              }
+              @case ('unknown') {
+                Worker status unknown
               }
               @default {
                 No worker running
@@ -56,20 +59,36 @@
             · {{ gpu }}
           }
         </p>
-        <p
-          class="mt-0.5 text-xs"
-          [class.text-ink-subtle]="!stale()"
-          [class.text-warn-ink]="stale()"
-        >
-          @if (stale()) {
-            Last heartbeat {{ since(beat.lastSeenAt) }} ago — it stopped reporting.
-          } @else if (beat.activeJobIds?.length) {
-            Running {{ beat.activeJobIds!.length }} job{{
-              beat.activeJobIds!.length === 1 ? '' : 's'
-            }}
-            · last seen {{ since(beat.lastSeenAt) }} ago
-          } @else {
-            Waiting for work · last seen {{ since(beat.lastSeenAt) }} ago
+        <!-- What the worker last reported, qualified by whether it answered
+             the ping. Its document is written when something happens, so "last
+             reported" is when it last had something to say — not how long ago
+             it was alive. -->
+        <p class="mt-0.5 text-xs text-ink-subtle">
+          @switch (live()) {
+            @case ('offline') {
+              @if (workerPresence() === 'offline' && beat.status !== 'OFFLINE') {
+                Did not answer — last reported {{ since(beat.lastSeenAt) }} ago.
+              } @else {
+                Stopped {{ since(beat.lastSeenAt) }} ago.
+              }
+            }
+            @case ('unknown') {
+              @if (workerPresence() === 'checking') {
+                Asking the worker…
+              } @else {
+                Last reported {{ beat.status.toLowerCase() }} {{ since(beat.lastSeenAt) }} ago.
+                Nothing on that machine can be asked whether it still is.
+              }
+            }
+            @default {
+              @if (beat.activeJobIds?.length) {
+                Running {{ beat.activeJobIds!.length }} job{{
+                  beat.activeJobIds!.length === 1 ? '' : 's'
+                }}
+              } @else {
+                Waiting for work
+              }
+            }
           }
         </p>
       } @else if (heartbeats()?.length === 0) {
@@ -81,23 +100,48 @@
       }
 
       <!-- ── The machine ──────────────────────────────────────────────────
-           The agent keeps reporting when no worker is running, which is the
-           one thing a worker heartbeat can never do: a worker that is not
-           running cannot say that it is not running. So this line is what
-           separates "the PC is on and waiting" from "the PC is off". -->
+           The agent answers when no worker is running, which is the one thing
+           a worker document can never do: a worker that is not running cannot
+           say that it is not running. So this line is what separates "the PC
+           is on and waiting" from "the PC is off" — asked, by a ping, when the
+           panel opens and when "Check now" is pressed. -->
       @if (machine(); as agent) {
         <p
           class="mt-0.5 text-xs"
-          [class.text-ink-subtle]="!machineStale()"
-          [class.text-warn-ink]="machineStale()"
+          [class.text-ink-subtle]="agentPresence() !== 'offline'"
+          [class.text-warn-ink]="agentPresence() === 'offline'"
         >
-          @if (machineStale()) {
-            {{ agent.hostname || agent.agentId }} is not reporting — it is off or asleep (last seen
-            {{ since(agent.lastSeenAt) }} ago).
-          } @else {
-            {{ agent.hostname || agent.agentId }} · {{ agentState(agent) }}
+          @switch (agentPresence()) {
+            @case ('offline') {
+              {{ agent.hostname || agent.agentId }} did not answer — it is off or asleep.
+            }
+            @case ('checking') {
+              Asking {{ agent.hostname || agent.agentId }}…
+            }
+            @case ('unknown') {
+              {{ agent.hostname || agent.agentId }} · not asked yet
+            }
+            @default {
+              {{ agent.hostname || agent.agentId }} · {{ agentState(agent) }}
+            }
           }
         </p>
+        <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-subtle">
+          @if (lastChecked(); as at) {
+            <span>Checked {{ sinceMs(at) }} ago</span>
+          }
+          <button
+            type="button"
+            class="underline decoration-dotted underline-offset-2 hover:text-ink-muted disabled:opacity-50"
+            [disabled]="asking()"
+            (click)="checkNow()"
+          >
+            Check now
+          </button>
+        </p>
+        @if (pingError(); as message) {
+          <p class="mt-1 text-xs text-warn-ink">Could not ask the machine: {{ message }}</p>
+        }
 
         @if (agent.detail; as detail) {
           <!-- Written by the agent for exactly this spot: the reason a start

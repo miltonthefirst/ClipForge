@@ -11,11 +11,13 @@ Phase 1, exit criteria 2 and 3.
 from __future__ import annotations
 
 import concurrent.futures
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from clipforge.config import Settings
-from clipforge.scheduler.lease import Transition
+from clipforge.scheduler.lease import LeaseError, Transition
 from clipforge.store.firestore import JobStore, WorkerStore
 from clipforge_contracts import (
     Job,
@@ -385,3 +387,160 @@ def test_a_heartbeat_round_trips(workers: WorkerStore) -> None:
     loaded = workers.get("worker-a")
 
     assert loaded == heartbeat
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resubmitting
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_a_job_the_reaper_gave_up_on_can_be_resubmitted_and_run_again(
+    jobs: JobStore, other_worker: JobStore
+) -> None:
+    """The incident this exists for: a worker died holding a job, the reaper
+    spent its last attempt and failed it, and a person sent it back."""
+    jobs.create(make_job(attempts=2, max_attempts=3))
+    jobs.try_claim("job-1", now=T0)
+    jobs.reap(now=T0 + timedelta(seconds=200))
+    resubmitted_at = T0 + timedelta(hours=2)
+
+    resubmitted = jobs.resubmit("job-1", now=resubmitted_at)
+    claimed = other_worker.try_claim("job-1", now=resubmitted_at + timedelta(seconds=5))
+
+    assert resubmitted is not None
+    assert resubmitted.status is JobStatus.QUEUED
+    assert claimed is not None
+    assert claimed.worker_id == "worker-b"
+    assert claimed.attempts == 0
+    assert claimed.resubmitted_at == resubmitted_at
+    last = jobs.events("job-1")[-1]
+    assert last["kind"] == JobEventKind.CLAIMED.value
+    assert last["detail"] == "resubmitted after it failed"
+
+
+def test_resubmitting_keeps_the_stages_that_finished(jobs: JobStore) -> None:
+    stages = [
+        Stage(name=StageName.ECHO_ONE, lane=Lane.CPU, status=StageStatus.DONE),
+        Stage(name=StageName.ECHO_TWO, lane=Lane.CPU, status=StageStatus.FAILED),
+    ]
+    jobs.create(make_job(status=JobStatus.FAILED, stages=stages, attempts=3, ended_at=T0))
+
+    jobs.resubmit("job-1", now=T0 + timedelta(hours=1))
+
+    stored = jobs.get("job-1")
+    assert stored is not None
+    assert stored.stages == stages
+    assert stored.ended_at is None
+
+
+def test_resubmitting_a_job_that_has_not_failed_is_refused_and_changes_nothing(
+    jobs: JobStore,
+) -> None:
+    jobs.create(make_job())
+
+    with pytest.raises(LeaseError):
+        jobs.resubmit("job-1", now=T0 + timedelta(hours=1))
+
+    assert jobs.get("job-1") == make_job()
+
+
+def test_resubmitting_a_missing_job_returns_none(jobs: JobStore) -> None:
+    assert jobs.resubmit("nope") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The reaper without a timer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_running_lists_every_running_job_with_its_lease(
+    jobs: JobStore, other_worker: JobStore
+) -> None:
+    """Wider than `expired` on purpose: the reaper sets its alarm from the
+    leases that have *not* lapsed yet."""
+    jobs.create(make_job("mine"))
+    jobs.create(make_job("theirs"))
+    jobs.create(make_job("waiting"))
+    jobs.try_claim("mine", now=T0)
+    other_worker.try_claim("theirs", now=T0 + timedelta(seconds=10))
+
+    running = {job.id: job.lease_expires_at for job in jobs.running()}
+
+    assert running == {
+        "mine": T0 + timedelta(seconds=90),
+        "theirs": T0 + timedelta(seconds=100),
+    }
+
+
+def test_the_reaper_takes_the_list_it_was_handed_and_rechecks_each(
+    jobs: JobStore, other_worker: JobStore
+) -> None:
+    """A handed-over list saves the `expired` query. It cannot cause a wrong
+    reap: a candidate whose lease was renewed since is re-read and left alone."""
+    jobs.create(make_job("lapsed"))
+    jobs.create(make_job("renewed"))
+    other_worker.try_claim("lapsed", now=T0)
+    other_worker.try_claim("renewed", now=T0)
+    stale = jobs.running()
+    other_worker.renew("renewed", now=T0 + timedelta(seconds=80))
+
+    reaped = jobs.reap(now=T0 + timedelta(seconds=100), candidates=stale)
+
+    assert [job.id for job in reaped] == ["lapsed"]
+    renewed = jobs.get("renewed")
+    assert renewed is not None
+    assert renewed.status is JobStatus.RUNNING
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The queue listener
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _until(condition: Callable[[], bool], timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out waiting for a delivery"
+        time.sleep(0.05)
+
+
+def test_the_queue_listener_delivers_the_whole_waiting_set_in_order(jobs: JobStore) -> None:
+    jobs.create(make_job("second", created_at=T0 + timedelta(seconds=1)))
+    jobs.create(make_job("first"))
+    deliveries: list[list[str]] = []
+
+    watch = jobs.watch_queued(lambda queued: deliveries.append([q.job.id for q in queued]))
+    try:
+        _until(lambda: bool(deliveries))
+        assert deliveries[-1] == ["first", "second"]
+
+        jobs.try_claim("first", now=T0)
+        _until(lambda: deliveries[-1] == ["second"])
+        assert watch.alive()
+    finally:
+        watch.close()
+
+
+def test_a_delivered_job_carries_a_version_that_changes_when_it_is_written(
+    jobs: JobStore,
+) -> None:
+    """How the worker tells "the job it could not claim a moment ago" from "the
+    same job, since rewritten" without reading it again."""
+    jobs.create(make_job("job-1"))
+    versions: list[object] = []
+
+    watch = jobs.watch_queued(lambda queued: versions.extend(q.version for q in queued))
+    try:
+        _until(lambda: bool(versions))
+        jobs.create(make_job("job-1", updated_at=T0 + timedelta(seconds=5)))
+        _until(lambda: len(set(versions)) == 2)
+    finally:
+        watch.close()
+
+    assert None not in versions
+
+
+def test_a_closed_listener_says_so(jobs: JobStore) -> None:
+    watch = jobs.watch_queued(lambda _queued: None)
+    watch.close()
+    _until(lambda: not watch.alive())

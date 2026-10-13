@@ -10,6 +10,7 @@ import {
   jobTab,
   jobTitle,
   queueFailure,
+  resubmittable,
   stageNote,
   stageProgress,
 } from './job-list';
@@ -108,6 +109,20 @@ describe('isTerminal', () => {
     // the document back — the job returns, marked COMPLETED.
     expect(isTerminal(job({ status: 'RUNNING' }))).toBe(false);
     expect(isTerminal(job({ status: 'QUEUED' }))).toBe(false);
+  });
+});
+
+describe('resubmittable', () => {
+  it('offers Resubmit on a failed job', () => {
+    expect(resubmittable(job({ status: 'FAILED' }))).toBe(true);
+  });
+
+  it('offers it on nothing else, cancelled included', () => {
+    // A job cancelled mid-run can still be held by the worker running it, and
+    // the rules refuse the write for the same reason.
+    for (const status of ['QUEUED', 'RUNNING', 'COMPLETED', 'CANCELLED'] as const) {
+      expect(resubmittable(job({ status }))).toBe(false);
+    }
   });
 });
 

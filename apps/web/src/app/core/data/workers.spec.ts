@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { AGENTS_QUERY, WORKERS_QUERY, byFreshest, wishWrite } from './workers';
+import {
+  AGENTS_QUERY,
+  WORKERS_QUERY,
+  byFreshest,
+  newPingToken,
+  pingWrite,
+  wishWrite,
+} from './workers';
 
 /**
  * The parts of the worker domain that are wrong quietly.
@@ -81,5 +88,29 @@ describe('the queries', () => {
   it('reads the collections the agent and the worker write', () => {
     expect(WORKERS_QUERY.collection).toBe('workers');
     expect(AGENTS_QUERY.collection).toBe('agents');
+  });
+});
+
+describe('pings', () => {
+  it('mints a token the rules accept: a string of 8 to 64 characters', () => {
+    const token = newPingToken();
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThanOrEqual(8);
+    expect(token.length).toBeLessThanOrEqual(64);
+  });
+
+  it('mints a different token every time, so two devices never share an answer', () => {
+    const tokens = new Set(Array.from({ length: 50 }, () => newPingToken()));
+    expect(tokens.size).toBe(50);
+  });
+
+  it('writes the token and who asked, and nothing that belongs to a wish', () => {
+    // `requestedBy` says who last asked for a start or a stop; a ping must not
+    // overwrite it, and the rules refuse one that tries. The time is the
+    // server's, added by the gateway.
+    expect(pingWrite('uid-1', 'token-123')).toEqual({
+      pingToken: 'token-123',
+      pingRequestedBy: 'uid-1',
+    });
   });
 });

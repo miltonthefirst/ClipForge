@@ -117,6 +117,19 @@ export function isTerminal(job: Job): boolean {
   return job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED';
 }
 
+/**
+ * Whether Resubmit is offered: FAILED, and nothing else.
+ *
+ * Mirrors firestore.rules. Not CANCELLED, although that would be as easy to
+ * write: cancelling a running job is this app's write, and the worker running
+ * it only notices at its next checkpoint — so a cancelled job can still be
+ * held, and sending it back would put it in the queue twice over. A worker
+ * lets go of a job on its way to FAILED, so a failed job is never held.
+ */
+export function resubmittable(job: Job): boolean {
+  return job.status === 'FAILED';
+}
+
 export interface StageProgress {
   /** Stages that will not run again — done or deliberately skipped. */
   readonly done: number;

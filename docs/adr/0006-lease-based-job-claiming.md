@@ -1,6 +1,6 @@
 # ADR-0006 — Claim jobs with a transactional lease, and keep the state machine pure
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [ADR-0030](0030-status-on-events-and-pings.md) (2026-10-13) — the reaper is no longer a periodic task and nothing polls the queue. The lease, its renewal and the pure state machine stand.
 - **Date:** 2026-09-08
 - **Phase:** 1
 
@@ -75,6 +75,16 @@ Without that distinction a job whose worker keeps dying would retry forever.
 - Any illegal transition raises rather than returning `None`. The one genuinely
   expected "no" — a job someone else already claimed — is answered by
   `is_claimable`, so a `LeaseError` always indicates a scheduler bug.
+
+## Superseded in part
+
+The *binding* changed, which is what this ADR said would be cheap. The claim loop no longer polls:
+a listener on the waiting jobs feeds a local view, and claims are made from it. The reaper no longer
+runs every minute: it runs at startup, on a ping, after each job ends, and at the moment a lease it
+has seen is due to lapse. And the 30-second heartbeat now renews leases only while a job is running —
+the worker document is written on events, not on that interval. The transactional claim, the lease,
+`heartbeat_fits_in_lease()` and the pure `lease` module are unchanged. See
+[ADR-0030](0030-status-on-events-and-pings.md).
 
 ## Alternatives considered
 

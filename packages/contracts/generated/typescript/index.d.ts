@@ -273,7 +273,8 @@ export type PreferenceScope = 'SOURCE' | 'EVERYTHING';
 /**
  * An aspect of a clip a note can be about. Answering this is a much easier question than filling in settings, and it is what bounds the rest of the reading: a field outside the declared topics is ignored, so a model that volunteers a crop for a note about language changes nothing.
  */
-export type NoteTopic = 'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE' | 'CAPTIONS';
+export type NoteTopic =
+  'FRAMING' | 'LANGUAGE' | 'AUDIO' | 'TIMING' | 'OBSCURE' | 'CAPTIONS' | 'SPLIT';
 /**
  * PROPOSED until a human says otherwise, and nothing is applied while it sits there. ACCEPTED means it shapes later remakes; REJECTED means it never comes back. Rejected preferences are kept rather than deleted precisely so the same suggestion cannot be made again on the next correction — that is the difference between a system that learns and one that nags.
  */
@@ -462,6 +463,10 @@ export interface Job {
   updatedAt: string;
   startedAt?: string | null;
   endedAt?: string | null;
+  /**
+   * When a person last sent this job back to the queue after it FAILED. Resubmitting keeps the job and its stages — anything DONE is not redone — and resets status, attempts, error, startedAt and endedAt. The worker's next claim notes it in the event log. Null on a job that has never been resubmitted.
+   */
+  resubmittedAt?: string | null;
 }
 /**
  * The brief for a CLIP job: what to look for, how many, how long. Every field has a default, so an empty object means today's behaviour. `instructions` is a filter rather than a hint — the model is told to return only moments that fit it, and a job whose brief matches nothing finishes with no clips and says so, rather than handing over the strongest unrelated moment. It is read against the transcript, not the picture: 'the goals' works because commentary says goal; 'where the striker is offside' works only if somebody says so.
@@ -541,6 +546,14 @@ export interface RemakeOptions {
    */
   keepMusic?: boolean | null;
   captions?: VoiceCaptions1;
+  /**
+   * Cut the finished remake into these parts, at most 20 — capped by firestore.rules and by the stage rather than here, as keyframes are, because a bounded array generates a union of twenty-one tuple types that no caller can build incrementally. Empty means one clip, as always. Two or more make that many clips, each its own row in the review queue; one is a precise trim of this clip. Every other correction in the request is applied first and the result is what gets cut, so each part keeps the framing, captions, voice and music of the whole.
+   *
+   * The parts say exactly what is cut, so `startDeltaSec` and `endDeltaSec` are ignored when this is set. A part that reaches before the start or past the end widens the cut from the source to cover it, which needs the source video; parts inside the clip need only the rendered file.
+   *
+   * Added after a note reading "split this into two, beginning to 35s then 35s to the end" had nowhere to go and was bent into the nearest control: the start moved 30 seconds earlier and one longer clip came back.
+   */
+  splits?: SplitRange[];
 }
 /**
  * The reframe half of a remake. Every mode other than AS_RENDERED re-cuts from the original source, because the rendered clip has already had the discarded pixels thrown away — so these need the source media to still be on the worker, and fail clearly when the workspace collector has taken it.
@@ -693,6 +706,13 @@ export interface ObscureRegion {
    * For an AUTO region: how static and how distinct it was. Recorded rather than thresholded away, because a low-confidence find that turns out to be right is the evidence for loosening the threshold, and one that is wrong is the evidence for the reviewer to drag the box instead.
    */
   confidence?: number | null;
+}
+/**
+ * One part of a clip being split. Seconds on the clip as the reviewer watches it — 0 is its first frame — not source seconds, because that is the only timeline the reviewer can see. A part may begin up to 30 seconds before the clip does and end up to 30 seconds after it, the same reach a trim has.
+ */
+export interface SplitRange {
+  startSec: number;
+  endSec: number;
 }
 /**
  * What a RESEARCH job looks for. Every field has a default, so an empty object is a valid request meaning 'whatever is trending, wherever the worker looks by default'. Bounded on every axis because each provider call is somebody else's server and the YouTube lookups are the slow part: the worst case is a known number of requests, not a crawl.
@@ -1409,6 +1429,10 @@ export interface AppliedRemake {
    */
   startSec: number;
   endSec: number;
+  /**
+   * Which part this is, when the remake split the clip into several. `startSec` and `endSec` above are then this part's own window, so a correction of one part re-cuts that part and nothing else.
+   */
+  split?: AppliedSplit | null;
 }
 /**
  * What the local model made of the reviewer's note, recorded whether or not it was any use. A remake that came out wrong is nearly always one of two failures — the note was misread, or it was read correctly and the machinery did the wrong thing — and without this they are indistinguishable.
@@ -1441,6 +1465,21 @@ export interface AppliedVoice {
    * How long the narration runs. Compared against the clip's own duration by the UI: narration that overruns the picture is the most common way a translated clip goes wrong, and it is invisible until someone watches the end.
    */
   speechDurationSec?: number | null;
+}
+/**
+ * Which part of a split this clip is. Carried on each part, so the review queue can say 'part 2 of 3' and a later correction of one part is understood to be about that part alone. Absent on a clip that was not split, and on a single-range trim, which is the same clip made shorter rather than one of several.
+ */
+export interface AppliedSplit {
+  /**
+   * 1-based, in order of where the parts start.
+   */
+  index: number;
+  count: number;
+  /**
+   * Where this part began, in seconds on the clip it was split from, as requested.
+   */
+  startSec: number;
+  endSec: number;
 }
 /**
  * What a compilation was actually made from, recorded on the clip. Provenance rather than configuration, like AppliedRemake: it answers 'what is in this video and where did each piece come from' after the job is gone.
@@ -2176,7 +2215,7 @@ export interface UserProfile {
   decidedBy?: string | null;
 }
 /**
- * Liveness and capability advertisement at workers/{workerId}.
+ * Capability advertisement and last known state at workers/{workerId}. Written when something happens — the worker starts, claims a job, a running stage says something new (at most once per lease renewal), a job ends, a ping is answered, the worker stops — and never on a timer while idle, so `lastSeenAt` is when it last had something to say, not a liveness beat. Whether it is running *now* is answered by a ping; see AgentReport.pingToken and docs/adr/0030-status-on-events-and-pings.md.
  */
 export interface WorkerHeartbeat {
   workerId: string;
@@ -2189,6 +2228,10 @@ export interface WorkerHeartbeat {
   activeJobIds?: string[];
   lastSeenAt: string;
   startedAt?: string | null;
+  /**
+   * The last ping token this worker answered, relayed to it by the agent over loopback. A client that wrote that token to agents/{agentId}.pingToken knows from this that the worker was alive after it asked. Carried on every later write, so an event landing just after the answer does not erase it.
+   */
+  answeredPing?: string | null;
 }
 /**
  * Advertised so the PWA can explain why a job is not progressing, rather than leaving it silently queued.
@@ -2208,7 +2251,7 @@ export interface GpuInfo {
   vramFreeMb: number;
 }
 /**
- * One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. Its `lastSeenAt` answers a question no worker heartbeat can, because a worker that is not running cannot say so: an agent beating with state STOPPED means the PC is on and waiting, while an agent that has gone quiet means the PC is off.
+ * One machine's supervisor, at agents/{agentId}. The document exists so that starting the worker does not require being at the machine: the PWA writes `desired` from anywhere, including a phone, and the agent — the only party that can spawn a process — writes everything else. It answers a question no worker document can, because a worker that is not running cannot say so. It is written when something happens and when a client pings it, never on a timer: a client asks by writing `pingToken`, and an agent that echoes it in `answeredPing` is on and listening, while one that does not answer within a few seconds is off.
  */
 export interface AgentReport {
   agentId: string;
@@ -2233,13 +2276,29 @@ export interface AgentReport {
    */
   restarts?: number;
   /**
-   * The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB and this one is written every heartbeat.
+   * The worker's last few output lines, so a start that fails says why on the phone that asked for it. Bounded: a Firestore document is capped at 1 MiB, and the lines travel with every write.
    */
   log?: string[];
   useEmulators?: boolean;
   projectId?: string | null;
   startedAt?: string | null;
   lastSeenAt: string;
+  /**
+   * Written by a client to ask whether this machine is there. Any fresh random string; the agent echoes it in `answeredPing` and relays it to the worker, which echoes it in WorkerHeartbeat.answeredPing. Client-owned, like `desired`: the agent never writes it.
+   */
+  pingToken?: string | null;
+  /**
+   * The server's time of the last ping, pinned to request.time by the rules, which also refuse a second ping within 15 seconds of it. A client refused by that throttle waits on the token already there.
+   */
+  pingRequestedAt?: string | null;
+  /**
+   * The uid that wrote the last ping. Separate from `requestedBy`, which says who last asked for a start or a stop and must not be overwritten by somebody merely looking.
+   */
+  pingRequestedBy?: string | null;
+  /**
+   * The last `pingToken` the agent answered. Written with a fresh `lastSeenAt` the moment the ping arrives.
+   */
+  answeredPing?: string | null;
 }
 /**
  * Something the system noticed it should remember, at preferences/{preferenceId}.
@@ -2399,6 +2458,10 @@ export interface LlmRemakeNote {
   endDeltaSec: number;
   obscure: NoteObscure;
   captions: NoteCaptions;
+  /**
+   * The parts, when the note asks for the clip to become several clips — each a start and an end in seconds from the clip's first frame. Empty when it does not. Splitting is not trimming: 'split at 35 seconds' is two parts, 0 to 35 and 35 to the end, and moves neither the start nor the end.
+   */
+  splits: SplitRange[];
   /**
    * Anything the note asked for that none of the controls above can express. Usually empty. Listing something here does not stop the remake — the rest of the note is still acted on — it records that one part of the request was understood and cannot be met, which is the difference between a refusal and a silent failure.
    *

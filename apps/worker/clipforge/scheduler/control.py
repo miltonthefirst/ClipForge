@@ -22,6 +22,18 @@ remember to start the worker".
 A kill is still the backstop when this route cannot be reached, which is right:
 a worker too wedged to answer HTTP is a worker that has to be killed.
 
+## Why there is a ping route
+
+A client asks whether this machine is there by writing a token to the agent's
+document; the agent hears it and passes it on here, and the worker answers by
+writing its own document with the same token
+(docs/adr/0030-status-on-events-and-pings.md). Relaying over loopback rather
+than having the worker listen to the agent's document as well keeps the worker
+to the listeners its own work needs, and costs nothing: the agent already talks
+to this API every few seconds. It changes nothing about what the worker does —
+it is asked to *say* something — so it does not widen what this surface can do
+to the worker, which is the property docs/adr/0011-local-control-api.md guards.
+
 ## Why ``GET /worker`` reports the pid
 
 The caller needs it to know *who it is talking to*. Two workers on one machine
@@ -45,7 +57,10 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, types only
 
 log = get_logger(__name__)
 
-__all__ = ["WorkerRoutes"]
+__all__ = ["PING_TOKEN_MAX", "WorkerRoutes"]
+
+#: The longest ping token the rules let a client write; see firestore.rules.
+PING_TOKEN_MAX = 64
 
 
 class WorkerRoutes:
@@ -64,6 +79,7 @@ class WorkerRoutes:
             ("GET", "/worker"): self.status,
             ("GET", "/worker/settings"): self.settings,
             ("POST", "/worker/shutdown"): self.shutdown,
+            ("POST", "/worker/ping"): self.ping,
         }
 
     # ── Handlers ─────────────────────────────────────────────────────────────
@@ -71,13 +87,13 @@ class WorkerRoutes:
     def status(self, _payload: dict[str, Any]) -> dict[str, Any]:
         """What this process is, and what it is currently doing.
 
-        Deliberately overlaps the Firestore heartbeat rather than replacing it.
-        The heartbeat answers "is a worker serving my queue?" from anywhere,
-        including a phone, and it is up to 30 seconds stale. This answers "is the
-        process I started still alive?" instantly, and it keeps answering when
-        Firestore is unreachable — which is exactly the failure a heartbeat
-        cannot report on its own, because a worker that cannot write its
-        heartbeat looks identical to a worker that is not running.
+        Deliberately overlaps the worker document in Firestore rather than
+        replacing it. That document answers "is a worker serving my queue?"
+        from anywhere, including a phone, when it is pinged. This answers "is
+        the process I started still alive?" instantly, and it keeps answering
+        when Firestore is unreachable — which is exactly the failure the
+        document cannot report on its own, because a worker that cannot write
+        looks identical to a worker that is not running.
         """
         started = self._worker.started_at
         settings = get_settings()
@@ -166,7 +182,7 @@ class WorkerRoutes:
                         ("GPU lane", f"{s.gpu_lane_depth} job at a time"),
                         ("CPU lanes", f"{s.cpu_lane_depth} jobs at a time"),
                         ("Lease", f"{s.lease_seconds}s"),
-                        ("Heartbeat", f"{s.heartbeat_seconds}s"),
+                        ("Lease renewal, while busy", f"{s.heartbeat_seconds}s"),
                         ("Attempts before giving up", s.max_attempts),
                     ],
                 ),
@@ -183,6 +199,19 @@ class WorkerRoutes:
             ]
         }
 
+    def ping(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Answer a client's ping, relayed by the agent. Returns without waiting.
+
+        The token is checked here rather than trusted: it is echoed into a
+        document every approved member reads, and the rules cap what a client
+        may write at 64 characters, so anything longer did not come from one.
+        """
+        token = payload.get("token")
+        if not isinstance(token, str) or not 1 <= len(token) <= PING_TOKEN_MAX:
+            raise ValueError(f"token must be a string of 1 to {PING_TOKEN_MAX} characters")
+        self._worker.ping(token)
+        return {"pinged": True, "pid": self._pid}
+
     def shutdown(self, _payload: dict[str, Any]) -> dict[str, Any]:
         """Ask the worker to stop cleanly, and return without waiting.
 
@@ -194,6 +223,9 @@ class WorkerRoutes:
         cares about.
         """
         active = self._worker.active_job_ids()
-        log.info("worker.shutdown_requested", source="localapi", active_jobs=len(active))
+        # Stop first, say so second: a request that cannot be logged must still
+        # be honoured. Logging first is how a worker whose console had gone away
+        # refused every Stop for hours.
         self._worker.request_stop()
+        log.info("worker.shutdown_requested", source="localapi", active_jobs=len(active))
         return {"stopping": True, "pid": self._pid, "activeJobIds": active}

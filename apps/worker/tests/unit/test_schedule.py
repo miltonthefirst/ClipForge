@@ -14,7 +14,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from clipforge.scheduler.schedule import ResearchScheduler, is_due, next_due
+from clipforge.scheduler.schedule import (
+    RETRY,
+    Attempt,
+    ResearchScheduler,
+    is_due,
+    may_fire,
+    next_due,
+    next_wake,
+)
 from clipforge_contracts import (
     Job,
     JobStatus,
@@ -188,3 +196,62 @@ def test_a_timezone_warning_travels_with_the_outcome() -> None:
     )
     scheduler(store).tick()
     assert "Nowhere/Land" in store.fired[0][3]
+
+
+def test_a_list_already_in_hand_is_fired_from_without_reading_the_store() -> None:
+    """The worker holds the enabled schedules from a listener, so a tick that
+    read them again would be the once-a-minute read that listener replaced."""
+
+    class Unreadable(FakeScheduleStore):
+        def enabled(self) -> list[ResearchSchedule]:
+            raise AssertionError("the store was read although the list was handed over")
+
+    store = Unreadable([])
+    assert scheduler(store).tick([schedule()]) == ["sched-1"]
+
+
+# ── The alarm ────────────────────────────────────────────────────────────────
+
+
+def test_the_alarm_is_the_earliest_due_time() -> None:
+    soon = schedule(id="soon", next_due_at=NOW + timedelta(minutes=5))
+    later = schedule(id="later", next_due_at=NOW + timedelta(hours=3))
+
+    assert next_wake([later, soon], now=NOW) == NOW + timedelta(minutes=5)
+
+
+def test_a_schedule_that_was_never_timed_wakes_the_worker_now() -> None:
+    assert next_wake([schedule(next_due_at=None)], now=NOW) == NOW
+
+
+def test_nothing_enabled_means_no_alarm_at_all() -> None:
+    """No alarm, not an alarm far away: an idle worker with no schedules has
+    nothing to wake for, and the loop sleeps until something is delivered."""
+    assert next_wake([], now=NOW) is None
+    assert next_wake([schedule(enabled=False)], now=NOW) is None
+
+
+def test_a_due_time_already_tried_waits_for_its_retry() -> None:
+    """Fired, and the listener has not yet delivered the advanced time — or lost
+    the race, or the network failed. Trying again on every pass of the loop
+    would be a transaction per pass for an answer already known."""
+    due = schedule()
+    attempts = {due.id: Attempt.after(due, now=NOW)}
+
+    assert not may_fire(due, now=NOW, attempts=attempts)
+    assert next_wake([due], now=NOW, attempts=attempts) == NOW + RETRY
+    assert may_fire(due, now=NOW + RETRY, attempts=attempts)
+
+
+def test_an_advanced_due_time_is_a_new_one_and_free_to_fire() -> None:
+    """What normally happens: the firing moved `nextDueAt`, the listener said so,
+    and the attempt recorded against the old time no longer applies."""
+    fired = schedule()
+    attempts = {fired.id: Attempt.after(fired, now=NOW - timedelta(hours=12))}
+    advanced = schedule(next_due_at=NOW - timedelta(seconds=1))
+
+    assert may_fire(advanced, now=NOW, attempts=attempts)
+
+
+def test_a_schedule_that_is_not_due_may_not_fire_whatever_was_tried() -> None:
+    assert not may_fire(schedule(next_due_at=NOW + timedelta(hours=1)), now=NOW, attempts={})

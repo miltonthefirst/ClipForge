@@ -184,6 +184,22 @@ per clip:
 | **Fix it to one side** | The subject stays put, off-centre | Nothing; it is the default with a different anchor |
 | **Move it by hand** | The automatic answers got it wrong | Your time, per clip — seedable from whatever the last remake did |
 
+**Splitting into parts.** A clip can become several. There are two ways to ask:
+
+- Write it in the note: *"split this into two, beginning to 35s then 35s to the end"*.
+- Set each part's start and end in **Split into parts**. Type a time such as `0:35`, or pause the
+  player and press *here*. *Evenly into 2, 3 or 4* fills the list in for you.
+- From a terminal: `clipforge-worker remake CLIP_ID --split 0-35 --split 35-50.7`.
+
+Parts may overlap or leave a gap. There can be up to 20 of them, and each can reach up to 30 seconds
+past either end of the clip.
+
+Everything else in the remake is applied first, and the result is what gets cut. So each part keeps
+the framing, captions, voice and music, and parts that stay inside the clip don't need the source
+video. Each part arrives in the review queue as its own clip, titled *(Part 1/2)* and so on. A
+single part is a precise trim of the same clip. See
+[ADR-0029](docs/adr/0029-splitting-a-clip-into-parts.md).
+
 **Voice and language.** Optional, and needs one extra install:
 
 ```bash
@@ -738,10 +754,22 @@ machine listens for the internet and the attack surface does not grow. The PWA
 writes what it wants (`desired: RUNNING | STOPPED`); the agent writes what is
 actually happening, and `firestore.rules` keeps those two halves apart.
 
-It also answers the question a worker heartbeat structurally cannot. A worker
-that is not running cannot send a heartbeat saying so, so "the PC is on and
-waiting" and "the PC is off" look identical from a phone. The agent keeps
-reporting either way.
+It also answers the question a worker document structurally cannot. A worker
+that is not running cannot say so, so "the PC is on and waiting" and "the PC is
+off" look identical from a phone. The agent answers either way — when asked.
+
+**Nothing on the PC writes on a timer.** Every Firestore write is also a read for
+every listener open on it, so neither the agent nor the worker beats any more:
+they write when something happens (a start or stop, a job claimed, a stage with
+news, a job finished), and the worker finds work through a listener rather than
+by polling. To find out whether the machine is there, the app **pings** it —
+writes a fresh token to `agents/{machine}.pingToken` when the Jobs or Worker page
+opens, when you press **Check now**, and before Start or Stop. The agent echoes
+it in `answeredPing` within a second or two and relays it to the worker over
+loopback, which echoes it in `workers/{id}.answeredPing`. No answer within 15
+seconds means the PC is off or asleep; the panel says when it last checked. The
+rules allow one ping per machine per 15 seconds. An idle PC makes no Firestore
+request at all. See [ADR-0030](docs/adr/0030-status-on-events-and-pings.md).
 
 A few properties worth knowing, each of which exists because of the alternative:
 
@@ -755,10 +783,24 @@ A few properties worth knowing, each of which exists because of the alternative:
   until it has failed five times in a row — after which the agent leaves the
   reason on screen instead of retrying. Pressing Start again clears that.
 - **It does not stop the worker when it exits.** The agent supervises the worker,
-  it does not own it.
+  it does not own it. Neither does the desktop app. A worker that outlives whatever
+  started it writes its output to `~/.clipforge/worker.log` from then on.
 
 See [ADR-0012](docs/adr/0012-machine-agent.md) for the whole design, including
 why it is a logon task rather than a Windows service.
+
+**Restarting onto new code.** Stopping the agent does not stop the worker, so a
+code change needs both restarted. Stop the worker first — the panel's Stop, or
+`POST /worker/shutdown` on the control API, which hands its jobs back — then
+`tools/agent.ps1 -Stop` and `tools/agent.ps1 -Start`. With the wish still at
+RUNNING the restarted agent starts a fresh worker on its own; otherwise press
+Start.
+
+**A failed job can be sent back.** *Resubmit*, on a failed job's card or its page,
+returns the same job to the queue with the same settings and a fresh set of
+attempts. Stages that finished are kept, so a clip that failed while rendering does
+not download and transcribe again. From a terminal, `clipforge-worker resubmit
+JOB_ID` does the same. See [ADR-0028](docs/adr/0028-resubmitting-a-failed-job.md).
 
 ## Testing tiers
 
@@ -789,7 +831,7 @@ Stated plainly, because they are real:
 - **No push notifications yet.** FCM was scoped for the review loop and has not been built, so you
   find out a clip is ready by opening the app rather than by being told.
 - **The worker machine has to be switched on.** The agent can start the worker from anywhere, but it
-  cannot start the PC — there is no wake-on-LAN here. An agent that has stopped reporting is the app
+  cannot start the PC — there is no wake-on-LAN here. An agent that does not answer a ping is the app
   saying exactly that.
 - **Publishing third-party content is your responsibility.** See below.
 - **Windows-first.** The worker is developed and tested on Windows. Nothing is deliberately
