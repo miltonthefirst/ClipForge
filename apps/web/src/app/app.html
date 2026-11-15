@@ -42,15 +42,18 @@
       }
 
       @if (approved() && routeLabel(); as label) {
-        <span
-          class="ml-1 rounded-full border px-2 py-0.5 text-xs"
+        <!-- A link to the Worker page's Home wifi card, where this device can be
+             checked and its local network permission asked for again. -->
+        <a
+          routerLink="/settings/worker"
+          class="ml-1 rounded-full border px-2 py-0.5 text-xs hover:bg-line"
           [class]="atHome() ? 'border-forge-600/40 text-forge-600' : 'border-line text-ink-subtle'"
           [title]="
             atHome()
-              ? 'Clips play straight off the PC, over the home wifi.'
-              : 'Away from the PC: clips play from their cloud copies.'
+              ? 'Clips play straight off the PC, over the home wifi. Tap to check this device.'
+              : 'Clips play from their cloud copies. At home? Tap to check this device.'
           "
-          >{{ label }}</span
+          >{{ label }}</a
         >
       }
 

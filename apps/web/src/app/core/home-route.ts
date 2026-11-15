@@ -272,6 +272,195 @@ export class HomeRouteService implements HomeMedia {
       if (!current) this.again = true;
     }
   }
+
+  // ── Checking this device, by hand (the Worker page's Home wifi card) ───────
+
+  /**
+   * The browser's local network permission for this site.
+   *
+   * Chrome asks before a public page may reach a device on the local network
+   * (Local Network Access); the permission's name has changed between
+   * versions, so both are tried. A browser that knows neither (Safari, older
+   * Chrome) says `unknown`, and only an actual request tells.
+   */
+  async localAccess(): Promise<LocalAccess> {
+    const permissions = (globalThis.navigator as Navigator | undefined)?.permissions;
+    if (!permissions?.query) return 'unknown';
+    for (const name of ['local-network-access', 'local-network']) {
+      try {
+        const status = await permissions.query({ name: name as PermissionName });
+        return status.state;
+      } catch {
+        // Not a permission this browser knows; try the other name.
+      }
+    }
+    return 'unknown';
+  }
+
+  /**
+   * Walk the route the way a clip will, one step at a time, and say which
+   * step fails and what to do about it.
+   *
+   * The first request is also what makes Chrome ask its local network
+   * question, so pressing "Check" (or "Allow access") is how a person who has
+   * not answered it yet gets asked. A blocked permission cannot be asked
+   * again from a page; the card says where to change it.
+   *
+   * The last step asks the PC for a clip that does not exist: "no such clip"
+   * means the sign-in was checked and the account is approved, without
+   * copying anything.
+   */
+  async diagnose(fetchImpl: typeof fetch = fetch): Promise<CheckStep[]> {
+    if (inDesktopShell()) {
+      return [
+        {
+          id: 'desktop',
+          label: 'This is the desktop app on the PC',
+          state: 'pass',
+          detail:
+            'It plays straight from the PC itself; the home wifi route is for phones and other devices.',
+        },
+      ];
+    }
+    const steps: CheckStep[] = [];
+    const url = this.url();
+    if (!url) {
+      steps.push({
+        id: 'advertised',
+        label: 'The PC offers the route',
+        state: 'fail',
+        detail:
+          'The PC is not offering it: it is switched off, still getting its certificate, or the PC is off. An admin switches it on above.',
+      });
+      return steps;
+    }
+    steps.push({
+      id: 'advertised',
+      label: 'The PC offers the route',
+      state: 'pass',
+      detail: url,
+    });
+
+    const started = Date.now();
+    let reached = false;
+    try {
+      const response = await fetchImpl(`${url}/hello`, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(4_000),
+      });
+      const answer = response.ok
+        ? ((await response.json()) as { service?: string; station?: string; version?: string })
+        : null;
+      if (answer?.service === HOME_SERVICE) {
+        reached = true;
+        steps.push({
+          id: 'reach',
+          label: 'This device reaches the PC over the wifi',
+          state: 'pass',
+          detail: `Answered in ${Date.now() - started} ms (${answer.station}, ${answer.version}).`,
+        });
+        steps.push({
+          id: 'secure',
+          label: 'The connection is secure',
+          state: 'pass',
+          detail: "The PC's certificate checked out.",
+        });
+      } else {
+        steps.push({
+          id: 'reach',
+          label: 'This device reaches the PC over the wifi',
+          state: 'fail',
+          detail: 'Something answered at that address, but not ClipForge.',
+        });
+      }
+    } catch {
+      const access = await this.localAccess();
+      steps.push({
+        id: 'reach',
+        label: 'This device reaches the PC over the wifi',
+        state: 'fail',
+        detail:
+          access === 'denied'
+            ? "This browser is blocking ClipForge from the local network. Allow it in the site's settings (steps below), then check again."
+            : 'No answer. Is this device on the home wifi? Away from home this is expected, and clips play from the cloud.',
+      });
+    }
+    if (!reached) {
+      this.home.set(false);
+      return steps;
+    }
+
+    const user = this.session.user();
+    if (!user) {
+      steps.push({
+        id: 'signin',
+        label: 'Your sign-in is accepted',
+        state: 'fail',
+        detail: 'Not signed in.',
+      });
+      return steps;
+    }
+    try {
+      const token = await user.getIdToken();
+      const response = await fetchImpl(`${url}/media-links`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'clip', id: 'home-route-check' }),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(8_000),
+      });
+      const verdicts: Record<number, CheckStep> = {
+        404: {
+          id: 'signin',
+          label: 'Your sign-in is accepted',
+          state: 'pass',
+          detail: 'Signed in and approved: clips will play from the PC.',
+        },
+        403: {
+          id: 'signin',
+          label: 'Your sign-in is accepted',
+          state: 'fail',
+          detail:
+            'The PC says this account is not approved. An admin approves it on the People page.',
+        },
+        401: {
+          id: 'signin',
+          label: 'Your sign-in is accepted',
+          state: 'fail',
+          detail: 'The PC could not check the sign-in. Sign out and in again, then check again.',
+        },
+      };
+      steps.push(
+        verdicts[response.status] ?? {
+          id: 'signin',
+          label: 'Your sign-in is accepted',
+          state: 'fail',
+          detail: `The PC answered ${response.status}.`,
+        },
+      );
+    } catch {
+      steps.push({
+        id: 'signin',
+        label: 'Your sign-in is accepted',
+        state: 'fail',
+        detail: 'The PC stopped answering part-way through. Check again in a moment.',
+      });
+    }
+    // A full pass means playback can use the route from now on.
+    await this.check(fetchImpl);
+    return steps;
+  }
+}
+
+/** The browser's local network permission, where it has one. */
+export type LocalAccess = 'granted' | 'prompt' | 'denied' | 'unknown';
+
+/** One step of {@link HomeRouteService.diagnose}. */
+export interface CheckStep {
+  readonly id: 'desktop' | 'advertised' | 'reach' | 'secure' | 'signin';
+  readonly label: string;
+  readonly state: 'pass' | 'fail';
+  readonly detail: string;
 }
 
 function inDesktopShell(): boolean {

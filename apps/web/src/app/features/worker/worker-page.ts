@@ -12,7 +12,8 @@ import type { HomeRouteDesired, HomeRouteState } from '@clipforge/contracts';
 
 import { WorkersRepository } from '../../core/data/workers';
 import { CLIPFORGE_CONFIG } from '../../core/firebase';
-import { HomeRouteService } from '../../core/home-route';
+import { type CheckStep, HomeRouteService, type LocalAccess } from '../../core/home-route';
+import { deviceLabel } from '../../core/notifications';
 import {
   LocalApiService,
   type WorkerSelfReport,
@@ -80,6 +81,27 @@ export class WorkerPage implements OnDestroy {
     return percent < 1 && used > 0 ? '<1%' : `${Math.round(percent)}%`;
   }
 
+  // ── Checking this device ──────────────────────────────────────────────────
+  protected readonly access = signal<LocalAccess>('unknown');
+  protected readonly checks = signal<readonly CheckStep[] | null>(null);
+  protected readonly checkingDevice = signal(false);
+  /** "Android", "iPhone", "Windows"…: which steps to show for a blocked permission. */
+  protected readonly platform = deviceLabel().split(' · ')[0];
+
+  /**
+   * Run the device check. Also what makes the browser ask its local network
+   * question, when it has not asked yet: the first request to the PC does.
+   */
+  protected async checkDevice(): Promise<void> {
+    this.checkingDevice.set(true);
+    try {
+      this.checks.set(await this.homeRoute.diagnose());
+    } finally {
+      this.access.set(await this.homeRoute.localAccess());
+      this.checkingDevice.set(false);
+    }
+  }
+
   protected readonly routeStateLabel = computed(() => {
     const state = this.route()?.state;
     return state ? ROUTE_STATES[state] : null;
@@ -110,6 +132,7 @@ export class WorkerPage implements OnDestroy {
   private ticker: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
+    void this.homeRoute.localAccess().then((state) => this.access.set(state));
     void this.refresh();
     // Slow on purpose: this page is read, not watched, and the panel above it
     // already polls the things that change second to second.

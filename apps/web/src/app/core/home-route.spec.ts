@@ -212,3 +212,103 @@ describe('HomeRouteService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('HomeRouteService.diagnose', () => {
+  const agents = signal<AgentReport[] | null>(null);
+
+  function service(): HomeRouteService {
+    TestBed.configureTestingModule({
+      providers: [
+        {
+          provide: SessionService,
+          useValue: {
+            approved: signal(true),
+            user: signal({ getIdToken: async () => 'id-token' }),
+          },
+        },
+        {
+          provide: WorkersRepository,
+          useValue: {
+            agents: () => ({
+              data: agents,
+              loading: signal(false),
+              error: signal(null),
+              release: () => undefined,
+            }),
+          },
+        },
+      ],
+    });
+    const created = TestBed.inject(HomeRouteService);
+    TestBed.tick();
+    return created;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    TestBed.resetTestingModule();
+  });
+
+  function fetchWith(linkStatus: number) {
+    return vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith('/hello')
+        ? json({ service: HOME_SERVICE, station: 'tower', version: '0.0.7' })
+        : json({ detail: 'x' }, linkStatus),
+    );
+  }
+
+  it('passes every step on the home wifi with an approved account', async () => {
+    agents.set([agent()]);
+    const fetchMock = fetchWith(404);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const steps = await service().diagnose(fetchMock);
+
+    expect(steps.map((s) => [s.id, s.state])).toEqual([
+      ['advertised', 'pass'],
+      ['reach', 'pass'],
+      ['secure', 'pass'],
+      ['signin', 'pass'],
+    ]);
+  });
+
+  it('says so when the account is not approved', async () => {
+    agents.set([agent()]);
+    const fetchMock = fetchWith(403);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const steps = await service().diagnose(fetchMock);
+
+    expect(steps.at(-1)).toMatchObject({ id: 'signin', state: 'fail' });
+    expect(steps.at(-1)?.detail).toContain('not approved');
+  });
+
+  it('stops at the first step when the PC is not offering the route', async () => {
+    agents.set([agent({ home: { state: 'OFF', url: null } })]);
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const steps = await service().diagnose(fetchMock);
+
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ id: 'advertised', state: 'fail' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('blames a blocked browser permission when that is what it is', async () => {
+    agents.set([agent()]);
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      permissions: { query: async () => ({ state: 'denied' }) },
+    });
+
+    const steps = await service().diagnose(fetchMock);
+
+    expect(steps.at(-1)).toMatchObject({ id: 'reach', state: 'fail' });
+    expect(steps.at(-1)?.detail).toContain('blocking');
+  });
+});
