@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = HERE.parent
@@ -95,9 +96,26 @@ def main() -> int:
     args = parser.parse_args()
 
     os.environ.setdefault("ACESTEP_CHECKPOINTS_DIR", str(PACKAGE / "checkpoints"))
+    # Nothing is downloaded during a measurement: a missing file must fail
+    # loudly, not start a multi-GB fetch that looks like a hung generation.
+    os.environ["HF_HUB_OFFLINE"] = "1"
     OUT.mkdir(exist_ok=True)
 
     import torch
+
+    # ACE-Step counts the 1.7B LM as part of the "main model" and fetches the
+    # whole 10 GB repository when its weights are absent. The 6 GB tier runs
+    # without the LM, so only the three parts it loads are required here.
+    import acestep.core.generation.handler.init_service_downloads as downloads
+    from acestep.model_downloader import _contains_model_weights
+
+    def dit_tier_present(checkpoints_dir: Any = None) -> bool:
+        root = Path(checkpoints_dir or os.environ["ACESTEP_CHECKPOINTS_DIR"])
+        parts = ("acestep-v15-turbo", "vae", "Qwen3-Embedding-0.6B")
+        return all(_contains_model_weights(root / part) for part in parts)
+
+    downloads.check_main_model_exists = dit_tier_present
+
     from acestep.handler import AceStepHandler
     from acestep.inference import GenerationConfig, GenerationParams, generate_music
 
