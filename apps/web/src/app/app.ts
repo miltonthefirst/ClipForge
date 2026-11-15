@@ -10,6 +10,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { SignInPage } from './features/auth/sign-in-page';
 import { FirebaseService } from './core/firebase';
+import { AppUpdateService } from './core/app-update';
 import { HomeRouteService } from './core/home-route';
 import { SessionService } from './core/session';
 import { ThemeService } from './core/theme';
@@ -50,6 +51,27 @@ export class App {
    */
   protected readonly routeLabel = this.homeRoute.label;
   protected readonly atHome = this.homeRoute.home;
+
+  /**
+   * Which build this is, and whether a newer one is waiting (core/app-update.ts).
+   * Copied from Sarungano: the sidebar says the app's version and the PC's, and
+   * a new version announces itself once, the first time it opens.
+   */
+  private readonly update = inject(AppUpdateService);
+  protected readonly appVersion = this.update.label;
+  protected readonly builtAt = new Date(this.update.builtAt).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  protected readonly pcVersion = computed(() => this.homeRoute.machine()?.version ?? null);
+  protected readonly updateReady = this.update.ready;
+  protected readonly updatedTo = this.update.updatedTo;
+
+  protected reloadForUpdate(): void {
+    void this.update.reload();
+  }
 
   /**
    * A redirect sign-in that failed. Shown rather than swallowed: the whole

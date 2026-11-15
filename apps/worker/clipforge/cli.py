@@ -801,6 +801,76 @@ def compile(  # noqa: A001 - the verb is the command
     typer.echo(job.id)
 
 
+@app.command(name="agent-wish")
+def agent_wish(
+    target: str = typer.Argument(..., help="worker (RUNNING|STOPPED), home (ON|OFF) or show."),
+    value: str = typer.Argument("", help="What to wish for; empty with `show`."),
+    wait: float = typer.Option(120.0, help="Seconds to wait for a worker wish to come true."),
+    by: str = typer.Option("cli", help="Recorded as who asked."),
+) -> None:
+    """Write a wish to this machine's agent, as the phone does, and print its state.
+
+    The supported way to restart the worker from a script (tools/release.py):
+    `agent-wish worker STOPPED`, then `agent-wish worker RUNNING`. Prints one
+    line of JSON: the agent's state, version and home route, and how many jobs
+    are running or queued, so a caller can tell whether a restart is safe.
+    Run it as `python -m clipforge agent-wish ...` when the venv must stay
+    unlocked for `uv sync`.
+    """
+    import json
+    import time
+    from datetime import UTC, datetime
+
+    from google.cloud import firestore as gcf
+
+    from clipforge.store.firestore import AgentStore, firestore_client
+
+    settings = get_settings()
+    client = firestore_client(settings)
+    ref = client.collection("agents").document(AgentStore(client, settings).agent_id)
+    now = datetime.now(UTC).isoformat()
+
+    if target == "worker":
+        if value not in ("RUNNING", "STOPPED"):
+            raise typer.BadParameter("worker takes RUNNING or STOPPED")
+        ref.update({"desired": value, "requestedBy": by, "requestedAt": now})
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if (ref.get().to_dict() or {}).get("state") == value:
+                break
+            time.sleep(2)
+    elif target == "home":
+        if value not in ("ON", "OFF"):
+            raise typer.BadParameter("home takes ON or OFF")
+        ref.update(
+            {"homeRouteDesired": value, "homeRouteRequestedBy": by, "homeRouteRequestedAt": now}
+        )
+    elif target != "show":
+        raise typer.BadParameter("target is worker, home or show")
+
+    document = ref.get().to_dict() or {}
+    home = document.get("home") or {}
+
+    def count(status: str) -> int:
+        query = client.collection("jobs").where(filter=gcf.FieldFilter("status", "==", status))
+        return len(list(query.limit(50).stream()))
+
+    typer.echo(
+        json.dumps(
+            {
+                "agent": ref.id,
+                "state": document.get("state"),
+                "desired": document.get("desired"),
+                "version": document.get("version"),
+                "workerPid": document.get("workerPid"),
+                "home": {"state": home.get("state"), "url": home.get("url")},
+                "running": count("RUNNING"),
+                "queued": count("QUEUED"),
+            }
+        )
+    )
+
+
 @app.command(name="import-tracks")
 def import_tracks(
     manifest: str = typer.Argument(..., help="The generator's manifest file."),

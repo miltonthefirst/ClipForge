@@ -29,6 +29,18 @@
       <img src="icons/mark.png" alt="" width="28" height="28" class="h-7 w-7 shrink-0" />
       <span class="text-lg font-semibold tracking-tight">ClipForge</span>
 
+      @if (updateReady()) {
+        <!-- A newer build is downloaded. Leaving the app switches to it on its
+             own; this does it now. core/app-update.ts. -->
+        <button
+          type="button"
+          class="ml-1 rounded-full border border-forge-600/40 bg-forge-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-forge-700"
+          (click)="reloadForUpdate()"
+        >
+          Update ready
+        </button>
+      }
+
       @if (approved() && routeLabel(); as label) {
         <span
           class="ml-1 rounded-full border px-2 py-0.5 text-xs"
@@ -148,6 +160,15 @@
             </a>
           }
         </nav>
+
+        <!-- Which build this device runs, and which the PC runs: both matter
+             when something looks different from what was expected. -->
+        <div
+          class="mt-6 border-t border-line px-6 py-3 text-[11px] leading-relaxed text-ink-subtle"
+        >
+          <p>App {{ appVersion }} · built {{ builtAt }}</p>
+          <p>PC {{ pcVersion() ?? 'not heard from yet' }}</p>
+        </div>
       </aside>
 
       @if (navOpen()) {
@@ -219,3 +240,16 @@
     </main>
   </div>
 </div>
+
+@if (updatedTo(); as version) {
+  <!-- Proof the new version reached this device, shown once. core/app-update.ts. -->
+  <div
+    class="pointer-events-none fixed inset-x-0 top-16 z-50 flex justify-center px-4"
+    role="status"
+    aria-live="polite"
+  >
+    <p class="rounded-full border border-line bg-panel px-4 py-2 text-sm text-ink shadow-lg">
+      Updated to version {{ version }}
+    </p>
+  </div>
+}

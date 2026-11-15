@@ -10,6 +10,7 @@
     {
       "site": "bytepic-clipforge",
       "public": "apps/web/dist/web/browser",
+      "predeploy": ["node tools/check-release.mjs apps/web/src/app/build-info.ts"],
       "ignore": ["firebase.json", "**/.*", "**/node_modules/**", "**/*.map"],
       "rewrites": [{ "source": "**", "destination": "/index.html" }],
       "headers": [

@@ -116,3 +116,6 @@ emulator-data/
 # NOTE: deliberately NOT `models/` - apps/worker/clipforge/models is source.
 .huggingface/
 whisper-models/
+
+# Generated before every web build by tools/stamp-build.mjs: which version, commit and time.
+apps/web/src/app/build-info.ts

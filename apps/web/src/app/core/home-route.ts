@@ -90,6 +90,12 @@ export class HomeRouteService implements HomeMedia {
         ?.data()
         ?.find((agent) => !!agent.home?.url) ?? null,
   );
+  /**
+   * The freshest machine, route or not. The app shell reads its version from
+   * here, so showing which build the PC runs costs no listener of its own.
+   */
+  readonly machine: Signal<AgentReport | null> = computed(() => this.held()?.data()?.[0] ?? null);
+
   /** Where the PC says it can be reached at home, for an account that would use it. */
   readonly url = computed(() => this.agent()?.home?.url ?? null);
 
