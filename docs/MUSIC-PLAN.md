@@ -9,7 +9,12 @@
 music for our youtube channel that's already connected". The owner's answers the
 same day: standalone tracks are wanted ("all that can make more views possible"),
 and the M1 spike is approved. **M1 ran 2026-11-15: it fits, and it is fast** (§3,
-M1 results). Waiting on the owner's listening verdict before M2.
+M1 results). The first slice of M2 is built and live: the library
+(`tracks/{id}`, `clipforge-worker import-tracks`) and a **Music page** that plays
+each track from the PC (over the home wifi on a phone, through the loopback file
+server in the desktop app) and records Keep or Discard. The twelve M1 tracks are
+in it, waiting on the owner's verdict. Generating from the app (the job, the
+broker class, the package proper) is the rest of M2.
 
 ## 1. Why
 
