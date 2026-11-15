@@ -25,6 +25,27 @@
         "No self-test button: the Worker page shows the certificate, the token, the firewall rule and whether this device reaches the PC"
       ],
       "pendingUpstream": []
+    },
+    "releases": {
+      "version": "1.0.0",
+      "adopted": "2026-11-15",
+      "where": [
+        "VERSION",
+        "tools/release.py",
+        "tools/stamp-build.mjs",
+        "tools/check-release.mjs",
+        "firebase.json (predeploy on hosting:bytepic-clipforge)",
+        "apps/web/src/app/core/app-update.ts",
+        "apps/web/src/app/app.ts and app.html (version line, Update ready, Updated to)",
+        "apps/worker/tests/unit/test_version.py",
+        "docs/RELEASING.md"
+      ],
+      "deviations": [
+        "Keeps Angular's service worker (PLAN.md Phase 7's offline shell) and uses app-update.ts for the newest build",
+        "The backend restarts through the machine agent's wish and uv sync, skipped (not paused) while a job is running or queued; --restart finishes it later",
+        "The release deploys every target (rules, indexes, storage, the PWA, the site) through tools/deploy.ps1"
+      ],
+      "pendingUpstream": []
     }
   }
 }
