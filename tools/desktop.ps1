@@ -38,6 +38,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# npm now prints `npm notice run npx` to stderr before every script. Windows
+# PowerShell 5.1 (the only PowerShell on the reference machine) turns a native
+# command's stderr into an error record, and with 'Stop' above that aborts the
+# script before anything runs. Notices are not worth that; warnings still show.
+$env:npm_config_loglevel = 'warn'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 

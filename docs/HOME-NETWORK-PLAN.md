@@ -9,7 +9,9 @@
 **`home-route` blueprint 1.1.0** (`P:/Experiments/blueprints/home-route`),
 which was extracted that day from Sarungano's home wifi route (live on this PC
 since 2026-11-01) and then extended with what ClipForge needed (§5b, media by
-id). The owner's setup (§3) was done and checked the same day. The decision
+id). The owner's setup (§3) was done and checked the same day, and the route
+went live at 11:42 UTC: certificate from Let's Encrypt (expires 2027-02-13,
+renewed by the agent), agent 0.0.3 serving `https://clipforge-home.bytepic.dev:8768`. The decision
 record is [ADR-0031](adr/0031-the-home-wifi-route.md).
 
 Where it lives:
