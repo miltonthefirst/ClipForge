@@ -8,7 +8,8 @@
 **Status:** planned 2026-11-15, from the owner's ask: "a feature for generating
 music for our youtube channel that's already connected". The owner's answers the
 same day: standalone tracks are wanted ("all that can make more views possible"),
-and the M1 spike is approved. M1 started 2026-11-15.
+and the M1 spike is approved. **M1 ran 2026-11-15: it fits, and it is fast** (§3,
+M1 results). Waiting on the owner's listening verdict before M2.
 
 ## 1. Why
 
@@ -48,6 +49,46 @@ and the M1 spike is approved. M1 started 2026-11-15.
 - **Stop here if** peak VRAM leaves no room under 5.4 GB with the desktop open,
   or if quality is not usable. Fallback: a curated CC0 or royalty-free library
   behind the same Track contract.
+
+#### M1 results (2026-11-15)
+
+ACE-Step 1.5 at commit `ca1e85f`, the 2B turbo DiT only (no LM), INT8
+weight-only with `torch.compile`, full CPU offload, 8 steps, instrumental, one
+seed. RTX 3050 6 GB, torch 2.7.1+cu128, Windows 11. Card baseline 624 MiB
+(desktop plus an idle ComfyUI). Raw numbers: `packages/ngoma/out/measurements.jsonl`.
+
+| Length | Generate (warm) | Faster than real time | torch peak | Card peak | RAM peak, fresh process |
+|---|---|---|---|---|---|
+| 30 s | 7.4 to 10.7 s | 2.8x to 4.1x | 4.6 to 4.8 GB | 5.4 to 5.6 GB | 11.4 GB |
+| 60 s | 11.8 to 12.2 s | about 5x | 4.9 GB | 5.7 GB | not measured alone |
+| 180 s | 24.2 to 26.4 s | about 7x | 4.9 GB | 5.7 GB | 11.5 GB |
+
+Model load: 2 to 4 s. All five prompts at 30 s and 60 s, and two at 180 s, made audio.
+
+What this settles:
+
+- **It fits, with little to spare.** The card peaks around 5.7 of 6.1 GB, the
+  §2.1 budget almost exactly. It must run alone on the GPU lane: ComfyUI or
+  Ollama holding the card at the same time would not fit, so the broker's
+  exclusivity is required, not optional.
+- **INT8 with `torch.compile` works on Windows.** The plain-offload fallback
+  was not needed.
+- **One process per batch, then exit.** Eleven tracks in one process grew
+  peak RAM from 11 GB to 23 GB, and the twelfth (180 s) died with a
+  segmentation fault while offloading. The same 180 s track in a fresh process
+  peaked at 11.5 GB and finished in 26 s. This was already the plan for
+  releasing the GPU; it is now also the fix for memory. A batch is capped at a
+  few tracks.
+- **Length is not the constraint.** A 3-minute track takes under half a
+  minute, so full-length uploads (M4) are cheap.
+- **ACE-Step's start-up check wants the 1.7B LM**, and downloads the whole
+  10 GB repository when it is missing. The spike replaces that one check with
+  the three parts it loads and sets `HF_HUB_OFFLINE=1`; `ngoma` must do the
+  same.
+
+Still open: **quality, by ear.** The tracks are in `packages/ngoma/out/`
+(`int8-30s/`, `int8-60s/`, `int8-180s/`, one per prompt; `measurements.jsonl`
+maps each file to its prompt). M2 starts once the owner says they are usable.
 
 ### Phase M2: the generator and the library
 
