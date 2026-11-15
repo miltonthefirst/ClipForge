@@ -247,7 +247,7 @@ def agent(
         backoff_seconds=settings.agent_restart_backoff_seconds,
         shutdown_grace_seconds=settings.agent_shutdown_grace_seconds,
     )
-    from clipforge.home.clips import ClipMedia
+    from clipforge.home.clips import WorkspaceMedia
     from clipforge.home.service import HomeRouteService
     from clipforge.version import __version__
 
@@ -259,7 +259,7 @@ def agent(
         settings,
         station_id=settings.worker_id,
         version=__version__,
-        media_link=ClipMedia.from_firestore(settings, client),
+        media_link=WorkspaceMedia.from_firestore(settings, client),
         # Late-bound: the agent below is what a new report wakes.
         on_change=lambda: runner.wake(),
     )
@@ -799,6 +799,33 @@ def compile(  # noqa: A001 - the verb is the command
     job = new_compile_job(uid=uid, options=options)
     JobStore(firestore_client(settings), settings).create(job)
     typer.echo(job.id)
+
+
+@app.command(name="import-tracks")
+def import_tracks(
+    manifest: str = typer.Argument(..., help="The generator's manifest file."),
+) -> None:
+    """Add generated music to the library, so it can be heard from the app.
+
+    Copies each file the manifest lists into the worker's workspace/music/generated
+    and records it at tracks/{id} as NEW. A phone at home plays it over the home
+    wifi; the desktop app through the loopback file server. Importing the same
+    file again changes nothing a person decided. See docs/MUSIC-PLAN.md.
+    """
+    from clipforge.home.clips import worker_workspace
+    from clipforge.store.firestore import TrackStore, firestore_client
+    from clipforge.tracks import import_manifest
+
+    settings = get_settings()
+    store = TrackStore(firestore_client(settings), settings)
+    result = import_manifest(Path(manifest).resolve(), worker_workspace(settings) / "music", store)
+    where = "the local emulators" if settings.use_emulators else settings.firebase_project_id
+    typer.echo(
+        f"{len(result.added)} added, {len(result.updated)} already there, "
+        f"{len(result.skipped)} skipped ({where})"
+    )
+    for skipped in result.skipped:
+        typer.echo(f"  skipped (missing, or not audio): {skipped}")
 
 
 @app.command(name="fetch-voices")

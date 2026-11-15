@@ -344,6 +344,10 @@ export type TrendSource1 = 'GOOGLE_TRENDS' | 'REDDIT' | 'YOUTUBE';
  */
 export type TrendStatus = 'NEW' | 'PROMOTED' | 'DISMISSED';
 /**
+ * What a person decided about a generated track. NEW is nothing yet. KEPT means it may go under a clip or out as a video of its own (docs/MUSIC-PLAN.md). DISCARDED is a considered no; the file stays on the PC until the collector or a person removes it.
+ */
+export type TrackStatus = 'NEW' | 'KEPT' | 'DISCARDED';
+/**
  * How often an automatic research run fires. INTERVAL is every N hours from whenever it last ran; DAILY is at a wall-clock time in a named timezone, which is what 'every morning' means to a person and what an interval cannot express across a clock change.
  */
 export type ScheduleCadence = 'INTERVAL' | 'DAILY';
@@ -377,6 +381,7 @@ export interface ClipForgeContracts {
   llmRemakeNote?: LlmRemakeNote;
   llmClipResponse?: LlmClipResponse;
   trend?: Trend;
+  track?: Track;
   researchOptions?: ResearchOptions;
   llmTrendVerdict?: LlmTrendVerdict;
   compileOptions?: CompileOptions;
@@ -2962,6 +2967,43 @@ export interface TrendVideo {
    */
   score: number;
   via: TrendSource1;
+}
+/**
+ * One piece of music made on this PC, at tracks/{trackId} (docs/MUSIC-PLAN.md). Written by the worker, from the generator's own record of what it made; decided on by a person. The file never leaves the PC on its own: a phone plays it over the home wifi (docs/HOME-NETWORK-PLAN.md), the desktop app through the loopback file server. The id is derived from the audio's bytes, so importing the same file twice is one track.
+ */
+export interface Track {
+  id: string;
+  title: string;
+  /**
+   * What the model was asked for: a style, never an artist.
+   */
+  prompt: string;
+  seconds: number;
+  bpm?: number | null;
+  key?: string | null;
+  instrumental: boolean;
+  seed?: number | null;
+  steps?: number | null;
+  /**
+   * The generator and checkpoint, e.g. ACE-Step 1.5 acestep-v15-turbo (int8).
+   */
+  model: string;
+  /**
+   * The model's licence and what it says about using its output, as read at generation time.
+   */
+  licence: string;
+  /**
+   * How long it took to make, warm, on this PC.
+   */
+  generateSeconds?: number | null;
+  /**
+   * Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server.
+   */
+  localPath: string;
+  status: TrackStatus;
+  createdAt: string;
+  decidedAt?: string | null;
+  decidedBy?: string | null;
 }
 /**
  * What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.

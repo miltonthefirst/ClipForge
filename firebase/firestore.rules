@@ -978,6 +978,23 @@ service cloud.firestore {
       allow delete: if isApproved();
     }
 
+    // ── Tracks: generated music ──────────────────────────────────────────────
+    //
+    // Written by the worker (`import-tracks`, later the GENERATE_MUSIC job),
+    // decided on by a person, exactly as trends are. The client's one power is
+    // the verdict, Keep or Discard, with who and when; it can neither make a
+    // track nor point one at a different file, because `localPath` is what the
+    // home route serves (docs/MUSIC-PLAN.md, docs/HOME-NETWORK-PLAN.md).
+    match /tracks/{trackId} {
+      allow read: if isApproved();
+      allow create, delete: if false;
+      allow update: if isApproved()
+                    && changed().hasOnly(['status', 'decidedAt', 'decidedBy'])
+                    && request.resource.data.status in ['NEW', 'KEPT', 'DISCARDED']
+                    && request.resource.data.decidedBy == request.auth.uid
+                    && request.resource.data.decidedAt is string;
+    }
+
     // ── Preferences ──────────────────────────────────────────────────────────
     //
     // What the system has worked out about a reviewer from their corrections,

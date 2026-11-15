@@ -49,6 +49,7 @@ from clipforge_contracts import (
     SourcePreview,
     SourceProvider,
     StageStatus,
+    Track,
     TranscriptRef,
     Trend,
     WorkerHeartbeat,
@@ -78,6 +79,7 @@ EVENTS = "events"
 METRICS = "metrics"
 CALIBRATIONS = "calibrations"
 TRENDS = "trends"
+TRACKS = "tracks"
 SCHEDULES = "schedules"
 
 
@@ -114,6 +116,7 @@ def _to_document(
     | MetricSnapshot
     | CalibrationReport
     | Trend
+    | Track
     | ResearchSchedule,
 ) -> dict[str, Any]:
     """Model to Firestore document.
@@ -940,6 +943,39 @@ class CandidateStore:
                 _to_document(candidate),
             )
         batch.commit()
+
+
+class TrackStore:
+    """Generated music at ``tracks/{trackId}`` (docs/MUSIC-PLAN.md).
+
+    The worker writes what was made; a person decides whether to keep it. A
+    track written again (the same file imported twice) keeps that decision:
+    the worker never overwrites ``status``, ``decidedAt`` or ``decidedBy`` on
+    a document that already has them.
+    """
+
+    def __init__(self, client: firestore.Client, settings: Settings) -> None:
+        self._db = client
+        self._settings = settings
+
+    def get(self, track_id: str) -> Track | None:
+        snapshot = self._db.collection(TRACKS).document(track_id).get()
+        if not snapshot.exists:
+            return None
+        return _read(Track, snapshot.to_dict() or {})
+
+    def upsert(self, track: Track) -> bool:
+        """Write a track, keeping a person's decision. True when it is new."""
+        ref = self._db.collection(TRACKS).document(track.id)
+        existing = ref.get()
+        document = _to_document(track)
+        if existing.exists:
+            for decided in ("status", "decidedAt", "decidedBy", "createdAt"):
+                document.pop(decided, None)
+            ref.set(document, merge=True)
+            return False
+        ref.set(document)
+        return True
 
 
 class TrendStore:

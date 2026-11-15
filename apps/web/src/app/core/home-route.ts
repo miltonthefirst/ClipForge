@@ -55,6 +55,9 @@ const LINK_TIMEOUT_MS = 15_000;
 /** How long playback waits for the agent document on a cold start. */
 const FIRST_DATA_WAIT_MS = 2_000;
 
+/** What the PC will play over the route. Mirrors `KINDS` in clipforge/home/clips.py. */
+export type MediaKind = 'clip' | 'track';
+
 /** What playback needs from the route, kept narrow so it can be left out. */
 export interface HomeMedia {
   /** A link to play this clip from the PC, or null to use another source. */
@@ -162,12 +165,27 @@ export class HomeRouteService implements HomeMedia {
   }
 
   /** A link to play a clip from the PC, while home; null otherwise. */
-  async clipUrl(clipId: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  clipUrl(clipId: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+    return this.mediaUrl('clip', clipId, fetchImpl);
+  }
+
+  /**
+   * A link to play something from the PC, while home; null otherwise.
+   *
+   * `clip` is a rendered video, `track` a piece of generated music: the PC
+   * serves each only from its own folder (apps/worker/clipforge/home/clips.py).
+   */
+  async mediaUrl(
+    kind: MediaKind,
+    id: string,
+    fetchImpl: typeof fetch = fetch,
+  ): Promise<string | null> {
     await this.settled(fetchImpl);
     const base = this.home() ? this.url() : null;
     if (!base) return null;
 
-    const cached = this.links.get(clipId);
+    const key = `${kind}:${id}`;
+    const cached = this.links.get(key);
     if (cached && cached.expires - Date.now() > LINK_MARGIN_MS) return cached.url;
 
     const user = this.session.user();
@@ -177,17 +195,17 @@ export class HomeRouteService implements HomeMedia {
       const response = await fetchImpl(`${base}/media-links`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'clip', id: clipId }),
+        body: JSON.stringify({ kind, id }),
         cache: 'no-store',
         signal: AbortSignal.timeout(LINK_TIMEOUT_MS),
       });
       // The PC answered and said no — the file is gone, or this account is
-      // not approved. The route is fine; this clip just is not on it.
+      // not approved. The route is fine; this item just is not on it.
       if (!response.ok) return null;
       const body = (await response.json()) as { url?: string; expiresAt?: string };
       if (!body.url) return null;
       const expires = Date.parse(body.expiresAt ?? '');
-      this.links.set(clipId, {
+      this.links.set(key, {
         url: body.url,
         expires: Number.isNaN(expires) ? Date.now() + LINK_MARGIN_MS * 2 : expires,
       });

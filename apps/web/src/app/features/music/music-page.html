@@ -1,0 +1,103 @@
+<h1 class="text-xl font-semibold">Music</h1>
+<p class="mt-1 max-w-2xl text-sm text-ink-muted">
+  Music made on the PC. Listen, then keep what is good enough to go under a clip or out as a video
+  of its own. Tracks play from the PC itself: on the home wifi, or in the desktop app.
+</p>
+
+@if (counts().total > 0) {
+  <p class="mt-3 text-xs text-ink-subtle">
+    {{ counts().total }} tracks · {{ counts().kept }} kept · {{ counts().waiting }} not decided
+    @if (routeOffered()) {
+      · {{ atHome() ? 'on the home wifi' : 'away from the home wifi' }}
+    }
+  </p>
+}
+
+@if (loadError(); as error) {
+  <p
+    class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger-ink"
+  >
+    The tracks could not be loaded: {{ error.message }}
+  </p>
+} @else if (tracks() === null) {
+  <p class="mt-6 text-sm text-ink-muted">Loading…</p>
+} @else if (tracks()!.length === 0) {
+  <p class="mt-6 rounded-lg border border-line bg-panel px-4 py-3 text-sm text-ink-muted">
+    No music yet. Tracks appear here once the PC has made some and they have been imported (<code
+      class="text-ink-subtle"
+      >clipforge-worker import-tracks</code
+    >).
+  </p>
+} @else {
+  <ul class="mt-6 space-y-3">
+    @for (track of tracks(); track track.id) {
+      <li class="rounded-xl border border-line bg-panel p-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="font-medium text-ink">{{ track.title }}</h2>
+          <span
+            class="rounded-full border px-2 py-0.5 text-xs"
+            [class]="
+              track.status === 'KEPT'
+                ? 'border-forge-600/40 text-forge-600'
+                : track.status === 'DISCARDED'
+                  ? 'border-line text-ink-subtle line-through'
+                  : 'border-line text-ink-muted'
+            "
+            >{{ statusLabel(track.status) }}</span
+          >
+        </div>
+        <p class="mt-1 text-sm text-ink-muted">{{ track.prompt }}</p>
+        <p class="mt-1 text-xs text-ink-subtle">
+          {{ track.seconds | number: '1.0-0' }} s
+          @if (track.instrumental) {
+            · instrumental
+          }
+          @if (track.generateSeconds) {
+            · made in {{ track.generateSeconds | number: '1.0-1' }} s
+          }
+          · {{ track.model }}
+        </p>
+
+        @if (playing()?.id === track.id) {
+          <audio class="mt-3 w-full" controls autoplay [src]="playing()!.url"></audio>
+          <p class="mt-1 text-xs text-ink-subtle">Playing from {{ playing()!.from }}.</p>
+        }
+
+        @if (notes()[track.id]; as message) {
+          <p class="mt-2 text-xs text-warn-ink">{{ message }}</p>
+        }
+
+        <div class="mt-3 flex flex-wrap gap-2">
+          @if (playing()?.id !== track.id) {
+            <button
+              type="button"
+              class="rounded-lg bg-forge-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+              [disabled]="opening() === track.id"
+              (click)="play(track)"
+            >
+              {{ opening() === track.id ? 'Opening…' : 'Play' }}
+            </button>
+          }
+          <button
+            type="button"
+            class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+            [disabled]="deciding() === track.id"
+            [attr.aria-pressed]="track.status === 'KEPT'"
+            (click)="decide(track, 'KEPT')"
+          >
+            {{ track.status === 'KEPT' ? 'Kept ✓' : 'Keep' }}
+          </button>
+          <button
+            type="button"
+            class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+            [disabled]="deciding() === track.id"
+            [attr.aria-pressed]="track.status === 'DISCARDED'"
+            (click)="decide(track, 'DISCARDED')"
+          >
+            {{ track.status === 'DISCARDED' ? 'Discarded' : 'Discard' }}
+          </button>
+        </div>
+      </li>
+    }
+  </ul>
+}

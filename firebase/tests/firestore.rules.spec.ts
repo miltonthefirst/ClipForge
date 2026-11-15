@@ -791,3 +791,61 @@ describe('deleting records to keep the database tidy', () => {
     await assertFails(deleteDoc(doc(aliceDb(), 'preferences/pref-1')));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tracks: generated music. The worker makes them; a person keeps them or not.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('tracks', () => {
+  const TRACK = {
+    id: 'trk_1',
+    title: 'Lo-fi (30 s)',
+    prompt: 'warm lo-fi hip hop, instrumental',
+    seconds: 30,
+    instrumental: true,
+    model: 'ACE-Step 1.5',
+    licence: 'MIT',
+    localPath: 'P:/workspace/music/generated/trk_1.wav',
+    status: 'NEW',
+    createdAt: '2026-11-15T12:00:00.000Z',
+  };
+  const KEEP = { status: 'KEPT', decidedBy: ALICE, decidedAt: '2026-11-15T13:00:00.000Z' };
+
+  beforeEach(async () => {
+    await seed('tracks/trk_1', TRACK);
+  });
+
+  it('lets any approved member listen and decide', async () => {
+    await assertSucceeds(getDoc(doc(bobDb(), 'tracks/trk_1')));
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'tracks/trk_1'), KEEP));
+    await assertSucceeds(
+      updateDoc(doc(aliceDb(), 'tracks/trk_1'), { ...KEEP, status: 'DISCARDED' }),
+    );
+  });
+
+  it('denies anyone who is not approved', async () => {
+    await assertFails(getDoc(doc(anonDb(), 'tracks/trk_1')));
+    await assertFails(updateDoc(doc(anonDb(), 'tracks/trk_1'), KEEP));
+  });
+
+  it('denies a decision filed under somebody else, or one that is not a decision', async () => {
+    await assertFails(updateDoc(doc(aliceDb(), 'tracks/trk_1'), { ...KEEP, decidedBy: BOB }));
+    await assertFails(updateDoc(doc(aliceDb(), 'tracks/trk_1'), { ...KEEP, status: 'PUBLISHED' }));
+    const { decidedAt, ...undated } = KEEP;
+    await assertFails(updateDoc(doc(aliceDb(), 'tracks/trk_1'), undated));
+  });
+
+  it('denies pointing a track at another file, or rewriting what it is', async () => {
+    // `localPath` is what the home route serves: a client that could change it
+    // could ask the PC for any file the route allows.
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'tracks/trk_1'), { ...KEEP, localPath: 'P:/workspace/clips/x.mp4' }),
+    );
+    await assertFails(updateDoc(doc(aliceDb(), 'tracks/trk_1'), { ...KEEP, prompt: 'something else' }));
+  });
+
+  it('denies making or deleting a track: the worker owns them', async () => {
+    await assertFails(setDoc(doc(aliceDb(), 'tracks/trk_2'), { ...TRACK, id: 'trk_2' }));
+    await assertFails(deleteDoc(doc(aliceDb(), 'tracks/trk_1')));
+  });
+});

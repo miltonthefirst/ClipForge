@@ -31,6 +31,7 @@
     "llmRemakeNote": { "$ref": "#/definitions/LlmRemakeNote" },
     "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" },
     "trend": { "$ref": "#/definitions/Trend" },
+    "track": { "$ref": "#/definitions/Track" },
     "researchOptions": { "$ref": "#/definitions/ResearchOptions" },
     "llmTrendVerdict": { "$ref": "#/definitions/LlmTrendVerdict" },
     "compileOptions": { "$ref": "#/definitions/CompileOptions" },
@@ -2348,6 +2349,40 @@
           "$ref": "#/definitions/TrendSource",
           "description": "Which provider surfaced it. A video that Reddit linked is one people chose to share; one a search returned is one that merely exists."
         }
+      }
+    },
+
+    "TrackStatus": {
+      "title": "TrackStatus",
+      "description": "What a person decided about a generated track. NEW is nothing yet. KEPT means it may go under a clip or out as a video of its own (docs/MUSIC-PLAN.md). DISCARDED is a considered no; the file stays on the PC until the collector or a person removes it.",
+      "type": "string",
+      "enum": ["NEW", "KEPT", "DISCARDED"]
+    },
+
+    "Track": {
+      "title": "Track",
+      "description": "One piece of music made on this PC, at tracks/{trackId} (docs/MUSIC-PLAN.md). Written by the worker, from the generator's own record of what it made; decided on by a person. The file never leaves the PC on its own: a phone plays it over the home wifi (docs/HOME-NETWORK-PLAN.md), the desktop app through the loopback file server. The id is derived from the audio's bytes, so importing the same file twice is one track.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "prompt", "seconds", "instrumental", "model", "licence", "localPath", "status", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 512, "description": "What the model was asked for: a style, never an artist." },
+        "seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "bpm": { "type": ["integer", "null"], "default": null },
+        "key": { "type": ["string", "null"], "maxLength": 20, "default": null },
+        "instrumental": { "type": "boolean" },
+        "seed": { "type": ["integer", "null"], "default": null },
+        "steps": { "type": ["integer", "null"], "default": null },
+        "model": { "type": "string", "minLength": 1, "maxLength": 120, "description": "The generator and checkpoint, e.g. ACE-Step 1.5 acestep-v15-turbo (int8)." },
+        "licence": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The model's licence and what it says about using its output, as read at generation time." },
+        "generateSeconds": { "type": ["number", "null"], "default": null, "description": "How long it took to make, warm, on this PC." },
+        "localPath": { "type": "string", "minLength": 1, "description": "Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server." },
+        "status": { "$ref": "#/definitions/TrackStatus" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "decidedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "decidedBy": { "type": ["string", "null"], "default": null }
       }
     },
 

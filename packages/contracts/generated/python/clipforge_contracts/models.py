@@ -1723,6 +1723,59 @@ class TrendVideo(BaseModel):
     """
 
 
+class TrackStatus(StrEnum):
+    """
+    What a person decided about a generated track. NEW is nothing yet. KEPT means it may go under a clip or out as a video of its own (docs/MUSIC-PLAN.md). DISCARDED is a considered no; the file stays on the PC until the collector or a person removes it.
+    """
+
+    NEW = "NEW"
+    KEPT = "KEPT"
+    DISCARDED = "DISCARDED"
+
+
+class Track(BaseModel):
+    """
+    One piece of music made on this PC, at tracks/{trackId} (docs/MUSIC-PLAN.md). Written by the worker, from the generator's own record of what it made; decided on by a person. The file never leaves the PC on its own: a phone plays it over the home wifi (docs/HOME-NETWORK-PLAN.md), the desktop app through the loopback file server. The id is derived from the audio's bytes, so importing the same file twice is one track.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    title: str = Field(..., max_length=120, min_length=1)
+    prompt: str = Field(..., max_length=512, min_length=1)
+    """
+    What the model was asked for: a style, never an artist.
+    """
+    seconds: float = Field(..., gt=0.0)
+    bpm: int | None = None
+    key: str | None = Field(None, max_length=20)
+    instrumental: bool
+    seed: int | None = None
+    steps: int | None = None
+    model: str = Field(..., max_length=120, min_length=1)
+    """
+    The generator and checkpoint, e.g. ACE-Step 1.5 acestep-v15-turbo (int8).
+    """
+    licence: str = Field(..., max_length=200, min_length=1)
+    """
+    The model's licence and what it says about using its output, as read at generation time.
+    """
+    generate_seconds: float | None = Field(None, alias="generateSeconds")
+    """
+    How long it took to make, warm, on this PC.
+    """
+    local_path: str = Field(..., alias="localPath", min_length=1)
+    """
+    Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server.
+    """
+    status: TrackStatus
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
+    decided_by: str | None = Field(None, alias="decidedBy")
+
+
 class MatchedTopic(RootModel[str]):
     root: str = Field(..., max_length=80)
 
@@ -2924,6 +2977,7 @@ class ClipForgeContracts(BaseModel):
     llm_remake_note: LlmRemakeNote | None = Field(None, alias="llmRemakeNote")
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")
     trend: Trend | None = None
+    track: Track | None = None
     research_options: ResearchOptions | None = Field(None, alias="researchOptions")
     llm_trend_verdict: LlmTrendVerdict | None = Field(None, alias="llmTrendVerdict")
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")

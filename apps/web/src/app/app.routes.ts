@@ -34,6 +34,12 @@ export const routes: Routes = [
       import('./features/publish/publication-page').then((m) => m.PublicationPage),
   },
   {
+    // Generated music: listen, keep or discard (docs/MUSIC-PLAN.md).
+    path: 'music',
+    title: 'Music · ClipForge',
+    loadComponent: () => import('./features/music/music-page').then((m) => m.MusicPage),
+  },
+  {
     path: 'jobs',
     title: 'Jobs · ClipForge',
     loadComponent: () => import('./features/jobs/jobs-page').then((m) => m.JobsPage),

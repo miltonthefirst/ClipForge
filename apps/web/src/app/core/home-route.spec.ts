@@ -146,6 +146,21 @@ describe('HomeRouteService', () => {
     expect(JSON.parse(init.body)).toEqual({ kind: 'clip', id: 'clip-1' });
   });
 
+  it('asks for a track by its own kind, cached apart from a clip with the same id', async () => {
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).endsWith('/hello')
+        ? json({ service: HOME_SERVICE, station: 'tower' })
+        : json({
+            url: `${URL}/media/${JSON.parse(String(init?.body)).kind}`,
+            expiresAt: new Date(Date.now() + 12 * 3600_000).toISOString(),
+          }),
+    );
+    const route = service();
+
+    expect(await route.mediaUrl('track', 'same-id', fetchMock)).toBe(`${URL}/media/track`);
+    expect(await route.mediaUrl('clip', 'same-id', fetchMock)).toBe(`${URL}/media/clip`);
+  });
+
   it('reuses a link until it is close to expiring', async () => {
     fetchMock.mockImplementation(async (input) =>
       String(input).endsWith('/hello')

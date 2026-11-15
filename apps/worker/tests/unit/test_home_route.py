@@ -24,7 +24,7 @@ from clipforge.agent import Agent, home_route_wanted
 from clipforge.config import Settings
 from clipforge.home import certificate, media
 from clipforge.home.auth import Caller, NotSignedIn, verify
-from clipforge.home.clips import APPROVAL_TTL_SECONDS, ClipMedia, worker_workspace
+from clipforge.home.clips import APPROVAL_TTL_SECONDS, WorkspaceMedia, worker_workspace
 from clipforge.home.service import HomeRouteService, firewall_command
 from clipforge_contracts import AgentReport, HomeRoute, HomeRouteState
 
@@ -112,7 +112,7 @@ def clip_media(
     approved: set[str] | None = None,
     asked: list[str] | None = None,
     clock: list[float] | None = None,
-) -> ClipMedia:
+) -> WorkspaceMedia:
     allowed = {"alice"} if approved is None else approved
     ticks = clock if clock is not None else [0.0]
 
@@ -121,10 +121,10 @@ def clip_media(
             asked.append(uid)
         return uid in allowed
 
-    return ClipMedia(
+    return WorkspaceMedia(
         settings_for(tmp_path),
         approved=is_approved,
-        local_path=paths.get,
+        local_path=lambda _kind, item: paths.get(item),
         clock=lambda: ticks[0],
     )
 
@@ -148,10 +148,40 @@ def test_a_path_recorded_with_backslashes_still_resolves(tmp_path: Path) -> None
     assert Path(found) == path.resolve()
 
 
-def test_only_clips_are_offered(tmp_path: Path) -> None:
+def test_only_clips_and_tracks_are_offered(tmp_path: Path) -> None:
     resolve = clip_media(tmp_path, {})
     with pytest.raises(LookupError):
         resolve("source", "s1", Caller("alice", None))
+
+
+def a_track(tmp_path: Path, name: str = "trk_abc.wav") -> Path:
+    folder = tmp_path / "workspace" / "music" / "generated"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_bytes(b"RIFF" + b"\x00" * 2048)
+    return path
+
+
+def test_a_track_resolves_to_its_audio_under_music(tmp_path: Path) -> None:
+    path = a_track(tmp_path)
+    resolve = clip_media(tmp_path, {"t1": str(path)})
+
+    found, content_type = resolve("track", "t1", Caller("alice", None))
+
+    assert Path(found) == path.resolve()
+    assert content_type == "audio/wav"
+
+
+def test_each_kind_is_served_only_from_its_own_folder(tmp_path: Path) -> None:
+    """A clip's record cannot point at music, nor a track's at the clips."""
+    clip = a_clip(tmp_path)
+    track = a_track(tmp_path)
+    resolve = clip_media(tmp_path, {"clip-as-track": str(clip), "track-as-clip": str(track)})
+
+    with pytest.raises(LookupError):
+        resolve("track", "clip-as-track", Caller("alice", None))
+    with pytest.raises(LookupError):
+        resolve("clip", "track-as-clip", Caller("alice", None))
 
 
 def test_an_account_that_is_not_approved_is_refused_before_any_lookup(tmp_path: Path) -> None:

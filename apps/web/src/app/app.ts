@@ -78,6 +78,7 @@ export class App {
       { path: '/insights', label: 'Insights' },
       { path: '/trends', label: 'Trends' },
       { path: '/compile', label: 'Compile' },
+      { path: '/music', label: 'Music' },
       { path: '/jobs', label: 'Jobs' },
       { path: '/sources', label: 'Sources' },
       { path: '/settings', label: 'Settings' },

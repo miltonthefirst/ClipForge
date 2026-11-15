@@ -39,12 +39,19 @@ __all__ = ["LocalFileServer"]
 # Only what the review UI actually needs. An allowlist rather than a denylist:
 # the workspace also holds transcripts and source video, and serving those by
 # accident is exactly the kind of thing an allowlist prevents by construction.
-SERVABLE_SUFFIXES = frozenset({".mp4", ".m4a", ".jpg", ".jpeg", ".png", ".webm"})
+# The audio types are generated music (workspace/music/generated, the Music
+# page): .wav, .flac and .mp3 are what the generator writes.
+SERVABLE_SUFFIXES = frozenset(
+    {".mp4", ".m4a", ".jpg", ".jpeg", ".png", ".webm", ".wav", ".flac", ".mp3"}
+)
 
 CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".m4a": "audio/mp4",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".mp3": "audio/mpeg",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
