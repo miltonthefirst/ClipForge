@@ -84,6 +84,10 @@ def run(
     from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
 
     client = firestore_client(settings)
+    # Errors in this process go to the Logs page (clipforge/logs).
+    from clipforge.logs import install_for
+
+    install_for("worker", settings, client)
     workspace = Workspace(settings.workspace_dir, max_gb=settings.workspace_max_gb)
     # Anything left in tmp/ belongs to a run that is already over.
     workspace.clear_tmp()
@@ -263,6 +267,10 @@ def agent(
     from clipforge.version import __version__
 
     client = firestore_client(settings)
+    # Errors in this process go to the Logs page (clipforge/logs).
+    from clipforge.logs import install_for
+
+    install_for("agent", settings, client)
     # The home wifi route lives here rather than in the worker so a clip plays
     # on a phone at home while no worker is running. It does nothing until an
     # admin switches it on from the app (docs/HOME-NETWORK-PLAN.md).

@@ -35,6 +35,7 @@
     "appNotification": { "$ref": "#/definitions/AppNotification" },
     "notifyDevice": { "$ref": "#/definitions/NotifyDevice" },
     "notificationSettings": { "$ref": "#/definitions/NotificationSettings" },
+    "logGroup": { "$ref": "#/definitions/LogGroup" },
     "researchOptions": { "$ref": "#/definitions/ResearchOptions" },
     "llmTrendVerdict": { "$ref": "#/definitions/LlmTrendVerdict" },
     "compileOptions": { "$ref": "#/definitions/CompileOptions" },
@@ -2363,9 +2364,9 @@
 
     "NotificationKind": {
       "title": "NotificationKind",
-      "description": "What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN and SIGNUP go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.",
+      "description": "What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN, SIGNUP and NEW_ERROR (a new or reopened group on the Logs page) go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.",
       "type": "string",
-      "enum": ["JOB_FAILED", "CLIPS_READY", "PUBLISHED", "JOB_WAITING", "YOUTUBE_SIGN_IN", "WORKER_DOWN", "SIGNUP", "TEST"]
+      "enum": ["JOB_FAILED", "CLIPS_READY", "PUBLISHED", "JOB_WAITING", "YOUTUBE_SIGN_IN", "WORKER_DOWN", "SIGNUP", "NEW_ERROR", "TEST"]
     },
 
     "AppNotification": {
@@ -2413,6 +2414,43 @@
           "propertyNames": { "$ref": "#/definitions/NotificationKind" }
         },
         "updatedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "LogGroup": {
+      "title": "LogGroup",
+      "description": "One problem, however often it happened, at logGroups/{fingerprint} (the shared logging blueprint, P:/Experiments/blueprints/logging). Written by the worker and the agent (clipforge/logs); an admin may only resolve it, watch it, or delete it. A recurrence of a resolved group reopens it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "app", "level", "message", "count", "firstSeenAt", "lastSeenAt", "status"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "app": { "type": "string", "enum": ["worker", "agent"] },
+        "level": { "type": "string", "enum": ["error", "warn"] },
+        "category": { "anyOf": [{ "type": "string", "enum": ["permission-denied", "network"] }, { "type": "null" }], "default": null },
+        "message": { "type": "string", "maxLength": 2000 },
+        "stack": { "type": ["string", "null"], "maxLength": 8000, "default": null },
+        "count": { "type": "integer", "minimum": 1 },
+        "firstSeenAt": { "type": "string", "format": "date-time" },
+        "lastSeenAt": { "type": "string", "format": "date-time" },
+        "lastOccurrence": { "anyOf": [{ "$ref": "#/definitions/LogOccurrence" }, { "type": "null" }], "default": null },
+        "status": { "type": "string", "enum": ["unresolved", "resolved"] },
+        "resolvedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "resolvedBy": { "type": ["string", "null"], "default": null },
+        "watched": { "type": "boolean", "default": false }
+      }
+    },
+
+    "LogOccurrence": {
+      "title": "LogOccurrence",
+      "description": "One time a group happened, at logGroups/{fingerprint}/occurrences/{id}, newest 25 kept. `extra` carries what the log line knew: the job and stage, the process id, the host.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp"],
+      "properties": {
+        "id": { "type": ["string", "null"], "default": null, "description": "The occurrence's own document id, so the Logs page can delete it with its group." },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "extra": { "type": "object", "additionalProperties": { "type": "string" }, "default": {} }
       }
     },
 

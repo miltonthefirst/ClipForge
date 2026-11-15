@@ -348,7 +348,7 @@ export type TrendStatus = 'NEW' | 'PROMOTED' | 'DISMISSED';
  */
 export type TrackStatus = 'NEW' | 'KEPT' | 'DISCARDED';
 /**
- * What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN and SIGNUP go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.
+ * What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN, SIGNUP and NEW_ERROR (a new or reopened group on the Logs page) go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.
  */
 export type NotificationKind =
   | 'JOB_FAILED'
@@ -358,6 +358,7 @@ export type NotificationKind =
   | 'YOUTUBE_SIGN_IN'
   | 'WORKER_DOWN'
   | 'SIGNUP'
+  | 'NEW_ERROR'
   | 'TEST';
 /**
  * How often an automatic research run fires. INTERVAL is every N hours from whenever it last ran; DAILY is at a wall-clock time in a named timezone, which is what 'every morning' means to a person and what an interval cannot express across a clock change.
@@ -397,6 +398,7 @@ export interface ClipForgeContracts {
   appNotification?: AppNotification;
   notifyDevice?: NotifyDevice;
   notificationSettings?: NotificationSettings;
+  logGroup?: LogGroup;
   researchOptions?: ResearchOptions;
   llmTrendVerdict?: LlmTrendVerdict;
   compileOptions?: CompileOptions;
@@ -3058,6 +3060,38 @@ export interface NotificationSettings {
     [k: string]: boolean;
   };
   updatedAt?: string | null;
+}
+/**
+ * One problem, however often it happened, at logGroups/{fingerprint} (the shared logging blueprint, P:/Experiments/blueprints/logging). Written by the worker and the agent (clipforge/logs); an admin may only resolve it, watch it, or delete it. A recurrence of a resolved group reopens it.
+ */
+export interface LogGroup {
+  fingerprint: string;
+  app: 'worker' | 'agent';
+  level: 'error' | 'warn';
+  category?: ('permission-denied' | 'network') | null;
+  message: string;
+  stack?: string | null;
+  count: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastOccurrence?: LogOccurrence | null;
+  status: 'unresolved' | 'resolved';
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+  watched?: boolean;
+}
+/**
+ * One time a group happened, at logGroups/{fingerprint}/occurrences/{id}, newest 25 kept. `extra` carries what the log line knew: the job and stage, the process id, the host.
+ */
+export interface LogOccurrence {
+  /**
+   * The occurrence's own document id, so the Logs page can delete it with its group.
+   */
+  id?: string | null;
+  timestamp: string;
+  extra?: {
+    [k: string]: string;
+  };
 }
 /**
  * What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.

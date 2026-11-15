@@ -1732,7 +1732,7 @@ class TrendVideo(BaseModel):
 
 class NotificationKind(StrEnum):
     """
-    What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN and SIGNUP go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.
+    What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN, SIGNUP and NEW_ERROR (a new or reopened group on the Logs page) go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.
     """
 
     JOB_FAILED = "JOB_FAILED"
@@ -1742,6 +1742,7 @@ class NotificationKind(StrEnum):
     YOUTUBE_SIGN_IN = "YOUTUBE_SIGN_IN"
     WORKER_DOWN = "WORKER_DOWN"
     SIGNUP = "SIGNUP"
+    NEW_ERROR = "NEW_ERROR"
     TEST = "TEST"
 
 
@@ -1793,6 +1794,43 @@ class NotificationSettings(BaseModel):
     )
     kinds: dict[NotificationKind, bool]
     updated_at: AwareDatetime | None = Field(None, alias="updatedAt")
+
+
+class App(StrEnum):
+    WORKER = "worker"
+    AGENT = "agent"
+
+
+class Level(StrEnum):
+    ERROR = "error"
+    WARN = "warn"
+
+
+class Category(StrEnum):
+    PERMISSION_DENIED = "permission-denied"
+    NETWORK = "network"
+
+
+class Status(StrEnum):
+    UNRESOLVED = "unresolved"
+    RESOLVED = "resolved"
+
+
+class LogOccurrence(BaseModel):
+    """
+    One time a group happened, at logGroups/{fingerprint}/occurrences/{id}, newest 25 kept. `extra` carries what the log line knew: the job and stage, the process id, the host.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str | None = None
+    """
+    The occurrence's own document id, so the Logs page can delete it with its group.
+    """
+    timestamp: AwareDatetime
+    extra: dict[str, str] | None = {}
 
 
 class TrackStatus(StrEnum):
@@ -2918,6 +2956,31 @@ class Clip(BaseModel):
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
+class LogGroup(BaseModel):
+    """
+    One problem, however often it happened, at logGroups/{fingerprint} (the shared logging blueprint, P:/Experiments/blueprints/logging). Written by the worker and the agent (clipforge/logs); an admin may only resolve it, watch it, or delete it. A recurrence of a resolved group reopens it.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    fingerprint: str = Field(..., pattern="^[0-9a-f]{16}$")
+    app: App
+    level: Level
+    category: Category | None = None
+    message: str = Field(..., max_length=2000)
+    stack: str | None = Field(None, max_length=8000)
+    count: int = Field(..., ge=1)
+    first_seen_at: AwareDatetime = Field(..., alias="firstSeenAt")
+    last_seen_at: AwareDatetime = Field(..., alias="lastSeenAt")
+    last_occurrence: LogOccurrence | None = Field(None, alias="lastOccurrence")
+    status: Status
+    resolved_at: AwareDatetime | None = Field(None, alias="resolvedAt")
+    resolved_by: str | None = Field(None, alias="resolvedBy")
+    watched: bool | None = False
+
+
 class Job(BaseModel):
     """
     One pipeline run over one source. Stored at jobs/{jobId}.
@@ -3055,6 +3118,7 @@ class ClipForgeContracts(BaseModel):
     notification_settings: NotificationSettings | None = Field(
         None, alias="notificationSettings"
     )
+    log_group: LogGroup | None = Field(None, alias="logGroup")
     research_options: ResearchOptions | None = Field(None, alias="researchOptions")
     llm_trend_verdict: LlmTrendVerdict | None = Field(None, alias="llmTrendVerdict")
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")

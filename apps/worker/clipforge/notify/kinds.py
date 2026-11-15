@@ -38,6 +38,8 @@ KINDS: dict[NotificationKind, Kind] = {
         Kind(NotificationKind.YOUTUBE_SIGN_IN, "admins", True),
         Kind(NotificationKind.WORKER_DOWN, "admins", True),
         Kind(NotificationKind.SIGNUP, "admins", True),
+        # A new or reopened group on the Logs page (clipforge/logs).
+        Kind(NotificationKind.NEW_ERROR, "admins", True),
         # Asked for by pressing a button; always delivered.
         Kind(NotificationKind.TEST, "owner", True),
     )

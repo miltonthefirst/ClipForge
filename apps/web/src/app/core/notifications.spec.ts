@@ -36,6 +36,6 @@ describe('notifications', () => {
       KINDS.filter((info) => info.adminOnly)
         .map((info) => info.kind)
         .sort(),
-    ).toEqual(['SIGNUP', 'WORKER_DOWN', 'YOUTUBE_SIGN_IN']);
+    ).toEqual(['NEW_ERROR', 'SIGNUP', 'WORKER_DOWN', 'YOUTUBE_SIGN_IN']);
   });
 });

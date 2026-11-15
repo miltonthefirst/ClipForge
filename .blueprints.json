@@ -46,6 +46,30 @@
         "The release deploys every target (rules, indexes, storage, the PWA, the site) through tools/deploy.ps1"
       ],
       "pendingUpstream": []
+    },
+    "logging": {
+      "version": "1.2.0",
+      "adopted": "2026-11-15",
+      "where": [
+        "apps/worker/clipforge/logs/ (fingerprint.py copied verbatim; store.py; capture.py)",
+        "apps/worker/clipforge/cli.py (install_for in run and agent)",
+        "packages/contracts/schemas/clipforge.json (LogGroup, LogOccurrence)",
+        "firebase/firestore.rules (logGroups)",
+        "apps/web/src/app/core/data/logs.ts, features/logs/ (log-export.util.ts adapted from reference/)",
+        "apps/worker/tests/unit/test_logs.py, tests/integration/test_log_store.py, firebase/tests/firestore.rules.spec.ts"
+      ],
+      "deviations": [
+        "No Cloud Functions: the worker and the agent ingest their own errors into Firestore through the Admin SDK, in a background thread (Sarungano's shape, on Firestore instead of SQLite)",
+        "Captured through a structlog processor, because ClipForge's structlog prints straight to stdout; a root logging handler covers third-party libraries, and the excepthooks what escapes",
+        "Only the PC's processes (apps worker and agent). The PWA's own errors are not captured: there is no server endpoint for an unauthenticated report",
+        "Captured level is error, not warn (Sarungano's owner's choice, adopted); network failures become warnings and so are not captured",
+        "Rate-capped at 30 reports a minute per process",
+        "No email alerts and no alert settings: a new, reopened or watched group raises a NEW_ERROR push notification to admins (clipforge/notify)",
+        "Deleting a group deletes its occurrences from the client first (no recursiveDelete); occurrences carry their own id for that",
+        "No retention clean-up of resolved groups yet, and no Logging settings page",
+        "No userId, url or userAgent on an occurrence: extra carries the log line's context (job, stage, host, pid)"
+      ],
+      "pendingUpstream": []
     }
   }
 }

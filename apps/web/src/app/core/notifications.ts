@@ -75,6 +75,13 @@ export const KINDS: readonly KindInfo[] = [
     defaultOn: true,
   },
   {
+    kind: 'NEW_ERROR',
+    label: 'A new error on the Logs page',
+    detail: 'A problem the PC has not had before, or one that came back after being resolved.',
+    adminOnly: true,
+    defaultOn: true,
+  },
+  {
     kind: 'SIGNUP',
     label: 'Someone signed up',
     detail: 'A new account is waiting for approval.',

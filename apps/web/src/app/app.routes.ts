@@ -106,6 +106,18 @@ export const routes: Routes = [
     loadComponent: () => import('./features/settings/youtube-page').then((m) => m.YouTubePage),
   },
   {
+    // Grouped errors from the PC (the logging blueprint). Admins only, in the
+    // rules as well as the menu.
+    path: 'logs',
+    title: 'Logs · ClipForge',
+    loadComponent: () => import('./features/logs/logs-page').then((m) => m.LogsPage),
+  },
+  {
+    path: 'logs/:id',
+    title: 'Log · ClipForge',
+    loadComponent: () => import('./features/logs/log-page').then((m) => m.LogPage),
+  },
+  {
     // Admin-only in the security rules as well as here. The route guard is a
     // courtesy — the listener is what actually refuses a member.
     path: 'admin/users',

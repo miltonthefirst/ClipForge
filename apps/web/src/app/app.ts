@@ -115,6 +115,7 @@ export class App {
     ];
     if (this.isAdmin()) {
       items.push({ path: '/admin/users', label: 'People', adminOnly: true });
+      items.push({ path: '/logs', label: 'Logs', adminOnly: true });
     }
     // An item that is the parent of another item in this list must match
     // exactly; everything else keeps prefix matching so a detail page still

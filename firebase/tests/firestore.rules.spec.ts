@@ -933,3 +933,64 @@ describe('notifications', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logs: admins triage what the PC recorded; nobody else sees it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('logGroups', () => {
+  const GROUP = {
+    fingerprint: '0123456789abcdef',
+    app: 'worker',
+    level: 'error',
+    category: null,
+    message: 'stage.failed: ffmpeg exited 1',
+    stack: null,
+    count: 3,
+    firstSeenAt: '2026-11-15T12:00:00.000Z',
+    lastSeenAt: '2026-11-15T12:05:00.000Z',
+    status: 'unresolved',
+    resolvedAt: null,
+    resolvedBy: null,
+    watched: false,
+  };
+
+  beforeEach(async () => {
+    await seed(`users/${ALICE}`, userProfile(ALICE, { role: 'ADMIN' }));
+    await seed('logGroups/0123456789abcdef', GROUP);
+    await seed('logGroups/0123456789abcdef/occurrences/o1', {
+      timestamp: '2026-11-15T12:05:00.000Z',
+      extra: {},
+    });
+  });
+
+  it('lets an admin read, resolve, watch and delete', async () => {
+    const group = doc(aliceDb(), 'logGroups/0123456789abcdef');
+    await assertSucceeds(getDoc(group));
+    await assertSucceeds(
+      updateDoc(group, {
+        status: 'resolved',
+        resolvedAt: '2026-11-15T13:00:00.000Z',
+        resolvedBy: ALICE,
+      }),
+    );
+    await assertSucceeds(updateDoc(group, { watched: true }));
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'logGroups/0123456789abcdef/occurrences/o1')));
+    await assertSucceeds(deleteDoc(group));
+  });
+
+  it('keeps members out entirely', async () => {
+    await assertFails(getDoc(doc(bobDb(), 'logGroups/0123456789abcdef')));
+    await assertFails(getDocs(collection(bobDb(), 'logGroups')));
+  });
+
+  it('denies an admin rewriting what happened, or writing an error of their own', async () => {
+    const group = doc(aliceDb(), 'logGroups/0123456789abcdef');
+    await assertFails(updateDoc(group, { message: 'all fine', count: 0 }));
+    await assertFails(updateDoc(group, { status: 'resolved', resolvedBy: BOB }));
+    await assertFails(setDoc(doc(aliceDb(), 'logGroups/fedcba9876543210'), GROUP));
+    await assertFails(
+      setDoc(doc(aliceDb(), 'logGroups/0123456789abcdef/occurrences/o2'), { timestamp: 'x' }),
+    );
+  });
+});

@@ -1,0 +1,88 @@
+<a routerLink="/logs" class="text-sm text-ink-muted hover:text-ink">← Logs</a>
+
+@if (group(); as g) {
+  <h1 class="mt-2 break-words text-lg font-semibold">{{ g.message }}</h1>
+  <p class="mt-1 text-xs text-ink-subtle">
+    {{ g.app }} · {{ g.level }}
+    @if (g.category) {
+      · {{ g.category }}
+    }
+    · {{ g.count }} times · first {{ g.firstSeenAt | date: 'd MMM, HH:mm' }} · last
+    {{ g.lastSeenAt | date: 'd MMM, HH:mm' }}
+    @if (g.status === 'resolved') {
+      · resolved {{ g.resolvedAt | date: 'd MMM, HH:mm' }}
+    }
+  </p>
+
+  <div class="mt-3 flex flex-wrap gap-2">
+    <button
+      type="button"
+      class="rounded-lg bg-forge-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+      [disabled]="busy()"
+      (click)="resolve()"
+    >
+      {{ g.status === 'resolved' ? 'Reopen' : 'Resolve' }}
+    </button>
+    <button
+      type="button"
+      class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line disabled:opacity-50"
+      [disabled]="busy()"
+      (click)="toggleWatch()"
+    >
+      {{ g.watched ? 'Stop watching' : 'Watch' }}
+    </button>
+    <button
+      type="button"
+      class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line"
+      (click)="copy()"
+    >
+      {{ copied() ? 'Copied' : 'Copy as Markdown' }}
+    </button>
+    <button
+      type="button"
+      class="rounded-lg border px-3 py-1.5 text-sm disabled:opacity-50"
+      [class]="
+        confirmDelete()
+          ? 'border-danger-line bg-danger-bg text-danger-ink'
+          : 'border-line-strong text-ink-muted hover:bg-line'
+      "
+      [disabled]="busy()"
+      (click)="remove()"
+    >
+      {{ confirmDelete() ? 'Delete for good?' : 'Delete' }}
+    </button>
+  </div>
+  @if (g.watched) {
+    <p class="mt-2 text-xs text-ink-subtle">Watched: every new occurrence is a notification.</p>
+  }
+
+  <h2 class="mt-6 font-medium text-ink">Stack</h2>
+  @if (g.stack) {
+    <pre
+      class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-panel p-3 text-xs text-ink-muted"
+      >{{ g.stack }}</pre>
+  } @else {
+    <p class="mt-2 text-sm text-ink-muted">No stack was captured.</p>
+  }
+
+  <h2 class="mt-6 font-medium text-ink">Occurrences ({{ occurrences().length }} kept)</h2>
+  <ul class="mt-2 space-y-2">
+    @for (occurrence of occurrences(); track occurrence.id ?? $index) {
+      <li class="rounded-lg border border-line bg-panel p-2 text-xs">
+        <p class="text-ink-muted">{{ occurrence.timestamp | date: 'd MMM y, HH:mm:ss' }}</p>
+        @if (extraOf(occurrence).length) {
+          <dl class="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 text-ink-subtle">
+            @for (pair of extraOf(occurrence); track pair[0]) {
+              <dt>{{ pair[0] }}</dt>
+              <dd class="break-all">{{ pair[1] }}</dd>
+            }
+          </dl>
+        }
+      </li>
+    }
+  </ul>
+} @else if (loading()) {
+  <p class="mt-6 text-sm text-ink-muted">Loading…</p>
+} @else {
+  <p class="mt-6 text-sm text-ink-muted">This group no longer exists.</p>
+}
