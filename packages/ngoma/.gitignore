@@ -1,0 +1,4 @@
+# The ACE-Step clone, its environment and the model weights: large, third-party, re-creatable.
+vendor/
+checkpoints/
+out/
