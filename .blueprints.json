@@ -1,0 +1,30 @@
+{
+  "registry": "P:/Experiments/blueprints",
+  "blueprints": {
+    "home-route": {
+      "version": "1.1.0",
+      "adopted": "2026-11-15",
+      "where": [
+        "apps/worker/clipforge/home/ (auth, certificate, listener, media from reference/; clips.py and service.py are ClipForge's)",
+        "apps/worker/clipforge/agent.py (homeRouteDesired, the home report) and clipforge/cli.py (wiring)",
+        "apps/worker/clipforge/config.py (CLIPFORGE_HOME_ROUTE_*, DUCKDNS_TOKEN)",
+        "packages/contracts/schemas/clipforge.json (HomeRoute, HomeRouteDesired, HomeRouteState, AgentReport.home)",
+        "firebase/firestore.rules (homeRouteDesired: admins only)",
+        "apps/web/src/app/core/home-route.ts, core/playback.ts (the home rung), features/worker/ (the card), app.html (the label)",
+        "apps/worker/tests/unit/test_home_route.py, apps/web/src/app/core/home-route.spec.ts, firebase/tests/firestore.rules.spec.ts",
+        "docs/HOME-NETWORK-PLAN.md, docs/adr/0031-the-home-wifi-route.md"
+      ],
+      "deviations": [
+        "Media only, by id (section 5b): no /commands. The phone creates jobs through Firestore, and the agent's wish is already near-instant",
+        "Hosted by the machine agent, not the worker or a server, so clips play while no worker is running",
+        "Access is approval (users/{uid}.status == APPROVED, cached a minute), not a confirmed email: require_verified_email=False",
+        "Away from home the clip's bucket copy (ADR-0018) is still used; Sarungano's 'media only over the home wifi' rule is not adopted",
+        "Switched on and off by an admin-only wish on agents/{id} (homeRouteDesired), not a desktop settings file; hostname, address and port come from .env",
+        "lego, its account and the certificates live under ~/.clipforge/home, outside the repository",
+        "The copied reference files are exempt from the project's pathlib and UP017 lint rules (pyproject.toml), so upgrades stay readable diffs",
+        "No self-test button: the Worker page shows the certificate, the token, the firewall rule and whether this device reaches the PC"
+      ],
+      "pendingUpstream": []
+    }
+  }
+}

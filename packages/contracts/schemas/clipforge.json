@@ -2124,6 +2124,49 @@
       "enum": ["RUNNING", "STOPPED"]
     },
 
+    "HomeRouteDesired": {
+      "title": "HomeRouteDesired",
+      "description": "Whether an admin wants the home wifi route on (docs/HOME-NETWORK-PLAN.md). A wish, like AgentDesired: the agent decides when it has come true, and says how in AgentReport.home.",
+      "type": "string",
+      "enum": ["ON", "OFF"]
+    },
+
+    "HomeRouteState": {
+      "title": "HomeRouteState",
+      "description": "What the agent's home wifi listener is doing. OFF: not wanted. UNAVAILABLE: wanted, but this machine is not set up for it (no hostname, address or DuckDNS token in .env, or the `home` extra is not installed); `detail` says which. CERTIFICATE: getting or renewing the certificate. SERVING: listening, and `url` is set when the certificate is a real one. FAILED: wanted and set up, and something went wrong; `detail` says what, and the agent tries again within the hour.",
+      "type": "string",
+      "enum": ["OFF", "UNAVAILABLE", "CERTIFICATE", "SERVING", "FAILED"]
+    },
+
+    "HomeRoute": {
+      "title": "HomeRoute",
+      "description": "The agent's home wifi listener, as the app sees it. Written only by the agent. `url` is the one field a phone acts on: it is set only while the listener is serving with a production certificate, so a phone never probes an address that cannot answer it securely. Nothing secret is here; the DuckDNS token is reported only as whether it is set.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/definitions/HomeRouteState" },
+        "url": { "type": ["string", "null"], "default": null },
+        "detail": { "type": ["string", "null"], "default": null },
+        "hostname": { "type": ["string", "null"], "default": null },
+        "address": { "type": ["string", "null"], "default": null },
+        "port": { "type": ["integer", "null"], "default": null },
+        "staging": { "type": "boolean", "default": false },
+        "tokenSet": { "type": "boolean", "default": false },
+        "certificateExpiresAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "firewallRule": {
+          "type": ["boolean", "null"],
+          "default": null,
+          "description": "Whether the Windows firewall rule for this port exists. Null when it could not be checked."
+        },
+        "firewallCommand": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "The one admin PowerShell command that creates the rule: Private profile, local subnet, this port only."
+        }
+      }
+    },
+
     "AgentState": {
       "title": "AgentState",
       "description": "What the agent has actually managed to do about the wish. FOREIGN means a worker is running on that machine which the agent did not start — from a terminal or the desktop app — which it reports rather than duplicates. FAILED means the worker will not stay up and the agent has stopped retrying; it needs a person, not another restart.",
@@ -2195,6 +2238,18 @@
           "maxLength": 64,
           "default": null,
           "description": "The last `pingToken` the agent answered. Written with a fresh `lastSeenAt` the moment the ping arrives."
+        },
+        "homeRouteDesired": {
+          "anyOf": [{ "$ref": "#/definitions/HomeRouteDesired" }, { "type": "null" }],
+          "default": null,
+          "description": "Client-owned, admins only (the rules check the role): whether the home wifi route should be on. Absent or null is OFF."
+        },
+        "homeRouteRequestedBy": { "type": ["string", "null"], "default": null },
+        "homeRouteRequestedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "home": {
+          "anyOf": [{ "$ref": "#/definitions/HomeRoute" }, { "type": "null" }],
+          "default": null,
+          "description": "Agent-owned: the home wifi listener's state, and where a phone at home can reach it."
         }
       }
     },

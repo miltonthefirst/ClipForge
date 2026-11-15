@@ -301,14 +301,18 @@ export class ClipPage implements OnDestroy {
     const clip = this.clip();
     if (!clip) return false;
     // A `playbackUrl` is a URL any browser can fetch, wherever it came from.
-    if (this.source().kind === 'remote') return false;
+    // `home` is a phone at home playing it off the PC over the wifi: nobody
+    // here needs a cloud copy right now, and away from home this offers one
+    // again (docs/HOME-NETWORK-PLAN.md, phase 2).
+    const kind = this.source().kind;
+    if (kind === 'remote' || kind === 'home') return false;
     return !this.playback.bucketCopyLive(clip);
   });
 
   /** Whether there is something a `<video>` can actually be pointed at. */
   protected readonly playable = computed(() => {
     const kind = this.source().kind;
-    return kind === 'remote' || kind === 'local' || kind === 'bucket';
+    return kind === 'remote' || kind === 'local' || kind === 'home' || kind === 'bucket';
   });
 
   /**

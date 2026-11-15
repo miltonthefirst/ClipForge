@@ -17,6 +17,7 @@ function storageError(code: string): Error & { code: string } {
 }
 
 import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
+import { HOME_MEDIA } from './home-route';
 import { PlaybackService } from './playback';
 import { loadConfig } from '../../environments';
 
@@ -226,5 +227,68 @@ describe('PlaybackService', () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+/**
+ * The home wifi rung (docs/HOME-NETWORK-PLAN.md): after the two sources that
+ * cost nothing and need nobody, before the bucket that costs egress.
+ */
+describe('PlaybackService with the home wifi route', () => {
+  let service: PlaybackService;
+  const homeLink = vi.fn<(clipId: string) => Promise<string | null>>();
+
+  beforeEach(() => {
+    homeLink.mockReset();
+    vi.mocked(getDownloadURL).mockReset();
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: CLIPFORGE_CONFIG, useValue: loadConfig() },
+        { provide: FirebaseService, useValue: { storage: {} } },
+        { provide: HOME_MEDIA, useValue: { clipUrl: homeLink } },
+      ],
+    });
+    service = TestBed.inject(PlaybackService);
+  });
+
+  it('plays off the PC at home rather than from the bucket', async () => {
+    homeLink.mockResolvedValue('https://home.example:8768/media/abc');
+    const source = await service.resolve(
+      clip({ storagePath: 'clips/user-1/clip-1.mp4', playbackExpiresAt: null }),
+      false,
+    );
+    expect(source).toEqual({ kind: 'home', url: 'https://home.example:8768/media/abc' });
+    expect(getDownloadURL).not.toHaveBeenCalled();
+  });
+
+  it('plays a clip with no cloud copy at all, which is the point of it', async () => {
+    homeLink.mockResolvedValue('https://home.example:8768/media/abc');
+    expect((await service.resolve(clip(), false)).kind).toBe('home');
+  });
+
+  it('still prefers a remote URL and the loopback server, which cost nothing', async () => {
+    homeLink.mockResolvedValue('https://home.example:8768/media/abc');
+    expect(
+      (await service.resolve(clip({ playbackUrl: 'https://storage.example/c.mp4' }), true)).kind,
+    ).toBe('remote');
+    expect((await service.resolve(clip(), true)).kind).toBe('local');
+    expect(homeLink).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the bucket away from home', async () => {
+    homeLink.mockResolvedValue(null);
+    vi.mocked(getDownloadURL).mockResolvedValue('https://storage.example/signed');
+    const source = await service.resolve(
+      clip({ storagePath: 'clips/user-1/clip-1.mp4', playbackExpiresAt: null }),
+      false,
+    );
+    expect(source).toEqual({ kind: 'bucket', url: 'https://storage.example/signed' });
+  });
+
+  it('skips the rung for a list that only labels its clips', async () => {
+    homeLink.mockResolvedValue('https://home.example:8768/media/abc');
+    expect(await service.resolve(clip(), false, { home: false })).toEqual({ kind: 'poster' });
+    expect(homeLink).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,10 @@
 import { Injectable, computed, inject } from '@angular/core';
-import type { AgentDesired, AgentReport, WorkerHeartbeat } from '@clipforge/contracts';
+import type {
+  AgentDesired,
+  AgentReport,
+  HomeRouteDesired,
+  WorkerHeartbeat,
+} from '@clipforge/contracts';
 
 import { FirestoreGateway, type Live } from '../firestore/gateway';
 import type { QuerySpec } from '../firestore/spec';
@@ -135,6 +140,25 @@ export function wishWrite(uid: string, desired: AgentDesired, at: Date = new Dat
   return { desired, requestedBy: uid, requestedAt: at.toISOString() };
 }
 
+/** What switching the home wifi route on or off writes (admins only, by rule). */
+export interface HomeRouteWrite {
+  readonly homeRouteDesired: HomeRouteDesired;
+  readonly homeRouteRequestedBy: string;
+  readonly homeRouteRequestedAt: string;
+}
+
+export function homeRouteWrite(
+  uid: string,
+  desired: HomeRouteDesired,
+  at: Date = new Date(),
+): HomeRouteWrite {
+  return {
+    homeRouteDesired: desired,
+    homeRouteRequestedBy: uid,
+    homeRouteRequestedAt: at.toISOString(),
+  };
+}
+
 @Injectable({ providedIn: 'root' })
 export class WorkersRepository {
   private readonly db = inject(FirestoreGateway);
@@ -191,6 +215,17 @@ export class WorkersRepository {
    * the rules within fifteen seconds of the last ping to that machine; the
    * caller waits on that one instead.
    */
+  /**
+   * Switch the home wifi route on or off (docs/HOME-NETWORK-PLAN.md).
+   *
+   * A wish like {@link wish}, carried out by the agent and reported back on the
+   * same document as `home`. Admins only: the rules check the role, because
+   * switching it on opens a port on the owner's network.
+   */
+  async homeRoute(agentId: string, uid: string, desired: HomeRouteDesired): Promise<void> {
+    await this.db.update('agents', agentId, { ...homeRouteWrite(uid, desired) });
+  }
+
   async ping(agentId: string, uid: string, token: string): Promise<void> {
     await this.db.updateStamped('agents', agentId, { ...pingWrite(uid, token) }, 'pingRequestedAt');
   }

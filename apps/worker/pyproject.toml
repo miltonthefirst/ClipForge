@@ -1,6 +1,6 @@
 [project]
 name = "clipforge-worker"
-version = "0.0.2"
+version = "0.0.3"
 description = "ClipForge local worker — transcription, clip selection and rendering on local hardware"
 readme = "README.md"
 license = { text = "MIT" }
@@ -91,6 +91,17 @@ speech = [
     "kokoro-onnx>=0.4",
 ]
 
+# The home wifi route (docs/HOME-NETWORK-PLAN.md): the HTTPS listener the agent
+# runs on the Wi-Fi address so a phone at home can play clips straight off this
+# disk. FastAPI because the shared home-route blueprint's reference listener is
+# FastAPI, and copying a reviewed file beats rewriting it on http.server. An
+# extra because a machine that never switches the route on has no use for it;
+# the agent imports it lazily, and only when the route is wanted.
+home = [
+    "fastapi>=0.120",
+    "uvicorn>=0.38",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
@@ -151,6 +162,14 @@ ignore = [
 #       that could not name a refresh token could not assert that it never
 #       reaches Firestore, which is Phase 8 exit criterion 4.
 "tests/**" = ["S101", "SLF001", "S607", "S105", "S106"]
+# Copied from the shared home-route blueprint (P:/Experiments/blueprints) and
+# kept close to its reference on purpose, so a blueprint upgrade is a readable
+# diff rather than a rewrite. Only style rules are waived: os.path rather than
+# pathlib (PTH), timezone.utc rather than UTC (UP017), the reference's own
+# exception names (N818) and its noqa comments for rules not enabled here.
+"clipforge/home/{auth,certificate,listener,media}.py" = [
+    "PTH", "UP015", "UP017", "SIM105", "N818", "RUF100",
+]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -85,13 +85,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-from clipforge_contracts import AgentDesired, AgentReport, AgentState
+from clipforge_contracts import AgentDesired, AgentReport, AgentState, HomeRouteDesired
+from clipforge_contracts import HomeRoute as HomeRouteReport
 
 from clipforge.config import Settings
 from clipforge.localapi import read_or_create_token
+
+if TYPE_CHECKING:
+    from clipforge.home.service import HomeRouteService as HomeRoute
 from clipforge.observability import get_logger, open_log_file
 from clipforge.scheduler.control import PING_TOKEN_MAX
 from clipforge.store.firestore import AgentStore, Subscription
@@ -106,6 +110,7 @@ __all__ = [
     "Supervisor",
     "WorkerProcess",
     "discover_uv",
+    "home_route_wanted",
     "ping_from",
     "redirect_output",
     "relay_ping",
@@ -899,6 +904,13 @@ def ping_from(document: dict[str, Any] | None) -> str | None:
     return None
 
 
+def home_route_wanted(document: dict[str, Any] | None) -> bool:
+    """Whether an admin has asked for the home wifi route. Anything but ON is
+    off: unlike the worker's wish, getting this wrong in the safe direction
+    costs a phone the bucket copy it would have used anyway."""
+    return (document or {}).get("homeRouteDesired") == HomeRouteDesired.ON.value
+
+
 def _as_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
@@ -945,8 +957,13 @@ class Agent:
         tick_seconds: float = 2.0,
         listener_check_seconds: float = 30.0,
         relay: Callable[[str], bool] | None = None,
+        home: HomeRoute | None = None,
     ) -> None:
         self._settings = settings
+        # The home wifi route (clipforge/home/), when this machine runs one. The
+        # agent owns its wish and publishes its report; everything else about
+        # it happens on the route's own thread.
+        self._home = home
         self._store = store
         self._supervisor = supervisor
         self._tick_seconds = tick_seconds
@@ -989,6 +1006,10 @@ class Agent:
         self._stop.set()
         self._wake.set()
 
+    def wake(self) -> None:
+        """Run a tick now: the home route has something new to report."""
+        self._wake.set()
+
     def run(self) -> None:
         """Reconcile until asked to stop.
 
@@ -1000,6 +1021,8 @@ class Agent:
         """
         self._claim()
         self._subscribe()
+        if self._home is not None:
+            self._home.start()
 
         log.info(
             "agent.started",
@@ -1015,6 +1038,10 @@ class Agent:
         finally:
             if self._watch is not None:
                 self._watch.close()
+            if self._home is not None:
+                # Unlike the worker, the listener IS stopped on the way out: it
+                # is this process's own socket, and its links die with it.
+                self._home.stop()
             log.info("agent.stopped")
 
     def step(self, now: datetime | None = None) -> None:
@@ -1047,11 +1074,12 @@ class Agent:
             ) and self._relay(ping)
             log.info("agent.ping", token=ping[:8], relayed=relayed, state=snapshot.state.value)
 
-        steady = snapshot.steady()
+        home = self._home.latest() if self._home is not None else None
+        steady = (snapshot.steady(), home)
         if steady == self._published and not fresh:
             return
         answering = ping if fresh else self._answered
-        if self._publish(wish, snapshot, now, answered=answering):
+        if self._publish(wish, snapshot, now, answered=answering, home=home):
             self._published = steady
             self._answered = answering
 
@@ -1072,7 +1100,13 @@ class Agent:
 
         log.info("agent.first_run", agent_id=self._store.agent_id)
         self._store.publish(
-            self._report(Desire(), self._supervisor.snapshot(), datetime.now(UTC), answered=None),
+            self._report(
+                Desire(),
+                self._supervisor.snapshot(),
+                datetime.now(UTC),
+                answered=None,
+                home=self._home.latest() if self._home is not None else None,
+            ),
             claim=True,
         )
 
@@ -1080,6 +1114,8 @@ class Agent:
         """Record the wish and the ping a delivery carries, and wake the loop."""
         wish = desire_from(document)
         ping = ping_from(document)
+        if self._home is not None:
+            self._home.want(home_route_wanted(document))
         with self._wish_lock:
             changed = wish != self._wish
             self._wish = wish
@@ -1118,10 +1154,16 @@ class Agent:
         self._subscribe()
 
     def _publish(
-        self, wish: Desire, snapshot: Snapshot, now: datetime, *, answered: str | None
+        self,
+        wish: Desire,
+        snapshot: Snapshot,
+        now: datetime,
+        *,
+        answered: str | None,
+        home: HomeRouteReport | None = None,
     ) -> bool:
         try:
-            self._store.publish(self._report(wish, snapshot, now, answered=answered))
+            self._store.publish(self._report(wish, snapshot, now, answered=answered, home=home))
         except Exception as exc:  # noqa: BLE001 - the client raises many shapes of transient
             # Not fatal, and deliberately not retried here: the next tick will
             # try again, because nothing was recorded as published. A supervisor
@@ -1132,7 +1174,13 @@ class Agent:
         return True
 
     def _report(
-        self, wish: Desire, snapshot: Snapshot, now: datetime, *, answered: str | None
+        self,
+        wish: Desire,
+        snapshot: Snapshot,
+        now: datetime,
+        *,
+        answered: str | None,
+        home: HomeRouteReport | None = None,
     ) -> AgentReport:
         return AgentReport(
             agent_id=self._store.agent_id,
@@ -1153,4 +1201,5 @@ class Agent:
             started_at=self._started_at,
             last_seen_at=now,
             answered_ping=answered,
+            home=home,
         )

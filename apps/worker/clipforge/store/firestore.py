@@ -1508,14 +1508,22 @@ class AgentStore:
     def publish(self, report: AgentReport, *, claim: bool = False) -> None:
         """Write what the agent knows, leaving what the client owns alone.
 
-        The ping fields are dropped even on the claiming write. The model has
+        The ping fields, and the home route's wish (admins write it), are
+        dropped even on the claiming write. The model has
         to declare them — the PWA reads this document as an `AgentReport`, and
         the contracts forbid unknown fields — but the agent has no value for
         them, and writing its ``None`` over a client's token would answer a
         ping by deleting it.
         """
         document = _to_document(report)
-        for owned_by_the_client in ("pingToken", "pingRequestedAt", "pingRequestedBy"):
+        for owned_by_the_client in (
+            "pingToken",
+            "pingRequestedAt",
+            "pingRequestedBy",
+            "homeRouteDesired",
+            "homeRouteRequestedBy",
+            "homeRouteRequestedAt",
+        ):
             document.pop(owned_by_the_client, None)
         if not claim:
             for owned_by_the_client in ("desired", "requestedBy", "requestedAt"):

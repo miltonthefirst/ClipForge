@@ -5,10 +5,23 @@
 > changes, and the phone uses the bucket copy as it does today (ADR-0018). The
 > PC is never reachable from the internet.
 
-**Status:** planned 2026-11-15. Nothing is built yet. It follows the shared
-**`home-route` blueprint 1.0.0** (`P:/Experiments/blueprints/home-route`),
-extracted the same day from Sarungano's home wifi route, which has been live on
-this PC since 2026-11-01. Read the blueprint's `BLUEPRINT.md` before building:
+**Status:** BUILT 2026-11-15, phases 1 and 2 (§4), following the shared
+**`home-route` blueprint 1.1.0** (`P:/Experiments/blueprints/home-route`),
+which was extracted that day from Sarungano's home wifi route (live on this PC
+since 2026-11-01) and then extended with what ClipForge needed (§5b, media by
+id). The owner's setup (§3) was done and checked the same day. The decision
+record is [ADR-0031](adr/0031-the-home-wifi-route.md).
+
+Where it lives:
+
+| Part | Where |
+| --- | --- |
+| Listener, certificate, sign-in, media links | `apps/worker/clipforge/home/` (`listener`, `certificate`, `auth`, `media` from the blueprint) |
+| Which file a clip id means, and who may have it | `apps/worker/clipforge/home/clips.py` |
+| The thread that keeps it all running | `apps/worker/clipforge/home/service.py`, started by the agent (`agent.py`, `cli.py`) |
+| Settings | `CLIPFORGE_HOME_ROUTE_*` and `DUCKDNS_TOKEN` in `.env` |
+| The wish and the report | `AgentReport.homeRouteDesired` (admins, by rule) and `AgentReport.home` (the agent) |
+| The phone | `apps/web/src/app/core/home-route.ts`, the `home` rung in `core/playback.ts`, the header label, the Worker page card | Read the blueprint's `BLUEPRINT.md` before building:
 it holds the setup steps, the contracts and the gotchas. This document covers
 only where ClipForge differs.
 

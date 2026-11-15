@@ -223,6 +223,24 @@ service cloud.firestore {
                     && (!('pingRequestedAt' in resource.data)
                         || !(resource.data.pingRequestedAt is timestamp)
                         || request.time > resource.data.pingRequestedAt + duration.value(15, 's'));
+
+      // ── The home wifi route: admins only ───────────────────────────────────
+      //
+      // Switching it on opens an HTTPS listener on this machine's Wi-Fi
+      // address (docs/HOME-NETWORK-PLAN.md). Starting the worker is something
+      // any member may do from a phone; opening a port on the owner's network
+      // is the owner's decision, so this is the one wish that checks the role.
+      //
+      // Its own write, like the ping, so each rule stays narrow. `home`, where
+      // the agent says what the listener is doing and where a phone can reach
+      // it, is never writable by a client: a phone probes only an address the
+      // agent advertised.
+      allow update: if isAdmin()
+                    && changed().hasOnly(['homeRouteDesired', 'homeRouteRequestedBy', 'homeRouteRequestedAt'])
+                    && changed().hasAll(['homeRouteDesired', 'homeRouteRequestedAt'])
+                    && request.resource.data.homeRouteDesired in ['ON', 'OFF']
+                    && request.resource.data.homeRouteRequestedBy == request.auth.uid
+                    && request.resource.data.homeRouteRequestedAt is string;
     }
 
     // ── The publish gate, client half ────────────────────────────────────────

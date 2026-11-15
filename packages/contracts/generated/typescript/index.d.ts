@@ -267,6 +267,14 @@ export type AgentDesired = 'RUNNING' | 'STOPPED';
  */
 export type AgentState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'FOREIGN' | 'STOPPING' | 'FAILED';
 /**
+ * Whether an admin wants the home wifi route on (docs/HOME-NETWORK-PLAN.md). A wish, like AgentDesired: the agent decides when it has come true, and says how in AgentReport.home.
+ */
+export type HomeRouteDesired = 'ON' | 'OFF';
+/**
+ * What the agent's home wifi listener is doing. OFF: not wanted. UNAVAILABLE: wanted, but this machine is not set up for it (no hostname, address or DuckDNS token in .env, or the `home` extra is not installed); `detail` says which. CERTIFICATE: getting or renewing the certificate. SERVING: listening, and `url` is set when the certificate is a real one. FAILED: wanted and set up, and something went wrong; `detail` says what, and the agent tries again within the hour.
+ */
+export type HomeRouteState = 'OFF' | 'UNAVAILABLE' | 'CERTIFICATE' | 'SERVING' | 'FAILED';
+/**
  * How widely a learned preference applies. SOURCE is this channel or series only — the right default, because most corrections are about the kind of footage rather than about video in general, and a rule learned from football should not reframe a talking head. EVERYTHING is for a preference that genuinely holds across all of them, which is rarer than it feels while writing one.
  */
 export type PreferenceScope = 'SOURCE' | 'EVERYTHING';
@@ -2299,6 +2307,38 @@ export interface AgentReport {
    * The last `pingToken` the agent answered. Written with a fresh `lastSeenAt` the moment the ping arrives.
    */
   answeredPing?: string | null;
+  /**
+   * Client-owned, admins only (the rules check the role): whether the home wifi route should be on. Absent or null is OFF.
+   */
+  homeRouteDesired?: HomeRouteDesired | null;
+  homeRouteRequestedBy?: string | null;
+  homeRouteRequestedAt?: string | null;
+  /**
+   * Agent-owned: the home wifi listener's state, and where a phone at home can reach it.
+   */
+  home?: HomeRoute | null;
+}
+/**
+ * The agent's home wifi listener, as the app sees it. Written only by the agent. `url` is the one field a phone acts on: it is set only while the listener is serving with a production certificate, so a phone never probes an address that cannot answer it securely. Nothing secret is here; the DuckDNS token is reported only as whether it is set.
+ */
+export interface HomeRoute {
+  state: HomeRouteState;
+  url?: string | null;
+  detail?: string | null;
+  hostname?: string | null;
+  address?: string | null;
+  port?: number | null;
+  staging?: boolean;
+  tokenSet?: boolean;
+  certificateExpiresAt?: string | null;
+  /**
+   * Whether the Windows firewall rule for this port exists. Null when it could not be checked.
+   */
+  firewallRule?: boolean | null;
+  /**
+   * The one admin PowerShell command that creates the rule: Private profile, local subnet, this port only.
+   */
+  firewallCommand?: string | null;
 }
 /**
  * Something the system noticed it should remember, at preferences/{preferenceId}.

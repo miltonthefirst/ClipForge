@@ -10,6 +10,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { SignInPage } from './features/auth/sign-in-page';
 import { FirebaseService } from './core/firebase';
+import { HomeRouteService } from './core/home-route';
 import { SessionService } from './core/session';
 import { ThemeService } from './core/theme';
 
@@ -40,6 +41,15 @@ export class App {
   protected readonly session = inject(SessionService);
   private readonly theme = inject(ThemeService);
   private readonly firebase = inject(FirebaseService);
+  private readonly homeRoute = inject(HomeRouteService);
+
+  /**
+   * "Home wifi" or "Via cloud", once an admin has switched the home route on;
+   * nothing at all until then. Says where a clip will play from, so a poster
+   * at home is not a mystery (docs/HOME-NETWORK-PLAN.md).
+   */
+  protected readonly routeLabel = this.homeRoute.label;
+  protected readonly atHome = this.homeRoute.home;
 
   /**
    * A redirect sign-in that failed. Shown rather than swallowed: the whole

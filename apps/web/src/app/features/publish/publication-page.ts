@@ -442,7 +442,7 @@ export class PublicationPage implements OnDestroy {
 
   protected readonly playable = computed(() => {
     const kind = this.source().kind;
-    return kind === 'remote' || kind === 'local' || kind === 'bucket';
+    return kind === 'remote' || kind === 'local' || kind === 'home' || kind === 'bucket';
   });
 
   /**
@@ -455,7 +455,10 @@ export class PublicationPage implements OnDestroy {
   protected readonly needsCloudCopy = computed(() => {
     const clip = this.clip();
     if (!clip) return false;
-    if (this.source().kind === 'remote') return false;
+    // `home`: playing off the PC over the wifi, so nobody here needs a cloud
+    // copy right now; away from home the page offers one again.
+    const kind = this.source().kind;
+    if (kind === 'remote' || kind === 'home') return false;
     return !this.playback.bucketCopyLive(clip);
   });
 

@@ -1491,6 +1491,57 @@ class AgentDesired(StrEnum):
     STOPPED = "STOPPED"
 
 
+class HomeRouteDesired(StrEnum):
+    """
+    Whether an admin wants the home wifi route on (docs/HOME-NETWORK-PLAN.md). A wish, like AgentDesired: the agent decides when it has come true, and says how in AgentReport.home.
+    """
+
+    ON = "ON"
+    OFF = "OFF"
+
+
+class HomeRouteState(StrEnum):
+    """
+    What the agent's home wifi listener is doing. OFF: not wanted. UNAVAILABLE: wanted, but this machine is not set up for it (no hostname, address or DuckDNS token in .env, or the `home` extra is not installed); `detail` says which. CERTIFICATE: getting or renewing the certificate. SERVING: listening, and `url` is set when the certificate is a real one. FAILED: wanted and set up, and something went wrong; `detail` says what, and the agent tries again within the hour.
+    """
+
+    OFF = "OFF"
+    UNAVAILABLE = "UNAVAILABLE"
+    CERTIFICATE = "CERTIFICATE"
+    SERVING = "SERVING"
+    FAILED = "FAILED"
+
+
+class HomeRoute(BaseModel):
+    """
+    The agent's home wifi listener, as the app sees it. Written only by the agent. `url` is the one field a phone acts on: it is set only while the listener is serving with a production certificate, so a phone never probes an address that cannot answer it securely. Nothing secret is here; the DuckDNS token is reported only as whether it is set.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    state: HomeRouteState
+    url: str | None = None
+    detail: str | None = None
+    hostname: str | None = None
+    address: str | None = None
+    port: int | None = None
+    staging: bool | None = False
+    token_set: bool | None = Field(False, alias="tokenSet")
+    certificate_expires_at: AwareDatetime | None = Field(
+        None, alias="certificateExpiresAt"
+    )
+    firewall_rule: bool | None = Field(None, alias="firewallRule")
+    """
+    Whether the Windows firewall rule for this port exists. Null when it could not be checked.
+    """
+    firewall_command: str | None = Field(None, alias="firewallCommand")
+    """
+    The one admin PowerShell command that creates the rule: Private profile, local subnet, this port only.
+    """
+
+
 class AgentState(StrEnum):
     """
     What the agent has actually managed to do about the wish. FOREIGN means a worker is running on that machine which the agent did not start — from a terminal or the desktop app — which it reports rather than duplicates. FAILED means the worker will not stay up and the agent has stopped retrying; it needs a person, not another restart.
@@ -1557,6 +1608,18 @@ class AgentReport(BaseModel):
     answered_ping: str | None = Field(None, alias="answeredPing", max_length=64)
     """
     The last `pingToken` the agent answered. Written with a fresh `lastSeenAt` the moment the ping arrives.
+    """
+    home_route_desired: HomeRouteDesired | None = Field(None, alias="homeRouteDesired")
+    """
+    Client-owned, admins only (the rules check the role): whether the home wifi route should be on. Absent or null is OFF.
+    """
+    home_route_requested_by: str | None = Field(None, alias="homeRouteRequestedBy")
+    home_route_requested_at: AwareDatetime | None = Field(
+        None, alias="homeRouteRequestedAt"
+    )
+    home: HomeRoute | None = None
+    """
+    Agent-owned: the home wifi listener's state, and where a phone at home can reach it.
     """
 
 

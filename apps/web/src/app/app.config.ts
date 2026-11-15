@@ -3,6 +3,7 @@ import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideServiceWorker } from '@angular/service-worker';
 
 import { loadConfig } from '../environments';
+import { HOME_MEDIA, HomeRouteService } from './core/home-route';
 import { routes } from './app.routes';
 
 /**
@@ -28,6 +29,8 @@ export const appConfig: ApplicationConfig = {
     // Route parameters arrive as component inputs, so a detail page reads
     // `id` like any other input instead of subscribing to ActivatedRoute.
     provideRouter(routes, withComponentInputBinding()),
+    // Playing clips straight off the PC while at home (docs/HOME-NETWORK-PLAN.md).
+    { provide: HOME_MEDIA, useExisting: HomeRouteService },
     provideServiceWorker('ngsw-worker.js', {
       enabled: useServiceWorker,
       // The review queue is a live Firestore listener, so registering during

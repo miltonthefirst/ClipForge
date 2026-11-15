@@ -56,6 +56,8 @@
 
       @if (source().kind === 'local') {
         <p class="mt-2 text-xs text-ink-subtle">Playing from the worker on this machine.</p>
+      } @else if (source().kind === 'home') {
+        <p class="mt-2 text-xs text-ink-subtle">Playing from the PC, over the home wifi.</p>
       }
 
       <!-- The clip IS in the bucket and this device was refused it. Deliberately

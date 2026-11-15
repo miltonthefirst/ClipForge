@@ -224,6 +224,33 @@ class Settings(BaseSettings):
     # the desktop app closing, or the agent restarting. Created only then.
     worker_log_file: Path = Path("~/.clipforge/worker.log")
 
+    # ── The home wifi route ──────────────────────────────────────────────────
+    # The agent's HTTPS listener on the Wi-Fi address, so a phone at home plays
+    # clips straight off this disk instead of needing a bucket copy. Switched on
+    # and off by an admin from the app (`homeRouteDesired` on the agent
+    # document); these say WHERE it listens once it is on. Unset hostname or
+    # address means the route cannot be switched on, and the app says so.
+    # See docs/HOME-NETWORK-PLAN.md and the home-route blueprint.
+    #
+    # The hostname is a public DNS name pointing at the private address, so it
+    # can carry a real Let's Encrypt certificate: a secure page may not call a
+    # plain http:// address at all.
+    home_route_hostname: str = ""
+    home_route_address: str = ""
+    # 8766 is Sarungano's home route, 8767 and 8770 are this worker's loopback
+    # servers; the blueprint keeps the table of who holds what on this PC.
+    home_route_port: int = Field(default=8768, ge=1024, le=65535)
+    # Let's Encrypt's staging service, for trying the renewal without spending
+    # the real rate limit. A staging certificate is never advertised to phones.
+    home_route_staging: bool = False
+    # The certificate, its account key and the pinned lego binary. Outside the
+    # repository on purpose: the keys are private and the binary is downloaded.
+    home_route_dir: Path = Path("~/.clipforge/home")
+    # The DuckDNS account token, read by its exact name rather than with the
+    # CLIPFORGE_ prefix, because lego reads the same variable itself. Never
+    # written anywhere, never reported: the app is told only whether it is set.
+    duckdns_token: str = Field(default="", validation_alias="DUCKDNS_TOKEN", repr=False)
+
     # ── Research ─────────────────────────────────────────────────────────────
     # Where a RESEARCH job looks, and how it introduces itself. None of the
     # providers needs a key: Google Trends and Reddit publish feeds, and

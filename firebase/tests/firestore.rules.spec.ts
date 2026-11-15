@@ -517,6 +517,78 @@ describe('the agent document', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The home wifi route: opening a port on the owner's network is the owner's call.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('the home wifi route wish', () => {
+  const ON = {
+    homeRouteDesired: 'ON',
+    homeRouteRequestedBy: ALICE,
+    homeRouteRequestedAt: '2026-11-15T09:00:00.000Z',
+  };
+
+  beforeEach(async () => {
+    await seed(`users/${ALICE}`, userProfile(ALICE, { role: 'ADMIN' }));
+    await seed('agents/tower', agentReport());
+  });
+
+  it('lets an admin switch it on and off', async () => {
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), ON));
+    await assertSucceeds(
+      updateDoc(doc(aliceDb(), 'agents/tower'), {
+        ...ON,
+        homeRouteDesired: 'OFF',
+        homeRouteRequestedAt: '2026-11-15T09:05:00.000Z',
+      }),
+    );
+  });
+
+  it('requires every press to carry a fresh time', async () => {
+    // Like the worker's wish: a press is an event, and one the agent can tell
+    // from a stale document only by its time.
+    await assertSucceeds(updateDoc(doc(aliceDb(), 'agents/tower'), ON));
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'agents/tower'), { ...ON, homeRouteDesired: 'OFF' }),
+    );
+  });
+
+  it('denies an approved member who is not an admin', async () => {
+    // Bob may start the worker from his phone; he may not open a port.
+    await assertFails(
+      updateDoc(doc(bobDb(), 'agents/tower'), { ...ON, homeRouteRequestedBy: BOB }),
+    );
+  });
+
+  it('denies an admin whose account is no longer approved', async () => {
+    await seed(`users/${ALICE}`, userProfile(ALICE, { role: 'ADMIN', status: 'DISABLED' }));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), ON));
+  });
+
+  it('denies filing it under somebody else, undated, or as anything but ON or OFF', async () => {
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...ON, homeRouteRequestedBy: BOB }));
+    const { homeRouteRequestedAt, ...undated } = ON;
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), undated));
+    await assertFails(
+      updateDoc(doc(aliceDb(), 'agents/tower'), { ...ON, homeRouteDesired: 'SOMETIMES' }),
+    );
+  });
+
+  it('denies writing where the route is, which only the agent may say', async () => {
+    // A phone probes only what the agent advertised. A client that could write
+    // `home.url` could point every phone in the house at an address of its
+    // choosing.
+    const forged = { home: { state: 'SERVING', url: 'https://evil.example:8768' } };
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...ON, ...forged }));
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), forged));
+  });
+
+  it('cannot ride along with a worker wish or a ping', async () => {
+    const wish = { desired: 'RUNNING', requestedBy: ALICE, requestedAt: '2026-11-15T09:00:00.000Z' };
+    await assertFails(updateDoc(doc(aliceDb(), 'agents/tower'), { ...wish, ...ON }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Pings: "are you there?", asked rather than beaten.
 //
 // Neither the agent nor the worker writes on a timer any more. A client that

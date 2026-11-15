@@ -29,6 +29,19 @@
       <img src="icons/mark.png" alt="" width="28" height="28" class="h-7 w-7 shrink-0" />
       <span class="text-lg font-semibold tracking-tight">ClipForge</span>
 
+      @if (approved() && routeLabel(); as label) {
+        <span
+          class="ml-1 rounded-full border px-2 py-0.5 text-xs"
+          [class]="atHome() ? 'border-forge-600/40 text-forge-600' : 'border-line text-ink-subtle'"
+          [title]="
+            atHome()
+              ? 'Clips play straight off the PC, over the home wifi.'
+              : 'Away from the PC: clips play from their cloud copies.'
+          "
+          >{{ label }}</span
+        >
+      }
+
       @if (signedIn()) {
         <div class="relative ml-auto">
           <button

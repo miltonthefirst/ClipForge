@@ -247,12 +247,29 @@ def agent(
         backoff_seconds=settings.agent_restart_backoff_seconds,
         shutdown_grace_seconds=settings.agent_shutdown_grace_seconds,
     )
+    from clipforge.home.clips import ClipMedia
+    from clipforge.home.service import HomeRouteService
+    from clipforge.version import __version__
+
+    client = firestore_client(settings)
+    # The home wifi route lives here rather than in the worker so a clip plays
+    # on a phone at home while no worker is running. It does nothing until an
+    # admin switches it on from the app (docs/HOME-NETWORK-PLAN.md).
+    home = HomeRouteService(
+        settings,
+        station_id=settings.worker_id,
+        version=__version__,
+        media_link=ClipMedia.from_firestore(settings, client),
+        # Late-bound: the agent below is what a new report wakes.
+        on_change=lambda: runner.wake(),
+    )
     runner = Agent(
         settings=settings,
-        store=AgentStore(firestore_client(settings), settings),
+        store=AgentStore(client, settings),
         supervisor=supervisor,
         tick_seconds=settings.agent_tick_seconds,
         listener_check_seconds=settings.listener_check_seconds,
+        home=home,
     )
     runner.install_signal_handlers()
 

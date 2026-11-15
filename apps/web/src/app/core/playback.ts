@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import type { Clip } from '@clipforge/contracts';
 
 import { CLIPFORGE_CONFIG, FirebaseService } from './firebase';
+import { HOME_MEDIA } from './home-route';
 import { StorageGateway } from './storage/gateway';
 
 /**
@@ -24,6 +25,8 @@ const IDENTITY_SERVICE = 'clipforge-local-file-server';
 export type PlaybackSource =
   | { readonly kind: 'remote'; readonly url: string }
   | { readonly kind: 'local'; readonly url: string }
+  /** From the PC over the home wifi (core/home-route.ts, docs/HOME-NETWORK-PLAN.md). */
+  | { readonly kind: 'home'; readonly url: string }
   | { readonly kind: 'bucket'; readonly url: string }
   /**
    * There is a bucket copy, and this device was refused it.
@@ -50,9 +53,12 @@ export type PlaybackSource =
  *   2. The worker's local file server, if reachable. Preferred over the bucket
  *      on purpose — on the machine that rendered the clip it is faster, and it
  *      costs no egress, which the bucket does on every play.
- *   3. The bucket copy, if one exists and has not expired. This is what a phone
- *      gets, and the reason the bucket exists at all.
- *   4. Poster frame only.
+ *   3. The PC over the home wifi, when this device is at home and an admin has
+ *      switched the route on. What a phone on the sofa gets: no upload, no
+ *      egress, and no 5-day expiry (docs/HOME-NETWORK-PLAN.md).
+ *   4. The bucket copy, if one exists and has not expired. This is what a phone
+ *      away from home gets, and the reason the bucket exists at all.
+ *   5. Poster frame only.
  *
  * ## Why expiry is read rather than discovered
  *
@@ -69,6 +75,9 @@ export class PlaybackService {
   private readonly config = inject(CLIPFORGE_CONFIG);
   private readonly firebase = inject(FirebaseService);
   private readonly bucket = inject(StorageGateway);
+  // Optional: a host without the route, and the tests that do not care about
+  // it, skip the rung.
+  private readonly homeMedia = inject(HOME_MEDIA, { optional: true });
   private localReachable: boolean | null = null;
   private probedAt = 0;
 
@@ -151,8 +160,18 @@ export class PlaybackService {
     return Number.isNaN(expires) || expires > now;
   }
 
-  /** Resolve one clip against the precedence above. */
-  async resolve(clip: Clip, localAvailable: boolean): Promise<PlaybackSource> {
+  /**
+   * Resolve one clip against the precedence above.
+   *
+   * `home: false` skips the home wifi rung, for a list that only labels its
+   * clips: a link makes the PC copy the clip for playback, which is worth doing
+   * for the one being watched and not for twenty thumbnails.
+   */
+  async resolve(
+    clip: Clip,
+    localAvailable: boolean,
+    { home = true }: { home?: boolean } = {},
+  ): Promise<PlaybackSource> {
     if (clip.playbackUrl) {
       return { kind: 'remote', url: clip.playbackUrl };
     }
@@ -162,6 +181,11 @@ export class PlaybackService {
       if (key) {
         return { kind: 'local', url: `${this.config.localServerOrigin}/${key}` };
       }
+    }
+
+    if (home && this.homeMedia) {
+      const url = await this.homeMedia.clipUrl(clip.id);
+      if (url) return { kind: 'home', url };
     }
 
     if (this.bucketCopyLive(clip)) {

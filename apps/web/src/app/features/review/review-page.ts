@@ -15,6 +15,7 @@ import type { Candidate, Clip, ClipPreview, Preference } from '@clipforge/contra
 import { ClipsRepository } from '../../core/data/clips';
 import { PreferencesRepository } from '../../core/data/preferences';
 import type { Live } from '../../core/firestore/gateway';
+import { HomeRouteService } from '../../core/home-route';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { SessionService } from '../../core/session';
 
@@ -37,6 +38,10 @@ export class ReviewPage implements OnDestroy {
   private readonly preferences = inject(PreferencesRepository);
   private readonly session = inject(SessionService);
   private readonly playback = inject(PlaybackService);
+  private readonly homeRoute = inject(HomeRouteService);
+
+  /** On the home wifi, where a clip with no cloud copy still plays (its own page). */
+  protected readonly atHome = this.homeRoute.home;
 
   protected readonly cards = signal<ReviewCard[] | null>(null);
   /**
@@ -295,7 +300,8 @@ export class ReviewPage implements OnDestroy {
     // phone each one is a round trip. Awaiting them one after another made a
     // card take as long as the three of them added up.
     const [source, preview, candidate] = await Promise.all([
-      this.playback.resolve(clip, local),
+      // Labels only, so no home link: see PlaybackService.resolve.
+      this.playback.resolve(clip, local, { home: false }),
       // Fetched per card rather than with the list: the poster is ~50 KB of
       // base64, and the queue listener re-delivers its whole result set on
       // every reconnect.
