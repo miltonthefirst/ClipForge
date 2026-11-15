@@ -1,3 +1,4 @@
+import { DatePipe } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -34,7 +35,7 @@ import { WorkerPanel } from '../jobs/worker-panel';
  */
 @Component({
   selector: 'app-worker-page',
-  imports: [WorkerPanel],
+  imports: [DatePipe, WorkerPanel],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './worker-page.html',
 })
@@ -57,6 +58,27 @@ export class WorkerPage implements OnDestroy {
   protected readonly routeBusy = signal(false);
   protected readonly routeError = signal<string | null>(null);
   protected readonly copied = signal(false);
+
+  // ── Firebase usage (clipforge/usage.py) ───────────────────────────────────
+  private readonly usageLive = this.workers.usage();
+  protected readonly usage = this.usageLive.data;
+  protected readonly today = computed(() => this.usage()?.days?.[0] ?? null);
+
+  /** "1.2 MB", "340 KB". */
+  protected bytes(value: number | null | undefined): string {
+    const n = value ?? 0;
+    if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+    if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+    if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+    return `${n} B`;
+  }
+
+  /** Share of the free daily allowance, as a whole percent. */
+  protected share(used: number, free: number | undefined): string {
+    if (!free) return '';
+    const percent = (used / free) * 100;
+    return percent < 1 && used > 0 ? '<1%' : `${Math.round(percent)}%`;
+  }
 
   protected readonly routeStateLabel = computed(() => {
     const state = this.route()?.state;
@@ -97,6 +119,7 @@ export class WorkerPage implements OnDestroy {
   ngOnDestroy(): void {
     if (this.ticker) clearInterval(this.ticker);
     this.agents.release();
+    this.usageLive.release();
   }
 
   /** Admins only, by rule: switching it on opens a port on the home network. */

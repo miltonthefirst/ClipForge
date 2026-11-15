@@ -3,6 +3,7 @@ import type {
   AgentDesired,
   AgentReport,
   HomeRouteDesired,
+  ProjectUsage,
   WorkerHeartbeat,
 } from '@clipforge/contracts';
 
@@ -215,6 +216,14 @@ export class WorkersRepository {
    * the rules within fifteen seconds of the last ping to that machine; the
    * caller waits on that one instead.
    */
+  /**
+   * What the project used of Firebase, from Google's own counts, measured by
+   * the agent when it starts and when someone opens the app (clipforge/usage.py).
+   */
+  usage(): Live<ProjectUsage> {
+    return this.db.liveDoc<ProjectUsage>('usage', 'current');
+  }
+
   /**
    * Switch the home wifi route on or off (docs/HOME-NETWORK-PLAN.md).
    *

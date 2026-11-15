@@ -994,3 +994,12 @@ describe('logGroups', () => {
     );
   });
 });
+
+describe('usage', () => {
+  it('lets any member read what the project used, and nobody write it', async () => {
+    await seed('usage/current', { measuredAt: '2026-11-15T12:00:00.000Z', days: [] });
+    await assertSucceeds(getDoc(doc(bobDb(), 'usage/current')));
+    await assertFails(getDoc(doc(anonDb(), 'usage/current')));
+    await assertFails(setDoc(doc(aliceDb(), 'usage/current'), { measuredAt: 'x', days: [] }));
+  });
+});

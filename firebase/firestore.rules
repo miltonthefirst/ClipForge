@@ -1026,6 +1026,15 @@ service cloud.firestore {
       allow delete: if isApproved();
     }
 
+    // ── Firebase usage, measured by the agent (clipforge/usage.py) ───────────
+    //
+    // The project's own counts, for the Worker page. Read by any member; only
+    // the agent, through the Admin SDK, writes it.
+    match /usage/{document} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
     // ── Logs: grouped errors from the worker and the agent ────────────────────
     //
     // The shared logging blueprint's rules (P:/Experiments/blueprints/logging,

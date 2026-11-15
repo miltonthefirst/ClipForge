@@ -103,6 +103,7 @@ from clipforge.localapi import read_or_create_token
 if TYPE_CHECKING:
     from clipforge.home.service import HomeRouteService as HomeRoute
     from clipforge.notify.watch import AgentNotices
+    from clipforge.usage import UsageMeter
 from clipforge.observability import get_logger, open_log_file
 from clipforge.scheduler.control import PING_TOKEN_MAX
 from clipforge.store.firestore import AgentStore, Subscription
@@ -966,11 +967,15 @@ class Agent:
         relay: Callable[[str], bool] | None = None,
         home: HomeRoute | None = None,
         notices: AgentNotices | None = None,
+        usage: UsageMeter | None = None,
     ) -> None:
         self._settings = settings
         # What the agent tells people on its own: a job waiting with no worker,
         # a worker that will not stay up, a sign-up, a test (clipforge/notify).
         self._notices = notices
+        # Firebase usage for the Worker page: measured on start and when
+        # someone opens the app, at most hourly (clipforge/usage.py).
+        self._usage = usage
         # The home wifi route (clipforge/home/), when this machine runs one. The
         # agent owns its wish and publishes its report; everything else about
         # it happens on the route's own thread.
@@ -1036,6 +1041,8 @@ class Agent:
             self._home.start()
         if self._notices is not None:
             self._notices.start()
+        if self._usage is not None:
+            self._usage.maybe_refresh(force=True)
 
         log.info(
             "agent.started",
@@ -1096,6 +1103,9 @@ class Agent:
         fresh = ping is not None and ping != self._answered
         if fresh:
             self._supervisor.refresh()
+            if self._usage is not None:
+                # Someone is looking: worth an hour-old measure being redone.
+                self._usage.maybe_refresh()
 
         snapshot = self._supervisor.reconcile(wish, now=now)
         if self._notices is not None:

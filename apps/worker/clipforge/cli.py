@@ -264,6 +264,7 @@ def agent(
     from clipforge.home.service import HomeRouteService
     from clipforge.notify import Notifier
     from clipforge.notify.watch import AgentNotices
+    from clipforge.usage import UsageMeter
     from clipforge.version import __version__
 
     client = firestore_client(settings)
@@ -294,6 +295,8 @@ def agent(
             client,
             state_path=Path("~/.clipforge/notify-state.json"),
         ),
+        # Google's counts for the project; nothing to count against emulators.
+        usage=None if settings.use_emulators else UsageMeter(settings, client),
     )
     runner.install_signal_handlers()
 

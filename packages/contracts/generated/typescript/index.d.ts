@@ -399,6 +399,7 @@ export interface ClipForgeContracts {
   notifyDevice?: NotifyDevice;
   notificationSettings?: NotificationSettings;
   logGroup?: LogGroup;
+  projectUsage?: ProjectUsage;
   researchOptions?: ResearchOptions;
   llmTrendVerdict?: LlmTrendVerdict;
   compileOptions?: CompileOptions;
@@ -3092,6 +3093,117 @@ export interface LogOccurrence {
   extra?: {
     [k: string]: string;
   };
+}
+/**
+ * What the project used of Firebase, at usage/current, from Google's own counts (clipforge/usage.py). Written by the agent when it starts and when someone opens the app, at most hourly. `error` says why the last measure failed; the numbers before it stay.
+ */
+export interface ProjectUsage {
+  measuredAt: string;
+  error?: string | null;
+  free?: {
+    reads?: number;
+    writes?: number;
+    deletes?: number;
+  };
+  storedBytes?: number;
+  storedAsOf?: string | null;
+  /**
+   * @maxItems 14
+   */
+  days?:
+    | []
+    | [UsageDay]
+    | [UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay, UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay]
+    | [UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay, UsageDay]
+    | [
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay
+      ]
+    | [
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay
+      ]
+    | [
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay
+      ]
+    | [
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay
+      ]
+    | [
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay,
+        UsageDay
+      ];
+}
+/**
+ * One Firebase day (Pacific time, when Firestore's allowance resets) of the project's use.
+ */
+export interface UsageDay {
+  day: string;
+  reads: number;
+  writes: number;
+  deletes: number;
+  /**
+   * Bytes Cloud Storage sent: clips played or fetched from the bucket.
+   */
+  downloadedBytes: number;
 }
 /**
  * What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.

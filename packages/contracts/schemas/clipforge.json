@@ -36,6 +36,7 @@
     "notifyDevice": { "$ref": "#/definitions/NotifyDevice" },
     "notificationSettings": { "$ref": "#/definitions/NotificationSettings" },
     "logGroup": { "$ref": "#/definitions/LogGroup" },
+    "projectUsage": { "$ref": "#/definitions/ProjectUsage" },
     "researchOptions": { "$ref": "#/definitions/ResearchOptions" },
     "llmTrendVerdict": { "$ref": "#/definitions/LlmTrendVerdict" },
     "compileOptions": { "$ref": "#/definitions/CompileOptions" },
@@ -2451,6 +2452,45 @@
         "id": { "type": ["string", "null"], "default": null, "description": "The occurrence's own document id, so the Logs page can delete it with its group." },
         "timestamp": { "type": "string", "format": "date-time" },
         "extra": { "type": "object", "additionalProperties": { "type": "string" }, "default": {} }
+      }
+    },
+
+    "UsageDay": {
+      "title": "UsageDay",
+      "description": "One Firebase day (Pacific time, when Firestore's allowance resets) of the project's use.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["day", "reads", "writes", "deletes", "downloadedBytes"],
+      "properties": {
+        "day": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "reads": { "type": "integer", "minimum": 0 },
+        "writes": { "type": "integer", "minimum": 0 },
+        "deletes": { "type": "integer", "minimum": 0 },
+        "downloadedBytes": { "type": "integer", "minimum": 0, "description": "Bytes Cloud Storage sent: clips played or fetched from the bucket." }
+      }
+    },
+
+    "ProjectUsage": {
+      "title": "ProjectUsage",
+      "description": "What the project used of Firebase, at usage/current, from Google's own counts (clipforge/usage.py). Written by the agent when it starts and when someone opens the app, at most hourly. `error` says why the last measure failed; the numbers before it stay.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["measuredAt"],
+      "properties": {
+        "measuredAt": { "type": "string", "format": "date-time" },
+        "error": { "type": ["string", "null"], "default": null },
+        "free": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reads": { "type": "integer" },
+            "writes": { "type": "integer" },
+            "deletes": { "type": "integer" }
+          }
+        },
+        "storedBytes": { "type": "integer", "minimum": 0, "default": 0 },
+        "storedAsOf": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "days": { "type": "array", "items": { "$ref": "#/definitions/UsageDay" }, "default": [], "maxItems": 14 }
       }
     },
 

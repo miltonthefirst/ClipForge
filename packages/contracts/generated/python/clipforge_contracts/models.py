@@ -1833,6 +1833,52 @@ class LogOccurrence(BaseModel):
     extra: dict[str, str] | None = {}
 
 
+class UsageDay(BaseModel):
+    """
+    One Firebase day (Pacific time, when Firestore's allowance resets) of the project's use.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    day: str = Field(..., pattern="^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    reads: int = Field(..., ge=0)
+    writes: int = Field(..., ge=0)
+    deletes: int = Field(..., ge=0)
+    downloaded_bytes: int = Field(..., alias="downloadedBytes", ge=0)
+    """
+    Bytes Cloud Storage sent: clips played or fetched from the bucket.
+    """
+
+
+class Free(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    reads: int | None = None
+    writes: int | None = None
+    deletes: int | None = None
+
+
+class ProjectUsage(BaseModel):
+    """
+    What the project used of Firebase, at usage/current, from Google's own counts (clipforge/usage.py). Written by the agent when it starts and when someone opens the app, at most hourly. `error` says why the last measure failed; the numbers before it stay.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    measured_at: AwareDatetime = Field(..., alias="measuredAt")
+    error: str | None = None
+    free: Free | None = None
+    stored_bytes: int | None = Field(0, alias="storedBytes", ge=0)
+    stored_as_of: AwareDatetime | None = Field(None, alias="storedAsOf")
+    days: list[UsageDay] | None = Field([], max_length=14, validate_default=True)
+
+
 class TrackStatus(StrEnum):
     """
     What a person decided about a generated track. NEW is nothing yet. KEPT means it may go under a clip or out as a video of its own (docs/MUSIC-PLAN.md). DISCARDED is a considered no; the file stays on the PC until the collector or a person removes it.
@@ -3119,6 +3165,7 @@ class ClipForgeContracts(BaseModel):
         None, alias="notificationSettings"
     )
     log_group: LogGroup | None = Field(None, alias="logGroup")
+    project_usage: ProjectUsage | None = Field(None, alias="projectUsage")
     research_options: ResearchOptions | None = Field(None, alias="researchOptions")
     llm_trend_verdict: LlmTrendVerdict | None = Field(None, alias="llmTrendVerdict")
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")
