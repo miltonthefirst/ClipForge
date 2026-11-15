@@ -7,13 +7,20 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 from clipforge.config import get_settings
 from clipforge.observability import configure_logging
 from clipforge.version import __version__
+
+if TYPE_CHECKING:
+    from clipforge_contracts import Job
+
+    from clipforge.config import Settings
 
 app = typer.Typer(
     name="clipforge-worker",
@@ -117,6 +124,8 @@ def run(
             # which do nothing until a human accepts them.
             preferences=PreferenceStore(client, settings),
         ),
+        # A job that has ended tells whoever submitted it (clipforge/notify).
+        on_job_end=_job_notices(settings, client),
     )
     worker.install_signal_handlers()
 
@@ -249,6 +258,8 @@ def agent(
     )
     from clipforge.home.clips import WorkspaceMedia
     from clipforge.home.service import HomeRouteService
+    from clipforge.notify import Notifier
+    from clipforge.notify.watch import AgentNotices
     from clipforge.version import __version__
 
     client = firestore_client(settings)
@@ -270,6 +281,11 @@ def agent(
         tick_seconds=settings.agent_tick_seconds,
         listener_check_seconds=settings.listener_check_seconds,
         home=home,
+        notices=AgentNotices(
+            Notifier(settings, client),
+            client,
+            state_path=Path("~/.clipforge/notify-state.json"),
+        ),
     )
     runner.install_signal_handlers()
 
@@ -799,6 +815,17 @@ def compile(  # noqa: A001 - the verb is the command
     job = new_compile_job(uid=uid, options=options)
     JobStore(firestore_client(settings), settings).create(job)
     typer.echo(job.id)
+
+
+def _job_notices(settings: Settings, client: Any) -> Callable[[Job], None]:
+    """The worker's `on_job_end`: notifications for a job that has ended."""
+    from clipforge.notify import Notifier
+    from clipforge.notify.jobs import on_job_end
+    from clipforge.store.firestore import ClipStore
+
+    notifier = Notifier(settings, client)
+    clips = ClipStore(client, settings)
+    return lambda job: on_job_end(job, notifier, lambda job_id: len(clips.for_job(job_id)))
 
 
 @app.command(name="agent-wish")

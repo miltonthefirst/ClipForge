@@ -1,0 +1,137 @@
+<h1 class="text-xl font-semibold">Notifications</h1>
+<p class="mt-1 max-w-2xl text-sm text-ink-muted">
+  The PC tells you when something needs you: clips ready, a job that failed or is stuck waiting.
+  Choose which below. Nothing is sent while the PC is off.
+</p>
+
+<section class="mt-6 rounded-xl border border-line bg-panel p-4">
+  <h2 class="font-medium text-ink">This device</h2>
+  @if (!notifications.supported) {
+    <p class="mt-2 text-sm text-ink-muted">
+      Notifications need the installed app or a browser with ClipForge's service worker running. The
+      desktop app does not receive them. On an iPhone, add ClipForge to the home screen (Share, then
+      Add to Home Screen) and open it from there.
+    </p>
+  } @else if (notifications.enabled()) {
+    <p class="mt-2 text-sm text-ink-muted">This device gets notifications.</p>
+    <div class="mt-3 flex flex-wrap gap-2">
+      <button
+        type="button"
+        class="rounded-lg bg-forge-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+        [disabled]="testState() === 'asking'"
+        (click)="test()"
+      >
+        Send me a test
+      </button>
+      <button
+        type="button"
+        class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink-muted hover:bg-line disabled:opacity-50"
+        [disabled]="notifications.busy()"
+        (click)="notifications.disable()"
+      >
+        Turn off on this device
+      </button>
+    </div>
+    @if (testState() === 'asked') {
+      <p class="mt-2 text-xs text-ink-subtle">
+        Asked. It arrives in a few seconds if the PC is on.
+      </p>
+    } @else if (testState() !== 'idle' && testState() !== 'asking') {
+      <p class="mt-2 text-xs text-warn-ink">{{ testState() }}</p>
+    }
+  } @else {
+    <p class="mt-2 text-sm text-ink-muted">
+      Not on for this device yet. Your browser will ask once.
+    </p>
+    <button
+      type="button"
+      class="mt-3 rounded-lg bg-forge-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+      [disabled]="notifications.busy()"
+      (click)="notifications.enable()"
+    >
+      Turn on notifications
+    </button>
+  }
+  @if (notifications.error(); as message) {
+    <p class="mt-2 text-xs text-warn-ink">{{ message }}</p>
+  }
+</section>
+
+<section class="mt-6 rounded-xl border border-line bg-panel p-4">
+  <h2 class="font-medium text-ink">What to tell me</h2>
+  <ul class="mt-3 divide-y divide-line">
+    @for (info of kinds(); track info.kind) {
+      <li class="flex items-start justify-between gap-4 py-2">
+        <div>
+          <p class="text-sm text-ink">
+            {{ info.label }}
+            @if (info.adminOnly) {
+              <span class="ml-1 rounded bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent-ink"
+                >admin</span
+              >
+            }
+          </p>
+          <p class="text-xs text-ink-subtle">{{ info.detail }}</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          class="mt-0.5 shrink-0 rounded-full border px-3 py-1 text-xs"
+          [class]="
+            notifications.isOn(info)
+              ? 'border-forge-600/40 bg-forge-600 text-white'
+              : 'border-line-strong text-ink-muted'
+          "
+          [attr.aria-checked]="notifications.isOn(info)"
+          [attr.aria-label]="info.label"
+          (click)="toggle(info)"
+        >
+          {{ notifications.isOn(info) ? 'On' : 'Off' }}
+        </button>
+      </li>
+    }
+  </ul>
+</section>
+
+<section class="mt-6 rounded-xl border border-line bg-panel p-4">
+  <div class="flex flex-wrap items-baseline justify-between gap-3">
+    <h2 class="font-medium text-ink">Recent</h2>
+    @if (notifications.unread() > 0) {
+      <button
+        type="button"
+        class="rounded-lg border border-line-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-line"
+        (click)="notifications.markAllRead()"
+      >
+        Mark all read
+      </button>
+    }
+  </div>
+  @if (notifications.list(); as items) {
+    @if (items.length === 0) {
+      <p class="mt-2 text-sm text-ink-muted">Nothing yet.</p>
+    } @else {
+      <ul class="mt-3 space-y-2">
+        @for (item of items; track item.id) {
+          <li>
+            <button
+              type="button"
+              class="w-full rounded-lg border px-3 py-2 text-left hover:bg-line"
+              [class]="item.readAt ? 'border-line' : 'border-forge-600/40 bg-forge-600/5'"
+              (click)="open(item)"
+            >
+              <p class="text-sm text-ink">{{ item.title }}</p>
+              @if (item.body) {
+                <p class="text-xs text-ink-muted">{{ item.body }}</p>
+              }
+              <p class="mt-1 text-[11px] text-ink-subtle">
+                {{ item.createdAt | date: 'd MMM, HH:mm' }}
+              </p>
+            </button>
+          </li>
+        }
+      </ul>
+    }
+  } @else {
+    <p class="mt-2 text-sm text-ink-muted">Loading…</p>
+  }
+</section>

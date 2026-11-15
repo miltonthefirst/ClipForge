@@ -12,6 +12,7 @@ import { SignInPage } from './features/auth/sign-in-page';
 import { FirebaseService } from './core/firebase';
 import { AppUpdateService } from './core/app-update';
 import { HomeRouteService } from './core/home-route';
+import { NotificationsService } from './core/notifications';
 import { SessionService } from './core/session';
 import { ThemeService } from './core/theme';
 
@@ -65,6 +66,9 @@ export class App {
     hour: '2-digit',
     minute: '2-digit',
   });
+  /** Unread notifications, for the bell (core/notifications.ts). */
+  protected readonly unread = inject(NotificationsService).unread;
+
   protected readonly pcVersion = computed(() => this.homeRoute.machine()?.version ?? null);
   protected readonly updateReady = this.update.ready;
   protected readonly updatedTo = this.update.updatedTo;
@@ -103,6 +107,7 @@ export class App {
       { path: '/music', label: 'Music' },
       { path: '/jobs', label: 'Jobs' },
       { path: '/sources', label: 'Sources' },
+      { path: '/notifications', label: 'Notifications' },
       { path: '/settings', label: 'Settings' },
       { path: '/settings/storage', label: 'Storage' },
       { path: '/settings/worker', label: 'Worker' },

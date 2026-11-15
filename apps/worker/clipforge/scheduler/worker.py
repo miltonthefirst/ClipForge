@@ -181,8 +181,13 @@ class Worker:
         research_scheduler: ResearchScheduler | None = None,
         uid: str = "local",
         registry_factory: Callable[[JobType], StageRegistry] = registry_for,
+        # Told once a job has ended for good (COMPLETED, or FAILED with no
+        # retries left), to notify whoever is waiting on it (clipforge/notify).
+        # Its failures are its own: it must never change how the job ended.
+        on_job_end: Callable[[Job], None] | None = None,
     ) -> None:
         self._settings = settings
+        self._on_job_end = on_job_end
         self._jobs = jobs
         self._workers = workers
         self._broker = broker or ModelBroker(reserve_mb=settings.vram_reserve_mb)
@@ -549,6 +554,14 @@ class Worker:
             final = runner.run(job, self._stop)
             still_ours = final.status is JobStatus.RUNNING
             log.info("job.finished", job_id=job.id, status=final.status.value)
+            if self._on_job_end is not None and final.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+            ):
+                try:
+                    self._on_job_end(final)
+                except Exception:
+                    log.exception("job.on_end_failed", job_id=job.id)
         except LeaseLostError:
             # Already logged by the runner. Another worker owns this now, so it
             # must not be released — that would take it away from them.

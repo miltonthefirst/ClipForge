@@ -17,7 +17,6 @@ reference implementation.
 from __future__ import annotations
 
 import json
-import os
 import socket
 import subprocess
 import sys
@@ -61,31 +60,15 @@ def firewall_command(port: int) -> str:
 
 
 def firebase_verifier(settings: Settings) -> Callable[[str], dict[str, Any]]:
-    """`verify_token` for the listener: firebase-admin's default app, made on
-    first use with the same credentials the worker's admin commands use
-    (clipforge/store/users.py). Against the emulators, the Auth emulator."""
-    lock = threading.Lock()
+    """`verify_token` for the listener: firebase-admin's default app
+    (clipforge/firebase_app.py). Against the emulators, the Auth emulator."""
 
     def verify(token: str) -> dict[str, Any]:
-        import firebase_admin
-        from firebase_admin import auth, credentials
+        from firebase_admin import auth
 
-        with lock:
-            if not firebase_admin._apps:
-                options = {"projectId": settings.firebase_project_id}
-                if settings.use_emulators:
-                    os.environ.setdefault(
-                        "FIREBASE_AUTH_EMULATOR_HOST", settings.auth_emulator_host
-                    )
-                    firebase_admin.initialize_app(options=options)
-                elif settings.google_application_credentials:
-                    firebase_admin.initialize_app(
-                        credentials.Certificate(settings.google_application_credentials),
-                        options=options,
-                    )
-                else:
-                    firebase_admin.initialize_app(options=options)
-        return dict(auth.verify_id_token(token))
+        from clipforge.firebase_app import default_app
+
+        return dict(auth.verify_id_token(token, app=default_app(settings)))
 
     return verify
 

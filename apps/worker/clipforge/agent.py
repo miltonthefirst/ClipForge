@@ -88,7 +88,13 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from clipforge_contracts import AgentDesired, AgentReport, AgentState, HomeRouteDesired
+from clipforge_contracts import (
+    AgentDesired,
+    AgentReport,
+    AgentState,
+    HomeRouteDesired,
+    HomeRouteState,
+)
 from clipforge_contracts import HomeRoute as HomeRouteReport
 
 from clipforge.config import Settings
@@ -96,6 +102,7 @@ from clipforge.localapi import read_or_create_token
 
 if TYPE_CHECKING:
     from clipforge.home.service import HomeRouteService as HomeRoute
+    from clipforge.notify.watch import AgentNotices
 from clipforge.observability import get_logger, open_log_file
 from clipforge.scheduler.control import PING_TOKEN_MAX
 from clipforge.store.firestore import AgentStore, Subscription
@@ -958,8 +965,12 @@ class Agent:
         listener_check_seconds: float = 30.0,
         relay: Callable[[str], bool] | None = None,
         home: HomeRoute | None = None,
+        notices: AgentNotices | None = None,
     ) -> None:
         self._settings = settings
+        # What the agent tells people on its own: a job waiting with no worker,
+        # a worker that will not stay up, a sign-up, a test (clipforge/notify).
+        self._notices = notices
         # The home wifi route (clipforge/home/), when this machine runs one. The
         # agent owns its wish and publishes its report; everything else about
         # it happens on the route's own thread.
@@ -1023,6 +1034,8 @@ class Agent:
         self._subscribe()
         if self._home is not None:
             self._home.start()
+        if self._notices is not None:
+            self._notices.start()
 
         log.info(
             "agent.started",
@@ -1038,11 +1051,35 @@ class Agent:
         finally:
             if self._watch is not None:
                 self._watch.close()
+            if self._notices is not None:
+                self._notices.stop()
             if self._home is not None:
                 # Unlike the worker, the listener IS stopped on the way out: it
                 # is this process's own socket, and its links die with it.
                 self._home.stop()
+                self._withdraw_home()
             log.info("agent.stopped")
+
+    def _withdraw_home(self) -> None:
+        """Say the route is gone before the process is.
+
+        Otherwise the document goes on advertising the address until the next
+        agent starts, and every phone that opens the app meanwhile probes a
+        listener nobody is running. The probe fails safe (the phone falls back
+        to the bucket), but the Worker page would claim SERVING for a machine
+        that is restarting. Best effort: a shutdown that cannot reach Firestore
+        leaves the old document, which the next start overwrites.
+        """
+        with self._wish_lock:
+            wish = self._wish
+        gone = HomeRouteReport(state=HomeRouteState.OFF, detail="The agent on this PC has stopped.")
+        self._publish(
+            wish,
+            self._supervisor.snapshot(),
+            datetime.now(UTC),
+            answered=self._answered,
+            home=gone,
+        )
 
     def step(self, now: datetime | None = None) -> None:
         """One tick: reconcile, answer a ping if one is waiting, report if due.
@@ -1061,6 +1098,8 @@ class Agent:
             self._supervisor.refresh()
 
         snapshot = self._supervisor.reconcile(wish, now=now)
+        if self._notices is not None:
+            self._notices.step(snapshot.state, snapshot.detail)
 
         if fresh and ping is not None:
             # Passed on before the agent's own answer is written, so a client
@@ -1116,6 +1155,8 @@ class Agent:
         ping = ping_from(document)
         if self._home is not None:
             self._home.want(home_route_wanted(document))
+        if self._notices is not None:
+            self._notices.take(document)
         with self._wish_lock:
             changed = wish != self._wish
             self._wish = wish

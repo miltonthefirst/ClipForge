@@ -813,3 +813,31 @@ def test_the_store_never_writes_the_admins_wish() -> None:
     assert "home" in written[0]
     for field in ("homeRouteDesired", "homeRouteRequestedBy", "homeRouteRequestedAt"):
         assert field not in written[0]
+
+
+def test_a_stopping_agent_withdraws_the_route_before_it_goes() -> None:
+    """Otherwise the document advertises a listener nobody is running until the
+    next agent starts, and the Worker page says SERVING for a PC that is down."""
+    from tests.unit.test_agent import FakeAgentStore, FakeProcess, supervisor
+
+    store = FakeAgentStore({"desired": "STOPPED", "homeRouteDesired": "ON"})
+    home = FakeHome()
+    home.current = HomeRoute(state=HomeRouteState.SERVING, url=f"https://{HOST}:8768")
+    agent = Agent(
+        settings=Settings(use_emulators=True),
+        store=store,  # type: ignore[arg-type]
+        supervisor=supervisor(FakeProcess()),
+        listener_check_seconds=3600.0,
+        tick_seconds=0.01,
+        relay=lambda _token: True,
+        home=home,  # type: ignore[arg-type]
+    )
+    agent.request_stop()
+
+    agent.run()
+
+    assert home.started and home.stopped
+    last = store.reports[-1]
+    assert last.home is not None
+    assert last.home.state == HomeRouteState.OFF
+    assert last.home.url is None

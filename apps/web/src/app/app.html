@@ -54,8 +54,36 @@
         >
       }
 
+      @if (approved()) {
+        <a
+          routerLink="/notifications"
+          class="relative ml-auto rounded-md p-2 text-ink-muted hover:bg-line hover:text-ink"
+          [attr.aria-label]="unread() ? unread() + ' unread notifications' : 'Notifications'"
+        >
+          <svg
+            class="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+          </svg>
+          @if (unread() > 0) {
+            <span
+              class="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-forge-600 px-1 text-[10px] font-semibold text-white"
+              >{{ unread() > 9 ? '9+' : unread() }}</span
+            >
+          }
+        </a>
+      }
+
       @if (signedIn()) {
-        <div class="relative ml-auto">
+        <div class="relative" [class.ml-auto]="!approved()">
           <button
             type="button"
             class="flex items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-line"

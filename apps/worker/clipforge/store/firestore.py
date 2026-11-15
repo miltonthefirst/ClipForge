@@ -1559,6 +1559,8 @@ class AgentStore:
             "homeRouteDesired",
             "homeRouteRequestedBy",
             "homeRouteRequestedAt",
+            "notifyTestRequestedBy",
+            "notifyTestRequestedAt",
         ):
             document.pop(owned_by_the_client, None)
         if not claim:

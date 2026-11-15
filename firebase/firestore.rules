@@ -127,6 +127,41 @@ service cloud.firestore {
                     && request.resource.data.decidedBy == request.auth.uid;
 
       allow delete: if false;
+
+      // ── Notifications (clipforge/notify) ─────────────────────────────────
+      //
+      // Everything here is the account's own and nobody else's, not even an
+      // admin's: a device token can push to someone's phone, and the switches
+      // are a person's own business. Approval still applies, so a pending
+      // sign-up cannot register a phone ahead of being let in.
+
+      // One browser that may be pushed to. Written by that browser.
+      match /devices/{deviceId} {
+        allow read, delete: if isApproved() && request.auth.uid == uid;
+        allow create, update: if isApproved() && request.auth.uid == uid
+                              && request.resource.data.keys().hasOnly(['id', 'token', 'label', 'createdAt', 'lastSeenAt'])
+                              && request.resource.data.id == deviceId
+                              && request.resource.data.token is string
+                              && request.resource.data.token.size() > 0
+                              && request.resource.data.token.size() <= 4096;
+      }
+
+      // The person's own switches, one per kind.
+      match /settings/notifications {
+        allow read: if isApproved() && request.auth.uid == uid;
+        allow create, update: if isApproved() && request.auth.uid == uid
+                              && request.resource.data.keys().hasOnly(['kinds', 'updatedAt'])
+                              && request.resource.data.kinds is map;
+      }
+
+      // What they were told. Written by the worker and the agent; the owner
+      // may only mark one read, or clear it.
+      match /notifications/{notificationId} {
+        allow read, delete: if isApproved() && request.auth.uid == uid;
+        allow create: if false;
+        allow update: if isApproved() && request.auth.uid == uid
+                      && changed().hasOnly(['readAt']);
+      }
     }
 
     // ── Workers ──────────────────────────────────────────────────────────────
@@ -235,6 +270,19 @@ service cloud.firestore {
       // the agent says what the listener is doing and where a phone can reach
       // it, is never writable by a client: a phone probes only an address the
       // agent advertised.
+      // ── "Send me a test notification" ──────────────────────────────────────
+      //
+      // Any member may ask, for themselves, like a ping: the agent sends one
+      // to the account named, once per press, and the time is the server's so
+      // the 30-second throttle cannot be dodged (clipforge/notify/watch.py).
+      allow update: if isApproved()
+                    && changed().hasOnly(['notifyTestRequestedBy', 'notifyTestRequestedAt'])
+                    && request.resource.data.notifyTestRequestedBy == request.auth.uid
+                    && request.resource.data.notifyTestRequestedAt == request.time
+                    && (!('notifyTestRequestedAt' in resource.data)
+                        || !(resource.data.notifyTestRequestedAt is timestamp)
+                        || request.time > resource.data.notifyTestRequestedAt + duration.value(30, 's'));
+
       allow update: if isAdmin()
                     && changed().hasOnly(['homeRouteDesired', 'homeRouteRequestedBy', 'homeRouteRequestedAt'])
                     && changed().hasAll(['homeRouteDesired', 'homeRouteRequestedAt'])

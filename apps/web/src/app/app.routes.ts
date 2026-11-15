@@ -34,6 +34,13 @@ export const routes: Routes = [
       import('./features/publish/publication-page').then((m) => m.PublicationPage),
   },
   {
+    // What the PC told you, and which kinds to be told (core/notifications.ts).
+    path: 'notifications',
+    title: 'Notifications · ClipForge',
+    loadComponent: () =>
+      import('./features/notifications/notifications-page').then((m) => m.NotificationsPage),
+  },
+  {
     // Generated music: listen, keep or discard (docs/MUSIC-PLAN.md).
     path: 'music',
     title: 'Music · ClipForge',

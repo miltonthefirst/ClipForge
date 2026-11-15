@@ -1617,6 +1617,13 @@ class AgentReport(BaseModel):
     home_route_requested_at: AwareDatetime | None = Field(
         None, alias="homeRouteRequestedAt"
     )
+    notify_test_requested_by: str | None = Field(None, alias="notifyTestRequestedBy")
+    """
+    Client-owned: who pressed 'Send me a test notification'. The agent sends one to that account and remembers the time it answered; the rules pin the time to the server's and allow one press per machine every 30 seconds.
+    """
+    notify_test_requested_at: AwareDatetime | None = Field(
+        None, alias="notifyTestRequestedAt"
+    )
     home: HomeRoute | None = None
     """
     Agent-owned: the home wifi listener's state, and where a phone at home can reach it.
@@ -1721,6 +1728,71 @@ class TrendVideo(BaseModel):
     """
     Which provider surfaced it. A video that Reddit linked is one people chose to share; one a search returned is one that merely exists.
     """
+
+
+class NotificationKind(StrEnum):
+    """
+    What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN and SIGNUP go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.
+    """
+
+    JOB_FAILED = "JOB_FAILED"
+    CLIPS_READY = "CLIPS_READY"
+    PUBLISHED = "PUBLISHED"
+    JOB_WAITING = "JOB_WAITING"
+    YOUTUBE_SIGN_IN = "YOUTUBE_SIGN_IN"
+    WORKER_DOWN = "WORKER_DOWN"
+    SIGNUP = "SIGNUP"
+    TEST = "TEST"
+
+
+class AppNotification(BaseModel):
+    """
+    One notification, at users/{uid}/notifications/{id}: what the phone was told, kept so one missed is still there. Written by the worker or the agent; the recipient may only mark it read or delete it. A folded notification (the same job failing twice) keeps one id and is rewritten.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    kind: NotificationKind
+    title: str = Field(..., max_length=120, min_length=1)
+    body: str | None = Field("", max_length=400)
+    link: str | None = Field(None, max_length=200)
+    """
+    An app path, opened by a tap: /jobs/abc, /review.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    read_at: AwareDatetime | None = Field(None, alias="readAt")
+
+
+class NotifyDevice(BaseModel):
+    """
+    One browser that may be pushed to, at users/{uid}/devices/{id}. Written by that browser for its own account only; the id is derived from the token. A token Cloud Messaging says is gone is deleted by the sender.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., max_length=64, min_length=1)
+    token: str = Field(..., max_length=4096, min_length=1)
+    label: str | None = Field(None, max_length=80)
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    last_seen_at: AwareDatetime = Field(..., alias="lastSeenAt")
+
+
+class NotificationSettings(BaseModel):
+    """
+    A person's own switches, at users/{uid}/settings/notifications. A kind missing from `kinds` takes its default (clipforge/notify/kinds.py). The sender enforces who may get which kind; a switch for a kind someone's role never gets does nothing.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    kinds: dict[NotificationKind, bool]
+    updated_at: AwareDatetime | None = Field(None, alias="updatedAt")
 
 
 class TrackStatus(StrEnum):
@@ -2978,6 +3050,11 @@ class ClipForgeContracts(BaseModel):
     llm_clip_response: LlmClipResponse | None = Field(None, alias="llmClipResponse")
     trend: Trend | None = None
     track: Track | None = None
+    app_notification: AppNotification | None = Field(None, alias="appNotification")
+    notify_device: NotifyDevice | None = Field(None, alias="notifyDevice")
+    notification_settings: NotificationSettings | None = Field(
+        None, alias="notificationSettings"
+    )
     research_options: ResearchOptions | None = Field(None, alias="researchOptions")
     llm_trend_verdict: LlmTrendVerdict | None = Field(None, alias="llmTrendVerdict")
     compile_options: CompileOptions | None = Field(None, alias="compileOptions")

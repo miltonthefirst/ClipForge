@@ -32,6 +32,9 @@
     "llmClipResponse": { "$ref": "#/definitions/LlmClipResponse" },
     "trend": { "$ref": "#/definitions/Trend" },
     "track": { "$ref": "#/definitions/Track" },
+    "appNotification": { "$ref": "#/definitions/AppNotification" },
+    "notifyDevice": { "$ref": "#/definitions/NotifyDevice" },
+    "notificationSettings": { "$ref": "#/definitions/NotificationSettings" },
     "researchOptions": { "$ref": "#/definitions/ResearchOptions" },
     "llmTrendVerdict": { "$ref": "#/definitions/LlmTrendVerdict" },
     "compileOptions": { "$ref": "#/definitions/CompileOptions" },
@@ -2247,6 +2250,12 @@
         },
         "homeRouteRequestedBy": { "type": ["string", "null"], "default": null },
         "homeRouteRequestedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
+        "notifyTestRequestedBy": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Client-owned: who pressed 'Send me a test notification'. The agent sends one to that account and remembers the time it answered; the rules pin the time to the server's and allow one press per machine every 30 seconds."
+        },
+        "notifyTestRequestedAt": { "type": ["string", "null"], "format": "date-time", "default": null },
         "home": {
           "anyOf": [{ "$ref": "#/definitions/HomeRoute" }, { "type": "null" }],
           "default": null,
@@ -2349,6 +2358,61 @@
           "$ref": "#/definitions/TrendSource",
           "description": "Which provider surfaced it. A video that Reddit linked is one people chose to share; one a search returned is one that merely exists."
         }
+      }
+    },
+
+    "NotificationKind": {
+      "title": "NotificationKind",
+      "description": "What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN and SIGNUP go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.",
+      "type": "string",
+      "enum": ["JOB_FAILED", "CLIPS_READY", "PUBLISHED", "JOB_WAITING", "YOUTUBE_SIGN_IN", "WORKER_DOWN", "SIGNUP", "TEST"]
+    },
+
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "One notification, at users/{uid}/notifications/{id}: what the phone was told, kept so one missed is still there. Written by the worker or the agent; the recipient may only mark it read or delete it. A folded notification (the same job failing twice) keeps one id and is rewritten.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "title", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/definitions/NotificationKind" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "body": { "type": "string", "maxLength": 400, "default": "" },
+        "link": { "type": ["string", "null"], "maxLength": 200, "default": null, "description": "An app path, opened by a tap: /jobs/abc, /review." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "readAt": { "type": ["string", "null"], "format": "date-time", "default": null }
+      }
+    },
+
+    "NotifyDevice": {
+      "title": "NotifyDevice",
+      "description": "One browser that may be pushed to, at users/{uid}/devices/{id}. Written by that browser for its own account only; the id is derived from the token. A token Cloud Messaging says is gone is deleted by the sender.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "token", "createdAt", "lastSeenAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "token": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "label": { "type": ["string", "null"], "maxLength": 80, "default": null },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastSeenAt": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "NotificationSettings": {
+      "title": "NotificationSettings",
+      "description": "A person's own switches, at users/{uid}/settings/notifications. A kind missing from `kinds` takes its default (clipforge/notify/kinds.py). The sender enforces who may get which kind; a switch for a kind someone's role never gets does nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kinds"],
+      "properties": {
+        "kinds": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" },
+          "propertyNames": { "$ref": "#/definitions/NotificationKind" }
+        },
+        "updatedAt": { "type": ["string", "null"], "format": "date-time", "default": null }
       }
     },
 

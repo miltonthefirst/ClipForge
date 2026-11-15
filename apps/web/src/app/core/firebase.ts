@@ -52,7 +52,15 @@ export class FirebaseService {
   readonly redirectError = signal<string | null>(null);
 
   constructor() {
-    this.app = initializeApp(this.config.firebase);
+    // Cloud Messaging (core/notifications.ts) needs the sender id, which is the
+    // project number, and a Firebase web appId already carries it:
+    // `1:<project number>:web:<hash>`. Derived here rather than added to the
+    // inlined config, so nothing about deploying changes.
+    const senderId = this.config.firebase.appId.split(':')[1];
+    this.app = initializeApp({
+      ...this.config.firebase,
+      ...(senderId && /^\d+$/.test(senderId) ? { messagingSenderId: senderId } : {}),
+    });
     this.auth = getAuth(this.app);
     this.db = getFirestore(this.app);
     this.storage = getStorage(this.app);

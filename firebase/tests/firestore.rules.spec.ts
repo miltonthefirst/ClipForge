@@ -849,3 +849,87 @@ describe('tracks', () => {
     await assertFails(deleteDoc(doc(aliceDb(), 'tracks/trk_1')));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notifications: each person's own devices, switches and list.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('notifications', () => {
+  const DEVICE = {
+    id: 'dev-1',
+    token: 'fcm-token-abc',
+    label: 'Android Chrome',
+    createdAt: '2026-11-15T12:00:00.000Z',
+    lastSeenAt: '2026-11-15T12:00:00.000Z',
+  };
+
+  it('lets a member register, refresh and remove their own device', async () => {
+    const own = doc(aliceDb(), `users/${ALICE}/devices/dev-1`);
+    await assertSucceeds(setDoc(own, DEVICE));
+    await assertSucceeds(updateDoc(own, { lastSeenAt: '2026-11-16T12:00:00.000Z' }));
+    await assertSucceeds(getDoc(own));
+    await assertSucceeds(deleteDoc(own));
+  });
+
+  it("denies touching anyone else's devices, even as an admin", async () => {
+    await seed(`users/${BOB}`, userProfile(BOB, { role: 'ADMIN' }));
+    await seed(`users/${ALICE}/devices/dev-1`, DEVICE);
+    await assertFails(getDoc(doc(bobDb(), `users/${ALICE}/devices/dev-1`)));
+    await assertFails(setDoc(doc(bobDb(), `users/${ALICE}/devices/dev-2`), { ...DEVICE, id: 'dev-2' }));
+  });
+
+  it('denies a device record that carries anything else, or lies about its id', async () => {
+    const own = doc(aliceDb(), `users/${ALICE}/devices/dev-1`);
+    await assertFails(setDoc(own, { ...DEVICE, admin: true }));
+    await assertFails(setDoc(own, { ...DEVICE, id: 'dev-9' }));
+  });
+
+  it('denies a pending account registering a phone before it is let in', async () => {
+    await seed(`users/${ALICE}`, userProfile(ALICE, { status: 'PENDING' }));
+    await assertFails(setDoc(doc(aliceDb(), `users/${ALICE}/devices/dev-1`), DEVICE));
+  });
+
+  it('lets a member set their own switches and nobody else', async () => {
+    const mine = doc(aliceDb(), `users/${ALICE}/settings/notifications`);
+    await assertSucceeds(setDoc(mine, { kinds: { CLIPS_READY: false }, updatedAt: '2026-11-15T12:00:00.000Z' }));
+    await assertFails(setDoc(mine, { kinds: {}, role: 'ADMIN' }));
+    await assertFails(
+      setDoc(doc(bobDb(), `users/${ALICE}/settings/notifications`), { kinds: { JOB_FAILED: false } }),
+    );
+  });
+
+  it('lets a member mark their own notification read, and nothing more', async () => {
+    await seed(`users/${ALICE}/notifications/n1`, {
+      id: 'n1',
+      kind: 'JOB_FAILED',
+      title: 'Clipping failed',
+      body: '',
+      link: '/jobs/j1',
+      createdAt: '2026-11-15T12:00:00.000Z',
+      readAt: null,
+    });
+    const own = doc(aliceDb(), `users/${ALICE}/notifications/n1`);
+    await assertSucceeds(updateDoc(own, { readAt: '2026-11-15T12:05:00.000Z' }));
+    await assertFails(updateDoc(own, { title: 'Everything is fine' }));
+    await assertFails(setDoc(doc(aliceDb(), `users/${ALICE}/notifications/n2`), { id: 'n2' }));
+    await assertFails(getDoc(doc(bobDb(), `users/${ALICE}/notifications/n1`)));
+    await assertSucceeds(deleteDoc(own));
+  });
+
+  it('lets a member ask for a test for themselves, once per 30 seconds', async () => {
+    await seed('agents/tower', agentReport());
+    const agent = doc(aliceDb(), 'agents/tower');
+    await assertSucceeds(
+      updateDoc(agent, { notifyTestRequestedBy: ALICE, notifyTestRequestedAt: serverTimestamp() }),
+    );
+    await assertFails(
+      updateDoc(agent, { notifyTestRequestedBy: ALICE, notifyTestRequestedAt: serverTimestamp() }),
+    );
+    await assertFails(
+      updateDoc(doc(bobDb(), 'agents/tower'), {
+        notifyTestRequestedBy: ALICE,
+        notifyTestRequestedAt: serverTimestamp(),
+      }),
+    );
+  });
+});

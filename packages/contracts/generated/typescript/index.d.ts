@@ -348,6 +348,18 @@ export type TrendStatus = 'NEW' | 'PROMOTED' | 'DISMISSED';
  */
 export type TrackStatus = 'NEW' | 'KEPT' | 'DISCARDED';
 /**
+ * What a notification is about (apps/worker/clipforge/notify/kinds.py). JOB_FAILED, CLIPS_READY and PUBLISHED go to whoever submitted the job; JOB_WAITING too, when a job has sat QUEUED with no worker running. YOUTUBE_SIGN_IN, WORKER_DOWN and SIGNUP go to admins. TEST is the Settings page's 'send me one'. Each person switches each kind on or off for themselves.
+ */
+export type NotificationKind =
+  | 'JOB_FAILED'
+  | 'CLIPS_READY'
+  | 'PUBLISHED'
+  | 'JOB_WAITING'
+  | 'YOUTUBE_SIGN_IN'
+  | 'WORKER_DOWN'
+  | 'SIGNUP'
+  | 'TEST';
+/**
  * How often an automatic research run fires. INTERVAL is every N hours from whenever it last ran; DAILY is at a wall-clock time in a named timezone, which is what 'every morning' means to a person and what an interval cannot express across a clock change.
  */
 export type ScheduleCadence = 'INTERVAL' | 'DAILY';
@@ -382,6 +394,9 @@ export interface ClipForgeContracts {
   llmClipResponse?: LlmClipResponse;
   trend?: Trend;
   track?: Track;
+  appNotification?: AppNotification;
+  notifyDevice?: NotifyDevice;
+  notificationSettings?: NotificationSettings;
   researchOptions?: ResearchOptions;
   llmTrendVerdict?: LlmTrendVerdict;
   compileOptions?: CompileOptions;
@@ -2319,6 +2334,11 @@ export interface AgentReport {
   homeRouteRequestedBy?: string | null;
   homeRouteRequestedAt?: string | null;
   /**
+   * Client-owned: who pressed 'Send me a test notification'. The agent sends one to that account and remembers the time it answered; the rules pin the time to the server's and allow one press per machine every 30 seconds.
+   */
+  notifyTestRequestedBy?: string | null;
+  notifyTestRequestedAt?: string | null;
+  /**
    * Agent-owned: the home wifi listener's state, and where a phone at home can reach it.
    */
   home?: HomeRoute | null;
@@ -3004,6 +3024,40 @@ export interface Track {
   createdAt: string;
   decidedAt?: string | null;
   decidedBy?: string | null;
+}
+/**
+ * One notification, at users/{uid}/notifications/{id}: what the phone was told, kept so one missed is still there. Written by the worker or the agent; the recipient may only mark it read or delete it. A folded notification (the same job failing twice) keeps one id and is rewritten.
+ */
+export interface AppNotification {
+  id: string;
+  kind: NotificationKind;
+  title: string;
+  body?: string;
+  /**
+   * An app path, opened by a tap: /jobs/abc, /review.
+   */
+  link?: string | null;
+  createdAt: string;
+  readAt?: string | null;
+}
+/**
+ * One browser that may be pushed to, at users/{uid}/devices/{id}. Written by that browser for its own account only; the id is derived from the token. A token Cloud Messaging says is gone is deleted by the sender.
+ */
+export interface NotifyDevice {
+  id: string;
+  token: string;
+  label?: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+}
+/**
+ * A person's own switches, at users/{uid}/settings/notifications. A kind missing from `kinds` takes its default (clipforge/notify/kinds.py). The sender enforces who may get which kind; a switch for a kind someone's role never gets does nothing.
+ */
+export interface NotificationSettings {
+  kinds: {
+    [k: string]: boolean;
+  };
+  updatedAt?: string | null;
 }
 /**
  * What the local model says about one trend, schema-constrained. Every field is required on purpose: with nullable fields a small model writes a summary and then emits null for the number, because null always satisfies the schema.
