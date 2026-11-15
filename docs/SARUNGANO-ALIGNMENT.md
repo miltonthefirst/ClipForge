@@ -8,6 +8,25 @@ This is the list, ranked, with where each one goes.
 Shared designs live in `P:/Experiments/blueprints`. A project records which ones
 it implements in `.blueprints.json`. ClipForge has none yet.
 
+## Status (2026-11-15, end of day)
+
+Built and released in ClipForge (0.0.6), each recorded in `.blueprints.json`:
+
+- **Home wifi route** (home-route 1.1.0), live on `clipforge-home.bytepic.dev:8768`.
+- **Versioned releases** (releases 1.0.0): `python tools/release.py`; the app
+  shows its version and the PC's, and always runs the newest build.
+- **Push notifications** (notifications 1.0.0): the Notifications page.
+- **Grouped error monitoring** (logging 1.2.0): the Logs page, admins only.
+- **Firebase usage** on the Worker page (no blueprint yet: Sarungano and
+  ClipForge each have one; a candidate).
+- **Music library** (the first slice of docs/MUSIC-PLAN.md M2): the Music page.
+
+Shared designs written down: home-route, releases, youtube-publishing,
+workstation-agent, notifications (`P:/Experiments/blueprints`, private on GitHub).
+
+Still open from this list: DPAPI for the YouTube token (§1 item 6), trend
+research provider notes (§2), and Sarungano taking home-route 1.1.0 (optional).
+
 ## 1. Copy from Sarungano into ClipForge
 
 | # | Feature | Sarungano has | ClipForge today | Value | Where it goes |

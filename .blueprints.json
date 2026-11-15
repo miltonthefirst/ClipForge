@@ -70,6 +70,59 @@
         "No userId, url or userAgent on an occurrence: extra carries the log line's context (job, stage, host, pid)"
       ],
       "pendingUpstream": []
+    },
+    "youtube-publishing": {
+      "version": "1.0.0",
+      "adopted": "2026-09-09",
+      "where": [
+        "apps/worker/clipforge/publish/",
+        "apps/worker/clipforge/stages/publish.py",
+        "docs/adr/0010-worker-held-publishing-credentials.md"
+      ],
+      "deviations": [
+        "The blueprint was drawn from this project",
+        "Token encrypted with a machine-local key, not DPAPI",
+        "No playlists",
+        "Default privacy is unlisted, not private",
+        "No rights gate (removed at the owner's request, ADR-0020)",
+        "containsSyntheticMedia is not set yet (planned with generated music, docs/MUSIC-PLAN.md)"
+      ],
+      "pendingUpstream": []
+    },
+    "workstation-agent": {
+      "version": "1.0.0",
+      "adopted": "2026-09-12",
+      "where": [
+        "apps/worker/clipforge/agent.py",
+        "tools/agent.ps1",
+        "docs/adr/0012-machine-agent.md",
+        "docs/adr/0030-status-on-events-and-pings.md",
+        "apps/web/src/app/core/presence.ts"
+      ],
+      "deviations": [
+        "The blueprint was drawn from this project",
+        "One document per machine (agents/{id}) carries the wish, the ping and the report",
+        "The agent also hosts the home wifi route, the notices and the usage meter"
+      ],
+      "pendingUpstream": []
+    },
+    "notifications": {
+      "version": "1.0.0",
+      "adopted": "2026-11-15",
+      "where": [
+        "apps/worker/clipforge/notify/",
+        "apps/worker/clipforge/firebase_app.py",
+        "apps/web/src/app/core/notifications.ts",
+        "apps/web/src/app/features/notifications/",
+        "firebase/firestore.rules (users/{uid}/devices, settings, notifications; agents notifyTest)"
+      ],
+      "deviations": [
+        "Angular's service worker draws the push (webpush.notification with onActionClick), not a project service worker",
+        "No quiet hours, no outbox: a failed push is logged, not retried",
+        "Audiences are 'owner' (the job's submitter) and 'admins', not per-role lists",
+        "The test goes through a throttled field on the agent document"
+      ],
+      "pendingUpstream": []
     }
   }
 }
