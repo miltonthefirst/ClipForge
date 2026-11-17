@@ -52,8 +52,10 @@ class Shape:
     bitrate: str
 
 
-FULL = Shape("full", 1920, 1080, 300, 610, "6M")
-SHORT = Shape("short", 1080, 1920, 360, 1180, "8M")
+# A gradient and a waveform compress well, and YouTube re-encodes everything:
+# these keep a three-minute video near 70 MB rather than 140.
+FULL = Shape("full", 1920, 1080, 300, 610, "3M")
+SHORT = Shape("short", 1080, 1920, 360, 1180, "4M")
 
 # Loudness the clip itself is normalised to (media/music.py), so a track video
 # sits beside a clip in a feed at the same level.

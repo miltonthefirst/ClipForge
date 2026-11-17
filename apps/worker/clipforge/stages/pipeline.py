@@ -47,7 +47,7 @@ from clipforge.stages.echo import echo_registry
 from clipforge.stages.publish import PublishStage
 from clipforge.stages.render import RenderStage
 from clipforge.stages.transcribe import TranscribeStage
-from clipforge.store.blobs import BlobStore
+from clipforge.store.blobs import BlobStore, LocalBlobStore
 from clipforge.store.channels import ChannelStore
 from clipforge.store.firestore import (
     CandidateStore,
@@ -862,11 +862,15 @@ def build_registry_factory(
         settings=settings, clips=clips, workspace=workspace, blobs=blobs
     )
 
+    # Local only: a track's video is long and large (137 MB took six minutes
+    # to reach the bucket on this connection), a phone at home plays it off
+    # the PC (docs/HOME-NETWORK-PLAN.md), and publishing reads the local file.
+    # Away from home, the clip page's "Upload for phone" asks for a copy.
     music_video = build_music_video_registry(
         clips=clips,
         tracks=tracks or TrackStore(clips._db, settings),
         workspace=workspace,
-        blobs=blobs,
+        blobs=LocalBlobStore(settings.workspace_dir),
     )
 
     compile_ = build_compile_registry(
