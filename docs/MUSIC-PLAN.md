@@ -251,6 +251,12 @@ length as well because sometimes I might need long videos songs".
   thing to avoid can draw it, so the scene says only what is there. ComfyUI
   is asked to unload afterwards unless Sarungano has work queued. No ComfyUI:
   no picture, and the video is drawn on the gradient as before.
+- **Two lessons from the first real song.** Told "only places and things", the
+  model still wrote "children running, adults watching"; so every sentence
+  with a person in it is dropped before painting (`people_free`). And
+  "album cover art" or "fine art painting" in the prompt drew a logo and a
+  signature in a corner; the prompt now asks for the place filling the frame,
+  and the video trims 4% off each edge of the picture.
 - **The video** drifts the picture slowly (a crop with a moving origin,
   about 3x real time at 1080p), with the wave a quieter, half-height band low
   in the frame and the song's title as the big text. A song's YouTube

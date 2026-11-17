@@ -124,7 +124,7 @@ Content:
 
 Title: two to five words, the hook if it can be.
 
-Scene: the picture behind the song's video, in one or two sentences. Choose a single place that carries the song's feeling and describe what is in it: the setting, the time of day, the light, the weather, the colours, a few objects. Only places and things: an empty street, a window, a field, a skyline, a table, a sky. It is painted as it is written, so describe only what should be seen."""
+Scene: the picture behind the song's video, in one or two sentences. Choose a single place that carries the song's feeling and describe what is in it: the setting, the time of day, the light, the weather, the colours, a few objects. Only places and things: an empty street, a window, a field, a skyline, a table, a sky. Nobody is in the scene: no person, child, crowd or figure, not even far away. It is painted as it is written, so describe only what should be seen."""
 
 TREND_TASK = """Write a song inspired by something people are talking about right now. Do NOT retell the news and do NOT use any name from it: find the human feeling underneath (pressure, hope, change, being heard, holding on) and build the song on that.
 

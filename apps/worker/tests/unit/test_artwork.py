@@ -315,3 +315,37 @@ def test_a_song_video_is_titled_by_the_song_and_carries_its_lyrics(tmp_path: Pat
     long_song = track(lyrics="[Verse]\n" + "\n".join(["a long line of lyrics here"] * 120))
     _, long_text, _ = describe(long_song, FULL)
     assert len(long_text) <= 2000 and long_text.endswith("ClipForge Music · Candle Light")
+
+
+def test_a_scene_with_people_in_it_is_painted_without_them(tmp_path: Path) -> None:
+    from clipforge.stages.artwork import people_free
+
+    scene = (
+        "A park after rain, puddles reflecting the sky. "
+        "Children are running across the grass while adults watch."
+    )
+    assert people_free(scene) == "A park after rain, puddles reflecting the sky."
+    assert (
+        people_free("An empty rooftop; the handrails glow.")
+        == "An empty rooftop; the handrails glow."
+    )
+
+    prompts: list[str] = []
+
+    def painter(_url: str, prompt: str, *, width: int, height: int, **_: Any) -> bytes:
+        prompts.append(prompt)
+        return _png(width, height)
+
+    job = _song_job()
+    job.stages[0].checkpoint = {
+        "scene": "She dances alone in the kitchen.",
+        "artStyle": "digital painting",
+        "theme": "a quiet kitchen at midnight",
+    }
+    stage = ArtworkStage(
+        tracks=Tracks(track(), track(id="trk_2")),  # type: ignore[arg-type]
+        workspace=Workspace(tmp_path),  # type: ignore[arg-type]
+        painter=painter,
+    )
+    stage.run(context_for(job))
+    assert "She" not in prompts[0] and "a quiet kitchen at midnight" in prompts[0]

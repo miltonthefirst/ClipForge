@@ -191,6 +191,7 @@ class VisualSpec:
 # and how long one slow sway takes.
 DRIFT_ZOOM = 1.08
 DRIFT_PERIOD_S = 40.0
+EDGE_TRIM = 0.04
 
 
 def drifting(width: int, height: int) -> str:
@@ -201,8 +202,11 @@ def drifting(width: int, height: int) -> str:
     big_w = int(width * DRIFT_ZOOM) // 2 * 2
     big_h = int(height * DRIFT_ZOOM) // 2 * 2
     period = DRIFT_PERIOD_S
+    # Image models sign their corners now and then (a scribbled name, a logo):
+    # the outer 4% of the picture never reaches the screen.
     return (
-        f"[1:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"[1:v]crop=iw*{1 - 2 * EDGE_TRIM:.2f}:ih*{1 - 2 * EDGE_TRIM:.2f},"
+        f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={big_w}:{big_h},"
         f"crop={width}:{height}"
         f":x='({big_w}-{width})/2*(1+sin(2*PI*t/{period}))'"

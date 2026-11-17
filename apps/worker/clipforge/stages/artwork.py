@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,7 +61,28 @@ class SceneDraft(BaseModel):
 
 SCENE_SYSTEM = """You choose the background picture for a song's video on a music channel.
 
-Describe one scene in one or two sentences: a place that carries the song's feeling, with its time of day, light, weather, colours and a few objects. Only places and things: an empty street, a window, a field, a skyline, a table, a sky, water, a room. It is painted as it is written, so describe only what should be seen. Pick the style it is made in."""
+Describe one scene in one or two sentences: a place that carries the song's feeling, with its time of day, light, weather, colours and a few objects. Only places and things: an empty street, a window, a field, a skyline, a table, a sky, water, a room. Nobody is in the scene: no person, child, crowd or figure, not even far away. It is painted as it is written, so describe only what should be seen. Pick the style it is made in."""
+
+
+# Words that put a person in the picture. The model is told "only places and
+# things" and still wrote "children running across the field, adults
+# watching" for a song about the first rain (2026-11-18); asking is not
+# enough, so the scene is checked.
+_PEOPLE = re.compile(
+    r"\b(people|persons?|man|men|woman|women|boys?|girls?|child|children|kids?|"
+    r"babies|baby|adults?|crowds?|famil(y|ies)|couples?|friends?|dancers?|singers?|"
+    r"figures?|silhouettes?|faces?|hands?|neighbou?rs?|mothers?|fathers?|grand\w+|"
+    r"he|she|they|someone|everyone|anyone|villagers|students?|teachers?|workers?|"
+    r"farmers?|players?|musicians?|audiences?|strangers?|lovers?)\b",
+    re.IGNORECASE,
+)
+
+
+def people_free(scene: str) -> str:
+    """The scene without any sentence that puts a person in it."""
+    sentences = re.split(r"(?<=[.!?;])\s+", scene.strip())
+    kept = [s for s in sentences if s and not _PEOPLE.search(s)]
+    return " ".join(kept).strip()
 
 
 def art_prompt(scene: str, style: str) -> str:
@@ -69,7 +91,7 @@ def art_prompt(scene: str, style: str) -> str:
     return (
         f"{scene}. {style[:1].upper() + style[1:]}, wide cinematic composition with calm open "
         "space in the middle of the frame, soft depth of field, rich harmonious colour, "
-        "gentle atmospheric light, highly detailed, beautiful album cover art"
+        "gentle atmospheric light, highly detailed, the place filling the whole frame edge to edge"
     )[:1500]
 
 
@@ -127,7 +149,14 @@ class ArtworkStage:
         if not scene or not style:
             scene, style = self._describe(context, tracks[0])
 
-        prompt = art_prompt(scene, style)
+        place = people_free(scene)
+        if len(place) < 12:
+            # Every sentence had someone in it: the place alone, from the song's own theme.
+            theme = song.get("theme") or tracks[0].prompt
+            place = people_free(f"An empty, quiet place that feels like this: {theme}.") or (
+                "A wide open landscape at golden hour under a vast sky."
+            )
+        prompt = art_prompt(place, style)
         seed = int(hashlib.sha256(f"{job.id}:art".encode()).hexdigest()[:8], 16)
         folder = self._workspace.music_dir / "artwork"
         folder.mkdir(parents=True, exist_ok=True)
