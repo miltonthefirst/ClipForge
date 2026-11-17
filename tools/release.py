@@ -70,6 +70,26 @@ def next_version(current: str, major: bool = False) -> str:
     return f"{first}.{middle}.{last + 1}"
 
 
+def free_version(current: str, taken: set[str], major: bool = False) -> str:
+    """The next version under the rule whose tag does not exist yet.
+
+    A tag can predate this script: ClipForge's plan tagged its v0.1.0 milestone
+    long before releases were versioned, and the first release to reach 0.1.0
+    stopped at `git tag` after committing. Skipping is safe because a version
+    is never reused either way.
+    """
+    version = next_version(current, major)
+    while f"v{version}" in taken:
+        print(f"  v{version} is already a tag; skipping to the next version")
+        version = next_version(version)
+    return version
+
+
+def _tags() -> set[str]:
+    _run(["git", "fetch", "--quiet", "--tags", "origin"], quiet=True)
+    return {line.strip() for line in _run(["git", "tag", "-l"], quiet=True).splitlines() if line.strip()}
+
+
 def _run(args: list[str], cwd: str = ROOT, quiet: bool = False, env: dict | None = None) -> str:
     shell = os.name == "nt" and args[0] in ("npm", "npx")
     done = subprocess.run(
@@ -186,7 +206,7 @@ def release(major: bool = False) -> str:
     _check_tree()
     with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as f:
         current = f.read().strip()
-    version = next_version(current, major)
+    version = free_version(current, _tags(), major)
     print(f"Releasing {current} -> {version}")
 
     changed = write_version(version)

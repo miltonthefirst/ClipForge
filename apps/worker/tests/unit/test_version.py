@@ -90,3 +90,12 @@ def test_a_release_rewrites_only_the_version(
         assert len(after.splitlines()) == len(before.splitlines()), relative
         assert after.count(b"\r\n") == before.count(b"\r\n"), relative
     assert (tmp_path / "VERSION").read_text(encoding="utf-8") == "9.8.7\n"
+
+
+@pytest.mark.unit
+def test_a_release_skips_a_version_whose_tag_already_exists() -> None:
+    """ClipForge's plan tagged v0.1.0 long before releases were versioned."""
+    release = _release_module()
+    assert release.free_version("0.0.9", {"v0.1.0"}) == "0.1.1"
+    assert release.free_version("0.0.9", set()) == "0.1.0"
+    assert release.free_version("0.1.0", {"v0.1.0", "v0.1.1"}) == "0.1.2"
