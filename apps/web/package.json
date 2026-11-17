@@ -1,6 +1,6 @@
 {
   "name": "clipforge-web",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "scripts": {
     "ng": "ng",
     "prestart": "node ../../tools/stamp-build.mjs src/app/build-info.ts",
