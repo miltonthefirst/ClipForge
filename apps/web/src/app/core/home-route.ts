@@ -44,9 +44,21 @@ import { SessionService } from './session';
 /** Mirrors `SERVICE` in apps/worker/clipforge/home/listener.py. */
 export const HOME_SERVICE = 'clipforge-home';
 
-/** On the home wifi the answer is back in milliseconds; anywhere else the
- * address leads nowhere, and this is how long that takes to find out. */
-const HELLO_TIMEOUT_MS = 1_500;
+/**
+ * On the home wifi the answer is usually back in milliseconds; anywhere else
+ * the address leads nowhere, and this is how long that takes to find out.
+ * Four seconds, and asked twice, because a phone's wifi waking from power
+ * saving, plus the TLS handshake, took longer than the 1.5 s this used to be:
+ * one slow answer labelled a phone at home "Via cloud" for five minutes, and
+ * every clip offered an upload instead of playing (2026-11-18).
+ */
+const HELLO_TIMEOUT_MS = 4_000;
+const HELLO_TRIES = 2;
+/**
+ * Believing it is away, playback asks again before giving up if the last
+ * answer is older than this: opening a clip is when being wrong costs most.
+ */
+const RECHECK_AFTER_MS = 15_000;
 const CHECK_EVERY_MS = 5 * 60_000;
 /** A link is good for twelve hours; one with less than this left is renewed. */
 const LINK_MARGIN_MS = 10 * 60_000;
@@ -187,6 +199,10 @@ export class HomeRouteService implements HomeMedia {
     fetchImpl: typeof fetch = fetch,
   ): Promise<string | null> {
     await this.settled(fetchImpl);
+    // Believed away, on an old answer: ask again, without making this caller
+    // wait out a timeout away from home. A page showing a poster retries every
+    // few seconds (clip-page.ts), and plays from the PC once it answers.
+    if (!this.home() && this.url() && this.stale() && !this.running) void this.check(fetchImpl);
     const base = this.home() ? this.url() : null;
     if (!base) return null;
 
@@ -220,11 +236,19 @@ export class HomeRouteService implements HomeMedia {
       });
       return playable;
     } catch {
-      // No answer at all: the phone has left the house, or the PC has gone to
-      // sleep. Treat the route as gone until the next check says otherwise.
-      this.home.set(false);
+      // No answer to this one request. That alone does not mean the phone has
+      // left the house (it used to be taken that way, and one slow reply
+      // turned the whole app to "Via cloud"): ask the PC whether it is there,
+      // and let that answer decide.
+      void this.check(fetchImpl);
       return null;
     }
+  }
+
+  /** Whether the last answer about the route is too old to trust as "away". */
+  private stale(): boolean {
+    const last = this.lastChecked();
+    return last === null || Date.now() - Date.parse(last) > RECHECK_AFTER_MS;
   }
 
   /**
@@ -254,18 +278,25 @@ export class HomeRouteService implements HomeMedia {
     this.checking.set(true);
     let ours = false;
     try {
-      const response = await fetchImpl(bypassServiceWorker(`${url}/hello`), {
-        cache: 'no-store',
-        signal: AbortSignal.timeout(HELLO_TIMEOUT_MS),
-      });
-      const answer = response.ok
-        ? ((await response.json()) as { service?: string; station?: string })
-        : null;
-      // Who answered, not merely whether anything did: another program on that
-      // address must never be mistaken for the PC.
-      ours = answer?.service === HOME_SERVICE && (!expected || answer.station === expected);
-    } catch {
-      ours = false;
+      for (let attempt = 1; attempt <= HELLO_TRIES; attempt++) {
+        try {
+          const response = await fetchImpl(bypassServiceWorker(`${url}/hello`), {
+            cache: 'no-store',
+            signal: AbortSignal.timeout(HELLO_TIMEOUT_MS),
+          });
+          const answer = response.ok
+            ? ((await response.json()) as { service?: string; station?: string })
+            : null;
+          // Who answered, not merely whether anything did: another program on
+          // that address must never be mistaken for the PC.
+          ours = answer?.service === HOME_SERVICE && (!expected || answer.station === expected);
+          break; // an answer, ours or not, is the answer
+        } catch {
+          // No answer: asked once more, since the first try after the phone
+          // wakes is the slow one.
+          ours = false;
+        }
+      }
     } finally {
       this.checking.set(false);
       // Only an answer about the address in use now counts.

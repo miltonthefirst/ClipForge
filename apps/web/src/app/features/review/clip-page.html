@@ -95,7 +95,25 @@
               everywhere the moment the clip lands.
             </p>
           } @else {
-            @if (source().kind === 'poster') {
+            @if (source().kind === 'poster' && routeOffered()) {
+              <!-- The PC offers the home wifi route: on the home wifi this plays
+                   with no upload at all, so that is offered first. -->
+              <p>
+                {{
+                  checkingHome()
+                    ? 'Looking for the PC on the home wifi…'
+                    : 'The PC did not answer over the home wifi. On the home wifi, try again; it plays straight off the PC with no upload.'
+                }}
+              </p>
+              <button
+                type="button"
+                class="mt-2 mr-2 rounded-lg bg-forge-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-forge-700 disabled:opacity-50"
+                [disabled]="checkingHome()"
+                (click)="tryHomeAgain()"
+              >
+                Try the home wifi again
+              </button>
+            } @else if (source().kind === 'poster') {
               <p>
                 No cloud copy of this one, and this device cannot reach the machine that rendered
                 it. You can still review it from the poster, the hook and the score.
@@ -112,7 +130,9 @@
               [disabled]="busy()"
               (click)="askForUpload()"
             >
-              Ask the worker to upload it
+              {{
+                routeOffered() ? 'Away from home? Upload it instead' : 'Ask the worker to upload it'
+              }}
             </button>
           }
         </div>

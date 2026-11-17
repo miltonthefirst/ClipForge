@@ -195,7 +195,7 @@ describe('HomeRouteService', () => {
     expect(route.home()).toBe(true);
   });
 
-  it('gives up on the route when the PC stops answering mid-way', async () => {
+  it('stays home when one link request fails but the PC still answers', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input).includes('/hello'))
         return json({ service: HOME_SERVICE, station: 'tower' });
@@ -204,7 +204,72 @@ describe('HomeRouteService', () => {
     const route = service();
 
     expect(await route.clipUrl('clip-1', fetchMock)).toBeNull();
+    await route.check(fetchMock);
+    // One failed request used to turn the whole app to "Via cloud".
+    expect(route.home()).toBe(true);
+  });
+
+  it('gives up on the route when the PC stops answering altogether', async () => {
+    let up = true;
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input).includes('/hello') && up)
+        return json({ service: HOME_SERVICE, station: 'tower' });
+      throw new TypeError('Failed to fetch');
+    });
+    const route = service();
+    await route.check(fetchMock);
+    expect(route.home()).toBe(true);
+
+    up = false;
+    expect(await route.clipUrl('clip-1', fetchMock)).toBeNull();
+    await route.check(fetchMock);
     expect(route.home()).toBe(false);
+  });
+
+  it('asks twice before deciding it is away: the first answer after waking is slow', async () => {
+    let hellos = 0;
+    fetchMock.mockImplementation(async () => {
+      hellos += 1;
+      if (hellos === 1) throw new DOMException('timed out', 'TimeoutError');
+      return json({ service: HOME_SERVICE, station: 'tower' });
+    });
+    const route = service();
+
+    // The check the service makes by itself on start, and only that one.
+    await vi.waitFor(() => expect(route.lastChecked()).not.toBeNull());
+
+    expect(hellos).toBe(2);
+    expect(route.home()).toBe(true);
+  });
+
+  it('does not ask twice when something else answered', async () => {
+    fetchMock.mockImplementation(async () => json({ service: 'sarungano-home', station: 'tower' }));
+    const route = service();
+
+    await vi.waitFor(() => expect(route.lastChecked()).not.toBeNull());
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again when a clip is opened on an old "away" answer', async () => {
+    let atHome = false;
+    fetchMock.mockImplementation(async (input) => {
+      if (!atHome) throw new TypeError('Failed to fetch');
+      return String(input).includes('/hello')
+        ? json({ service: HOME_SERVICE, station: 'tower' })
+        : json({ url: `${URL}/media/t1`, expiresAt: '2099-01-01T00:00:00Z' });
+    });
+    const route = service();
+    await route.check(fetchMock);
+    expect(route.home()).toBe(false);
+
+    // Back on the home wifi, with the last answer more than a few seconds old.
+    atHome = true;
+    route.lastChecked.set(new Date(Date.now() - 60_000).toISOString());
+    expect(await route.clipUrl('clip-1', fetchMock)).toBeNull(); // does not wait for it
+    await route.check(fetchMock);
+    expect(route.home()).toBe(true);
+    expect(await route.clipUrl('clip-1', fetchMock)).toContain('/media/t1');
   });
 
   it('is never used by an account that is not approved', async () => {

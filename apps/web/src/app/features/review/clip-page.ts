@@ -43,6 +43,7 @@ import { PublishingRepository } from '../../core/data/publishing';
 import { SourcesRepository } from '../../core/data/sources';
 import type { Live } from '../../core/firestore/gateway';
 import { youtubePlaylist } from '../../core/music-source';
+import { HomeRouteService } from '../../core/home-route';
 import { PlaybackService, type PlaybackSource } from '../../core/playback';
 import { publishStateOf, type PublishState } from '../../core/publish-state';
 import { remakeMusicOutlook } from '../../core/remake-music';
@@ -201,6 +202,10 @@ export class ClipPage implements OnDestroy {
   private readonly router = inject(Router);
   private readonly session = inject(SessionService);
   private readonly playback = inject(PlaybackService);
+  private readonly homeRoute = inject(HomeRouteService);
+  /** The PC offers the home wifi route, so a clip with no cloud copy can still play here. */
+  protected readonly routeOffered = computed(() => this.homeRoute.url() !== null);
+  protected readonly checkingHome = this.homeRoute.checking;
 
   /** From the route: `review/:id`. */
   readonly id = input.required<string>();
@@ -1164,6 +1169,17 @@ export class ClipPage implements OnDestroy {
    * Nothing has to be polled and nothing has to be dismissed: when the storage
    * path arrives, the player replaces the poster on its own.
    */
+  /**
+   * Ask the PC again, by hand, and play from it if it answers. For a phone at
+   * home that the last check missed: an upload is the wrong answer there.
+   */
+  protected async tryHomeAgain(): Promise<void> {
+    const clip = this.clip();
+    if (!clip) return;
+    await this.homeRoute.check();
+    this.source.set(await this.playback.resolve(clip, this.localAvailable()));
+  }
+
   protected async askForUpload(): Promise<void> {
     const clip = this.clip();
     const uid = this.session.uid;
