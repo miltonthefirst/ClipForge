@@ -1,6 +1,6 @@
 [project]
 name = "clipforge-worker"
-version = "0.1.1"
+version = "0.1.2"
 description = "ClipForge local worker — transcription, clip selection and rendering on local hardware"
 readme = "README.md"
 license = { text = "MIT" }
