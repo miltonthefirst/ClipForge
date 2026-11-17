@@ -198,7 +198,7 @@ export class HomeRouteService implements HomeMedia {
     if (!user) return null;
     try {
       const token = await user.getIdToken();
-      const response = await fetchImpl(`${base}/media-links`, {
+      const response = await fetchImpl(bypassServiceWorker(`${base}/media-links`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind, id }),
@@ -211,11 +211,14 @@ export class HomeRouteService implements HomeMedia {
       const body = (await response.json()) as { url?: string; expiresAt?: string };
       if (!body.url) return null;
       const expires = Date.parse(body.expiresAt ?? '');
+      // The <video> or <audio> element fetches this too, ranges and all: past
+      // the service worker as well.
+      const playable = bypassServiceWorker(body.url);
       this.links.set(key, {
-        url: body.url,
+        url: playable,
         expires: Number.isNaN(expires) ? Date.now() + LINK_MARGIN_MS * 2 : expires,
       });
-      return body.url;
+      return playable;
     } catch {
       // No answer at all: the phone has left the house, or the PC has gone to
       // sleep. Treat the route as gone until the next check says otherwise.
@@ -251,7 +254,7 @@ export class HomeRouteService implements HomeMedia {
     this.checking.set(true);
     let ours = false;
     try {
-      const response = await fetchImpl(`${url}/hello`, {
+      const response = await fetchImpl(bypassServiceWorker(`${url}/hello`), {
         cache: 'no-store',
         signal: AbortSignal.timeout(HELLO_TIMEOUT_MS),
       });
@@ -344,13 +347,17 @@ export class HomeRouteService implements HomeMedia {
     const started = Date.now();
     let reached = false;
     try {
-      const response = await fetchImpl(`${url}/hello`, {
+      const response = await fetchImpl(bypassServiceWorker(`${url}/hello`), {
         cache: 'no-store',
         signal: AbortSignal.timeout(4_000),
       });
-      const answer = response.ok
-        ? ((await response.json()) as { service?: string; station?: string; version?: string })
-        : null;
+      const text = await response.text();
+      let answer: Hello | null = null;
+      try {
+        answer = response.ok ? (JSON.parse(text) as Hello) : null;
+      } catch {
+        answer = null;
+      }
       if (answer?.service === HOME_SERVICE) {
         reached = true;
         steps.push({
@@ -370,7 +377,9 @@ export class HomeRouteService implements HomeMedia {
           id: 'reach',
           label: 'This device reaches the PC over the wifi',
           state: 'fail',
-          detail: 'Something answered at that address, but not ClipForge.',
+          // What actually came back, so a screenshot of this says what is in the way.
+          detail:
+            `Something answered at that address, but not ClipForge: ${response.status} ${response.statusText} ${text.slice(0, 120)}`.trim(),
         });
       }
     } catch {
@@ -402,7 +411,7 @@ export class HomeRouteService implements HomeMedia {
     }
     try {
       const token = await user.getIdToken();
-      const response = await fetchImpl(`${url}/media-links`, {
+      const response = await fetchImpl(bypassServiceWorker(`${url}/media-links`), {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ kind: 'clip', id: 'home-route-check' }),
@@ -452,6 +461,13 @@ export class HomeRouteService implements HomeMedia {
   }
 }
 
+/** What the PC's `/hello` says. */
+interface Hello {
+  readonly service?: string;
+  readonly station?: string;
+  readonly version?: string;
+}
+
 /** The browser's local network permission, where it has one. */
 export type LocalAccess = 'granted' | 'prompt' | 'denied' | 'unknown';
 
@@ -461,6 +477,21 @@ export interface CheckStep {
   readonly label: string;
   readonly state: 'pass' | 'fail';
   readonly detail: string;
+}
+
+/**
+ * The same address, marked for Angular's service worker to leave alone.
+ *
+ * The phone app's service worker sees every request the page makes, the PC's
+ * included, and fetches it itself. Chrome on Android refused those to the
+ * home address (the PC saw the phone connect, and the page was handed the
+ * service worker's own "504 Gateway Timeout"), while the page itself is
+ * allowed. `ngsw-bypass` is Angular's documented opt-out; as a query
+ * parameter it adds no header, so no CORS preflight, and the listener ignores
+ * it. Sarungano's app has no service worker, which is why it never met this.
+ */
+export function bypassServiceWorker(url: string): string {
+  return `${url}${url.includes('?') ? '&' : '?'}ngsw-bypass=true`;
 }
 
 function inDesktopShell(): boolean {

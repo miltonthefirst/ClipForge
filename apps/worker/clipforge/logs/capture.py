@@ -76,6 +76,10 @@ _NETWORK_MARKERS = (
 _PERMISSION_MARKERS = ("permission-denied", "permission_denied", "access is denied")
 # Their records come from inside an ingest, or say nothing a person can act on.
 _IGNORED_LOGGERS = ("google", "grpc", "urllib3", "clipforge.logs")
+# Lines that are logged at error level but are no fault: uvicorn reports
+# the home wifi listener's normal stop (switched off, a new certificate, an
+# agent restart) as cancelling its tasks. Matched on the start of the message.
+_BENIGN = ("Cancel 0 running task(s), timeout graceful shutdown exceeded",)
 
 
 # ── Classifying (the blueprint, section 5) ────────────────────────────────────
@@ -236,6 +240,8 @@ class _RootHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.name.startswith(_IGNORED_LOGGERS):
+            return
+        if record.getMessage().startswith(_BENIGN):
             return
         try:
             exc = record.exc_info[1] if record.exc_info else None

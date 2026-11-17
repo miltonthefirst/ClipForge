@@ -4,7 +4,7 @@ import type { AgentReport } from '@clipforge/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WorkersRepository } from './data/workers';
-import { HOME_SERVICE, HomeRouteService } from './home-route';
+import { HOME_SERVICE, HomeRouteService, bypassServiceWorker } from './home-route';
 import { SessionService } from './session';
 
 /**
@@ -81,7 +81,7 @@ describe('HomeRouteService', () => {
 
     await route.check(fetchMock);
 
-    expect(fetchMock).toHaveBeenCalledWith(`${URL}/hello`, expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith(`${URL}/hello?ngsw-bypass=true`, expect.anything());
     expect(route.home()).toBe(true);
     expect(route.label()).toBe('Home wifi');
   });
@@ -127,7 +127,7 @@ describe('HomeRouteService', () => {
 
   it('asks the PC for a clip link, signed in, while home', async () => {
     fetchMock.mockImplementation(async (input) =>
-      String(input).endsWith('/hello')
+      String(input).includes('/hello')
         ? json({ service: HOME_SERVICE, station: 'tower' })
         : json({
             url: `${URL}/media/abc`,
@@ -138,8 +138,8 @@ describe('HomeRouteService', () => {
 
     const link = await route.clipUrl('clip-1', fetchMock);
 
-    expect(link).toBe(`${URL}/media/abc`);
-    const [, sent] = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/media-links'))!;
+    expect(link).toBe(`${URL}/media/abc?ngsw-bypass=true`);
+    const [, sent] = fetchMock.mock.calls.find(([url]) => String(url).includes('/media-links'))!;
     const init = sent as RequestInit & { headers: Record<string, string>; body: string };
     expect(init.method).toBe('POST');
     expect(init.headers['Authorization']).toBe('Bearer id-token');
@@ -148,7 +148,7 @@ describe('HomeRouteService', () => {
 
   it('asks for a track by its own kind, cached apart from a clip with the same id', async () => {
     fetchMock.mockImplementation(async (input, init) =>
-      String(input).endsWith('/hello')
+      String(input).includes('/hello')
         ? json({ service: HOME_SERVICE, station: 'tower' })
         : json({
             url: `${URL}/media/${JSON.parse(String(init?.body)).kind}`,
@@ -157,13 +157,17 @@ describe('HomeRouteService', () => {
     );
     const route = service();
 
-    expect(await route.mediaUrl('track', 'same-id', fetchMock)).toBe(`${URL}/media/track`);
-    expect(await route.mediaUrl('clip', 'same-id', fetchMock)).toBe(`${URL}/media/clip`);
+    expect(await route.mediaUrl('track', 'same-id', fetchMock)).toBe(
+      `${URL}/media/track?ngsw-bypass=true`,
+    );
+    expect(await route.mediaUrl('clip', 'same-id', fetchMock)).toBe(
+      `${URL}/media/clip?ngsw-bypass=true`,
+    );
   });
 
   it('reuses a link until it is close to expiring', async () => {
     fetchMock.mockImplementation(async (input) =>
-      String(input).endsWith('/hello')
+      String(input).includes('/hello')
         ? json({ service: HOME_SERVICE, station: 'tower' })
         : json({
             url: `${URL}/media/abc`,
@@ -175,13 +179,13 @@ describe('HomeRouteService', () => {
     await route.clipUrl('clip-1', fetchMock);
     await route.clipUrl('clip-1', fetchMock);
 
-    const links = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/media-links'));
+    const links = fetchMock.mock.calls.filter(([url]) => String(url).includes('/media-links'));
     expect(links).toHaveLength(1);
   });
 
   it('falls back quietly when the PC says no to one clip, and stays home', async () => {
     fetchMock.mockImplementation(async (input) =>
-      String(input).endsWith('/hello')
+      String(input).includes('/hello')
         ? json({ service: HOME_SERVICE, station: 'tower' })
         : json({ detail: "That clip's file is not on this PC any more." }, 404),
     );
@@ -193,7 +197,7 @@ describe('HomeRouteService', () => {
 
   it('gives up on the route when the PC stops answering mid-way', async () => {
     fetchMock.mockImplementation(async (input) => {
-      if (String(input).endsWith('/hello'))
+      if (String(input).includes('/hello'))
         return json({ service: HOME_SERVICE, station: 'tower' });
       throw new TypeError('Failed to fetch');
     });
@@ -251,7 +255,7 @@ describe('HomeRouteService.diagnose', () => {
 
   function fetchWith(linkStatus: number) {
     return vi.fn<typeof fetch>(async (input) =>
-      String(input).endsWith('/hello')
+      String(input).includes('/hello')
         ? json({ service: HOME_SERVICE, station: 'tower', version: '0.0.7' })
         : json({ detail: 'x' }, linkStatus),
     );
@@ -310,5 +314,16 @@ describe('HomeRouteService.diagnose', () => {
 
     expect(steps.at(-1)).toMatchObject({ id: 'reach', state: 'fail' });
     expect(steps.at(-1)?.detail).toContain('blocking');
+  });
+});
+
+describe('bypassServiceWorker', () => {
+  it("keeps every request to the PC away from the app's service worker", () => {
+    expect(bypassServiceWorker('https://h:8768/hello')).toBe(
+      'https://h:8768/hello?ngsw-bypass=true',
+    );
+    expect(bypassServiceWorker('https://h:8768/media/t?x=1')).toBe(
+      'https://h:8768/media/t?x=1&ngsw-bypass=true',
+    );
   });
 });

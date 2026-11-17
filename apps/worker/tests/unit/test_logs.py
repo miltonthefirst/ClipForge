@@ -123,3 +123,15 @@ def test_classifying(message: str, exc: BaseException | None, category: str | No
 def test_without_install_reporting_is_a_quiet_no(sink: Sink) -> None:
     capture.uninstall()
     assert capture.report("worker", "error", "nobody listening") is False
+
+
+def test_the_listeners_normal_stop_is_not_an_error(sink: Sink) -> None:
+    import logging
+
+    logging.getLogger("uvicorn.error").error(
+        "Cancel 0 running task(s), timeout graceful shutdown exceeded"
+    )
+    logging.getLogger("uvicorn.error").error("Exception in ASGI application")
+    settle(sink, 1)
+
+    assert [entry["message"] for entry in sink.ingested] == ["Exception in ASGI application"]
