@@ -16,6 +16,14 @@ server in the desktop app) and records Keep or Discard. The twelve M1 tracks are
 in it, waiting on the owner's verdict. Generating from the app (the job, the
 broker class, the package proper) is the rest of M2.
 
+**2026-11-17: "Make a track" is built (M2 and M5 together).** A
+`GENERATE_MUSIC` job, from a form on the Music page: the words come from an
+idea, a trend, the owner's notes, or none (an instrumental). LYRICS has the
+local model write a title and lyrics (`clipforge/synth/lyrics.py`), SING runs
+`packages/ngoma/generate.py` in its own process and imports each take as a NEW
+track with its lyrics and where it came from. Vocals on the 6 GB tier were
+spiked the same day (§3, M5 results).
+
 ## 1. Why
 
 - **Today a track comes from YouTube.** The `MUSIC` job downloads a track with
@@ -178,6 +186,32 @@ becomes interesting", and, later, songs made from lecture notes.
 - **Where it lands:** the same library and the same Keep/Discard, then the same
   Make videos. A lyric video can show the words in time later; the first
   version uses the M4 look.
+
+#### M5 results (2026-11-17)
+
+Four lyric songs, 150 s each, written by hand to ACE-Step's lyric guide
+(`vendor/ACE-Step-1.5/docs/en/Tutorial.md`, "About Lyrics"): an amapiano song
+("Sunday Light") and a photosynthesis study song ("Turning Light Into Life"),
+two takes each with different seeds and voices, no LM, INT8, 8 steps. In the
+library for the owner to judge by ear.
+
+- **Speed on an idle card: 16 s for 60 s of vocals**, in line with M1.
+- **Sharing the card is ruinous.** The first run started while Sarungano's
+  ComfyUI held 2.4 GB for a Flux job: 4.9 GB of torch did not fit, spilled
+  into shared memory, and each song took 8 to 13 minutes instead of about 30
+  s. So SING waits for ComfyUI's queue to empty, asks it to unload
+  (`POST /free`, the call Sarungano makes itself before training), and only
+  then takes the broker's lease for `ngoma_vram_mb` (5000). A run past
+  `ngoma_timeout_s` (30 min) is killed and retried later.
+- **Trends are mostly politics and named people.** The writer is told to
+  write the feeling under a headline, never the headline; every capitalised
+  word in the trend is checked for in the result, a song that keeps one is
+  asked for again once and then refused.
+
+The writer's prompt (`lyrics-v1`): section tags, six to ten syllables a line,
+one image per song, a repeated hook, abbreviations spelled out (A T P), no
+real people, brands, songs or sides in politics; a notes song uses only facts
+from the notes, accuracy over rhyme.
 
 ## 4. What it costs the rest of the system
 

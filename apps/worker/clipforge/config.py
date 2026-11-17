@@ -122,6 +122,18 @@ class Settings(BaseSettings):
     vision_model: str = "mistral-small3.2:latest"
     vision_frames: int = 3
     vram_reserve_mb: int = Field(default=700, ge=0)
+    # The music generator (packages/ngoma), run as its own process in its own
+    # environment. Empty means the repository's packages/ngoma. It needs about
+    # 5 GB of the card to itself: measured 4.9 GB torch peak, and a run that
+    # shared the card with ComfyUI took twelve minutes a song instead of
+    # twenty seconds (docs/MUSIC-PLAN.md).
+    ngoma_dir: str = ""
+    ngoma_vram_mb: int = Field(default=5000, ge=0)
+    ngoma_timeout_s: float = Field(default=1800.0, gt=0)
+    # Sarungano's ComfyUI keeps its last model on the card between jobs. When
+    # its queue is empty, a song asks it to let go, as Sarungano itself does
+    # before training; while it is working, the song waits. "" skips this.
+    comfyui_url: str = "http://127.0.0.1:8188"
 
     # ── Media ────────────────────────────────────────────────────────────────
     ffmpeg_bin: str = "ffmpeg"

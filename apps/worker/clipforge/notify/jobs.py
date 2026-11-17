@@ -8,8 +8,9 @@ once and succeeds on its second attempt says only that its clips are ready.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
-from clipforge_contracts import Job, JobStatus, JobType, NotificationKind
+from clipforge_contracts import Job, JobStatus, JobType, NotificationKind, StageName
 
 from clipforge.notify import Notifier
 
@@ -36,6 +37,7 @@ JOB_LABELS = {
     JobType.RESEARCH: "Research",
     JobType.ECHO: "A test job",
     JobType.MUSIC_VIDEO: "A music video",
+    JobType.GENERATE_MUSIC: "A new song",
 }
 
 # How a YouTube credential problem reads once it is a stage error's message:
@@ -92,6 +94,18 @@ def on_job_end(job: Job, notifier: Notifier, clips_for_job: Callable[[str], int]
             to=[job.uid],
             fold=job.id,
         )
+    elif job.type is JobType.GENERATE_MUSIC:
+        made = _tracks_made(job)
+        if made:
+            noun = "take is" if made == 1 else "takes are"
+            notifier.notify(
+                NotificationKind.CLIPS_READY,
+                title=f"{made} new {noun} ready to listen to",
+                body=f"{_song_title(job)}: keep the best on the Music page.",
+                link="/music",
+                to=[job.uid],
+                fold=job.id,
+            )
     elif job.type in MAKES_CLIPS:
         count = clips_for_job(job.id)
         if count:
@@ -104,3 +118,18 @@ def on_job_end(job: Job, notifier: Notifier, clips_for_job: Callable[[str], int]
                 to=[job.uid],
                 fold=job.id,
             )
+
+
+def _stage_checkpoint(job: Job, name: StageName) -> dict[str, Any]:
+    for stage in job.stages:
+        if stage.name is name:
+            return dict(stage.checkpoint or {})
+    return {}
+
+
+def _tracks_made(job: Job) -> int:
+    return len(_stage_checkpoint(job, StageName.SING).get("trackIds") or [])
+
+
+def _song_title(job: Job) -> str:
+    return str(_stage_checkpoint(job, StageName.LYRICS).get("title") or "The song")

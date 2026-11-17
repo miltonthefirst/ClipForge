@@ -676,6 +676,42 @@ service cloud.firestore {
                  && options.get('shortSeconds', 55) <= 59);
     }
 
+    // What a GENERATE_MUSIC job may ask for (docs/MUSIC-PLAN.md, M2 and M5):
+    // a style, where the words come from, and the bounded rest. The words'
+    // source must be there: a trend that exists, notes or an idea that are not
+    // empty. Everything here reaches a prompt or the music model.
+    function generateMusicOptionsOk() {
+      let options = request.resource.data.get('generateMusicOptions', null);
+      let source = options == null ? null : options.get('lyricsFrom', null);
+      return options is map
+             && options.keys().hasOnly(
+                  ['lyricsFrom', 'style', 'vocal', 'seconds', 'takes', 'trendId', 'notes',
+                   'idea', 'series', 'seed'])
+             && source in ['NONE', 'TREND', 'NOTES', 'IDEA']
+             && options.style is string
+             && options.style.size() > 0
+             && options.style.size() <= 200
+             && options.get('vocal', 'ANY') in ['FEMALE', 'MALE', 'ANY']
+             && options.get('seconds', 150) is int
+             && options.get('seconds', 150) >= 30
+             && options.get('seconds', 150) <= 240
+             && options.get('takes', 2) is int
+             && options.get('takes', 2) >= 1
+             && options.get('takes', 2) <= 3
+             && (options.get('series', null) == null
+                 || (options.series is string && options.series.size() <= 60))
+             && (options.get('seed', null) == null || options.seed is int)
+             && (source != 'TREND'
+                 || (options.get('trendId', null) is string
+                     && exists(/databases/$(database)/documents/trends/$(options.trendId))))
+             && (options.get('notes', null) == null
+                 || (options.notes is string && options.notes.size() <= 8000))
+             && (source != 'NOTES' || (options.get('notes', null) is string && options.notes.size() > 0))
+             && (options.get('idea', null) == null
+                 || (options.idea is string && options.idea.size() <= 300))
+             && (source != 'IDEA' || (options.get('idea', null) is string && options.idea.size() > 0));
+    }
+
     // What a COMPOSE job may ask for. The topic is the one thing it needs;
     // the script, when given, goes to a synthesiser verbatim, and everything
     // else is bounded because it reaches a prompt, a voice or a renderer.
@@ -822,7 +858,10 @@ service cloud.firestore {
                     // A MUSIC_VIDEO job draws videos of one track, and only one
                     // a person KEPT (docs/MUSIC-PLAN.md, M4): a discarded or
                     // undecided track is not something to publish.
-                    && (request.resource.data.type != 'MUSIC_VIDEO' || musicVideoOptionsOk());
+                    && (request.resource.data.type != 'MUSIC_VIDEO' || musicVideoOptionsOk())
+                    // A GENERATE_MUSIC job makes new tracks. Its words come
+                    // from a trend, notes or an idea, and must be there.
+                    && (request.resource.data.type != 'GENERATE_MUSIC' || generateMusicOptionsOk());
 
       // Resubmitting sends the same job back to the queue, exactly as
       // `lease.resubmit` does on the worker. FAILED only: the worker lets go of

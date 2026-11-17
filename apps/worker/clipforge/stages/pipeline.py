@@ -22,6 +22,7 @@ from clipforge_contracts import (
     ClipOptions,
     CompileOptions,
     ComposeOptions,
+    GenerateMusicOptions,
     Job,
     JobStatus,
     JobType,
@@ -64,6 +65,7 @@ __all__ = [
     "CLIP_PIPELINE",
     "COMPILE_PIPELINE",
     "COMPOSE_PIPELINE",
+    "GENERATE_MUSIC_PIPELINE",
     "MUSIC_PIPELINE",
     "MUSIC_VIDEO_PIPELINE",
     "PUBLISH_PIPELINE",
@@ -73,6 +75,7 @@ __all__ = [
     "build_clip_registry",
     "build_clip_stages",
     "build_compile_registry",
+    "build_generate_music_registry",
     "build_music_video_registry",
     "build_publish_registry",
     "build_registry_factory",
@@ -82,6 +85,7 @@ __all__ = [
     "clip_stages",
     "new_clip_job",
     "new_compile_job",
+    "new_generate_music_job",
     "new_music_job",
     "new_music_video_job",
     "new_publish_job",
@@ -153,6 +157,13 @@ COMPOSE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
 # A kept track drawn into videos by ffmpeg (docs/MUSIC-PLAN.md, M4). The CPU
 # lane: nothing here needs the card, so it never waits behind a harvest.
 MUSIC_VIDEO_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.VISUALIZE, Lane.CPU),)
+
+# New music (docs/MUSIC-PLAN.md, M2 and M5): the local model writes the song,
+# then the music model sings it. Both hold the card, one after the other.
+GENERATE_MUSIC_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
+    (StageName.LYRICS, Lane.GPU),
+    (StageName.SING, Lane.GPU),
+)
 
 COMPILE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
     (StageName.GATHER, Lane.CPU),
@@ -681,6 +692,41 @@ def build_music_video_registry(
     return registry
 
 
+def build_generate_music_registry(
+    *, tracks: TrackStore, trends: TrendStore, workspace: Workspace
+) -> StageRegistry:
+    """The two-stage registry for GENERATE_MUSIC jobs."""
+    from clipforge.stages.song import LyricsStage, SingStage
+
+    registry = StageRegistry()
+    registry.register(LyricsStage(trends=trends))
+    registry.register(SingStage(tracks=tracks, workspace=workspace))
+    return registry
+
+
+def new_generate_music_job(
+    *,
+    uid: str,
+    options: GenerateMusicOptions,
+    job_id: str | None = None,
+    max_attempts: int = 2,
+) -> Job:
+    """Build a GENERATE_MUSIC job: a song written and sung, one track per take."""
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.GENERATE_MUSIC,
+        status=JobStatus.QUEUED,
+        generate_music_options=options,
+        stages=clip_stages(GENERATE_MUSIC_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def new_music_video_job(
     *,
     uid: str,
@@ -873,6 +919,12 @@ def build_registry_factory(
         blobs=LocalBlobStore(settings.workspace_dir),
     )
 
+    generate_music = build_generate_music_registry(
+        tracks=tracks or TrackStore(clips._db, settings),
+        trends=trends,
+        workspace=workspace,
+    )
+
     compile_ = build_compile_registry(
         settings=settings,
         sources=sources,
@@ -905,6 +957,8 @@ def build_registry_factory(
             return compile_
         if job_type is JobType.MUSIC_VIDEO:
             return music_video
+        if job_type is JobType.GENERATE_MUSIC:
+            return generate_music
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")
 
     return factory

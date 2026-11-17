@@ -15,6 +15,7 @@ import { CLIPFORGE_CONFIG } from '../../core/firebase';
 import { HomeRouteService } from '../../core/home-route';
 import { PlaybackService } from '../../core/playback';
 import { SessionService } from '../../core/session';
+import { MakeTrack } from './make-track';
 
 /** Where the track that is playing came from. */
 interface Playing {
@@ -33,7 +34,7 @@ interface Playing {
  */
 @Component({
   selector: 'app-music-page',
-  imports: [DecimalPipe, RouterLink],
+  imports: [DecimalPipe, RouterLink, MakeTrack],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './music-page.html',
 })

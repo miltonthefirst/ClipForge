@@ -101,6 +101,17 @@ export function jobTitle(job: Job): string {
   if (job.type === 'MUSIC_VIDEO') {
     return 'Music video';
   }
+  if (job.type === 'GENERATE_MUSIC') {
+    const options = job.generateMusicOptions;
+    const about =
+      options?.idea ??
+      (options?.lyricsFrom === 'NOTES'
+        ? 'from your notes'
+        : options?.lyricsFrom === 'TREND'
+          ? 'about a trend'
+          : 'instrumental');
+    return `Song: ${about}`;
+  }
   return job.submission ?? job.id;
 }
 

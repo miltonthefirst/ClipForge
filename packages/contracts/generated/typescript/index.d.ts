@@ -9,7 +9,7 @@
  */
 
 /**
- * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it. COMPOSE makes a video that did not exist: a script written for a topic, narrated by a local voice, drawn as stick-figure cartoons and animated — the first job type with no source video behind it at all. MUSIC_VIDEO turns a kept generated track into a full-length video and a Shorts cut, drawn from the music itself.
+ * ECHO is a no-op job of three artificial stages used to exercise the scheduler without touching media. CLIP is the real pipeline. PUBLISH is a separate, single-stage job created after a human approves a clip — publishing cannot be a stage of CLIP because it happens on the far side of a human decision that may take days. MUSIC is the same shape for the same reason: scoring a finished clip is a choice someone makes while watching it, and it produces a new clip rather than altering the one they watched. UPLOAD is how a reviewer on a phone asks for a clip that only exists on the worker's disk: the phone cannot reach the worker, so the request travels as a job like everything else. REMAKE is the correction channel: a reviewer watching a finished clip says what is wrong with it — the framing lost the ball, the voice has to change — and gets a new clip rather than an edited one, for the same reason MUSIC does. RESEARCH asks the worker what the web is talking about right now and which videos carry it: it writes a ranked list of trends and touches no media, and nothing in it runs without a person pressing the button. COMPILE takes several videos and one theme and cuts one vertical video from the best moment of each — the first job type whose output has more than one source behind it. COMPOSE makes a video that did not exist: a script written for a topic, narrated by a local voice, drawn as stick-figure cartoons and animated — the first job type with no source video behind it at all. MUSIC_VIDEO turns a kept generated track into a full-length video and a Shorts cut, drawn from the music itself. GENERATE_MUSIC makes new tracks on the PC: the local model writes a title and lyrics from a trend, a person's notes or an idea, and the music model sings them; each take lands in the library as NEW, for a person to keep or not.
  */
 export type JobType =
   | 'ECHO'
@@ -21,7 +21,8 @@ export type JobType =
   | 'RESEARCH'
   | 'COMPILE'
   | 'COMPOSE'
-  | 'MUSIC_VIDEO';
+  | 'MUSIC_VIDEO'
+  | 'GENERATE_MUSIC';
 /**
  * Lifecycle of a job. Transitions are defined in docs/PLAN.md 3.3 and enforced by clipforge.scheduler.lease.
  */
@@ -83,11 +84,15 @@ export type CompileTransition = 'CUT' | 'FADE';
  */
 export type ComposeStyle = 'STICK';
 /**
+ * Where a generated song's words come from. NONE makes an instrumental.
+ */
+export type LyricsSource = 'NONE' | 'TREND' | 'NOTES' | 'IDEA';
+/**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
 /**
- * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice. VISUALIZE is the single stage of a MUSIC_VIDEO job: it draws the track's videos with ffmpeg on the CPU lane.
+ * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice. VISUALIZE is the single stage of a MUSIC_VIDEO job: it draws the track's videos with ffmpeg on the CPU lane. LYRICS and SING belong to a GENERATE_MUSIC job, both on the GPU lane: the local model writes the song, then the music model, in a process of its own, makes each take.
  */
 export type StageName =
   | 'ECHO_ONE'
@@ -110,7 +115,9 @@ export type StageName =
   | 'NARRATE'
   | 'ALIGN'
   | 'DRAW'
-  | 'VISUALIZE';
+  | 'VISUALIZE'
+  | 'LYRICS'
+  | 'SING';
 /**
  * Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).
  */
@@ -471,6 +478,10 @@ export interface Job {
    * Which kept track a MUSIC_VIDEO job turns into videos, and which. Null for every other job type.
    */
   musicVideoOptions?: MusicVideoOptions | null;
+  /**
+   * What a GENERATE_MUSIC job makes. Null for every other job type.
+   */
+  generateMusicOptions?: GenerateMusicOptions | null;
   /**
    * The ResearchSchedule that fired this job, when one did. Null on a job a person created. Provenance: the Trends page labels a run the worker started on its own, because a list nobody asked for this morning reads differently from one somebody did.
    */
@@ -996,6 +1007,45 @@ export interface MusicVideoOptions {
    * How long the Shorts cut is. Under 60 keeps it a Short everywhere.
    */
   shortSeconds?: number;
+}
+/**
+ * What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2 and M5). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), or a one-line idea. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
+ */
+export interface GenerateMusicOptions {
+  lyricsFrom: LyricsSource;
+  /**
+   * The sound, in words: genre, instruments, mood. Never an artist's name.
+   */
+  style: string;
+  /**
+   * Who sings. ANY lets each take differ.
+   */
+  vocal?: 'FEMALE' | 'MALE' | 'ANY';
+  seconds?: number;
+  /**
+   * How many versions of the same song to make, each with its own seed, to keep the best.
+   */
+  takes?: number;
+  /**
+   * The trend a TREND song is about.
+   */
+  trendId?: string | null;
+  /**
+   * A NOTES song's source: what it should teach, in the person's own words.
+   */
+  notes?: string | null;
+  /**
+   * An IDEA song's one-line brief.
+   */
+  idea?: string | null;
+  /**
+   * The series the tracks join; null lets the worker name it from the style.
+   */
+  series?: string | null;
+  /**
+   * The first take's seed; the others follow it. Null picks one.
+   */
+  seed?: number | null;
 }
 /**
  * What the operator chose for one specific upload, set when the publish is requested. Absent fields fall back to the channel's defaults, so a clip published without opening any of this still behaves sensibly.
@@ -3053,6 +3103,18 @@ export interface Track {
    * The themed series it belongs to (Lo-fi, Cinematic...): one look for its videos, and later one playlist.
    */
   series?: string | null;
+  /**
+   * What is sung, with its section tags ([Verse], [Chorus]...). Null for an instrumental.
+   */
+  lyrics?: string | null;
+  /**
+   * Where the song came from, in a few words: the trend, 'your notes', or the idea it was given.
+   */
+  inspiration?: string | null;
+  /**
+   * The GENERATE_MUSIC job that made it. Null for a track imported by hand.
+   */
+  jobId?: string | null;
   /**
    * Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server.
    */

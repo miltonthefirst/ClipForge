@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { TRACKS_QUERY, newMusicVideoJob, trackDecision, workspaceKey } from './tracks';
+import {
+  SONG_STYLES,
+  TRACKS_QUERY,
+  newGenerateMusicJob,
+  newMusicVideoJob,
+  trackDecision,
+  workspaceKey,
+} from './tracks';
 
 describe('tracks', () => {
   it('maps a worker path to what the loopback file server serves', () => {
@@ -36,5 +43,27 @@ describe('tracks', () => {
     expect(job.stages).toEqual([{ name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' }]);
     expect(job.musicVideoOptions).toEqual({ trackId: 'trk_1' });
     expect(job.attempts).toBe(0);
+  });
+
+  it('builds the song job the worker runs: write, then sing, both on the GPU', () => {
+    const job = newGenerateMusicJob(
+      'j2',
+      'alice',
+      { lyricsFrom: 'IDEA', style: 'amapiano', idea: 'a slow Sunday' },
+      '2026-11-17T00:00:00.000Z',
+    );
+    expect(job.type).toBe('GENERATE_MUSIC');
+    expect(job.stages.map((stage) => [stage.name, stage.lane])).toEqual([
+      ['LYRICS', 'GPU'],
+      ['SING', 'GPU'],
+    ]);
+    expect(job.generateMusicOptions.idea).toBe('a slow Sunday');
+  });
+
+  it('offers styles in words, within what the rules accept', () => {
+    for (const style of SONG_STYLES) {
+      expect(style.style.length).toBeLessThanOrEqual(200);
+      expect(style.style).not.toMatch(/\bstyle of\b|\blike\b/i);
+    }
   });
 });

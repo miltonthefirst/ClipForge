@@ -13,6 +13,8 @@
   </p>
 }
 
+<app-make-track />
+
 @if (loadError(); as error) {
   <p
     class="mt-4 rounded-lg border border-danger-line bg-danger-bg px-3 py-2 text-sm text-danger-ink"
@@ -23,10 +25,7 @@
   <p class="mt-6 text-sm text-ink-muted">Loading…</p>
 } @else if (tracks()!.length === 0) {
   <p class="mt-6 rounded-lg border border-line bg-panel px-4 py-3 text-sm text-ink-muted">
-    No music yet. Tracks appear here once the PC has made some and they have been imported (<code
-      class="text-ink-subtle"
-      >clipforge-worker import-tracks</code
-    >).
+    No music yet. Make a track above; its takes appear here when the PC has sung them.
   </p>
 } @else {
   <ul class="mt-6 space-y-3">
@@ -46,6 +45,9 @@
             >{{ statusLabel(track.status) }}</span
           >
         </div>
+        @if (track.inspiration) {
+          <p class="mt-1 text-sm text-ink">{{ track.inspiration }}</p>
+        }
         <p class="mt-1 text-sm text-ink-muted">{{ track.prompt }}</p>
         <p class="mt-1 text-xs text-ink-subtle">
           {{ track.seconds | number: '1.0-0' }} s
@@ -57,6 +59,15 @@
           }
           · {{ track.model }}
         </p>
+
+        @if (track.lyrics) {
+          <details class="mt-2 text-sm">
+            <summary class="cursor-pointer text-forge-600">Lyrics</summary>
+            <pre class="mt-2 whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink">{{
+              track.lyrics
+            }}</pre>
+          </details>
+        }
 
         @if (playing()?.id === track.id) {
           <audio class="mt-3 w-full" controls autoplay [src]="playing()!.url"></audio>

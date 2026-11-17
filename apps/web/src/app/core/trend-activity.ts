@@ -45,6 +45,8 @@ export function kindOf(job: Job): string {
       return 'Drawn video';
     case 'MUSIC_VIDEO':
       return 'Music video';
+    case 'GENERATE_MUSIC':
+      return 'Song';
     default:
       return job.type.charAt(0) + job.type.slice(1).toLowerCase();
   }

@@ -1050,3 +1050,46 @@ describe('music video jobs', () => {
     }
   });
 });
+
+describe('song jobs', () => {
+  const job = (options: Record<string, unknown>, id = 'song-1') =>
+    queuedJob(ALICE, {
+      id,
+      type: 'GENERATE_MUSIC',
+      stages: [
+        { name: 'LYRICS', lane: 'GPU', status: 'PENDING' },
+        { name: 'SING', lane: 'GPU', status: 'PENDING' },
+      ],
+      generateMusicOptions: options,
+    });
+  const style = 'amapiano, log drum, warm piano';
+
+  it('lets a member ask for a song from an idea, notes, a trend or nothing', async () => {
+    await seed('trends/t1', { topic: 'something', uid: ALICE });
+    for (const [n, options] of [
+      { lyricsFrom: 'IDEA', style, idea: 'a slow Sunday' },
+      { lyricsFrom: 'NOTES', style, notes: 'Photosynthesis turns light into sugar.', takes: 1 },
+      { lyricsFrom: 'TREND', style, trendId: 't1', vocal: 'FEMALE', seconds: 180 },
+      { lyricsFrom: 'NONE', style, takes: 3, seconds: 30, series: 'Lo-fi', seed: 7 },
+    ].entries()) {
+      await assertSucceeds(setDoc(doc(aliceDb(), `jobs/song-${n}`), job(options, `song-${n}`)));
+    }
+  });
+
+  it('denies a song with nothing to say, or more than the worker will make', async () => {
+    for (const options of [
+      { lyricsFrom: 'IDEA', style },
+      { lyricsFrom: 'IDEA', style, idea: '' },
+      { lyricsFrom: 'NOTES', style },
+      { lyricsFrom: 'TREND', style, trendId: 'gone' },
+      { lyricsFrom: 'IDEA', style: '', idea: 'x' },
+      { lyricsFrom: 'IDEA', style, idea: 'x', takes: 4 },
+      { lyricsFrom: 'IDEA', style, idea: 'x', seconds: 600 },
+      { lyricsFrom: 'IDEA', style, idea: 'x', vocal: 'ROBOT' },
+      { lyricsFrom: 'IDEA', style, idea: 'x', publish: true },
+      { lyricsFrom: 'SOMETHING', style },
+    ]) {
+      await assertFails(setDoc(doc(aliceDb(), 'jobs/song-1'), job(options)));
+    }
+  });
+});
