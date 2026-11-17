@@ -660,6 +660,22 @@ service cloud.firestore {
              && (options.get('trendId', null) == null || options.trendId is string);
     }
 
+    // What a MUSIC_VIDEO job may ask for: a kept track, and which shapes.
+    function musicVideoOptionsOk() {
+      let options = request.resource.data.get('musicVideoOptions', null);
+      return options is map
+             && options.keys().hasOnly(['trackId', 'full', 'short', 'shortSeconds'])
+             && options.trackId is string
+             && exists(/databases/$(database)/documents/tracks/$(options.trackId))
+             && get(/databases/$(database)/documents/tracks/$(options.trackId)).data.status == 'KEPT'
+             && options.get('full', true) is bool
+             && options.get('short', true) is bool
+             && (options.get('full', true) || options.get('short', true))
+             && (options.get('shortSeconds', 55) is int
+                 && options.get('shortSeconds', 55) >= 15
+                 && options.get('shortSeconds', 55) <= 59);
+    }
+
     // What a COMPOSE job may ask for. The topic is the one thing it needs;
     // the script, when given, goes to a synthesiser verbatim, and everything
     // else is bounded because it reaches a prompt, a voice or a renderer.
@@ -802,7 +818,11 @@ service cloud.firestore {
                     // options are a document, and that document is checked.
                     && (request.resource.data.type != 'COMPILE' || compileOptionsOk())
                     // A COMPOSE job has no source at all. It asks for a topic.
-                    && (request.resource.data.type != 'COMPOSE' || composeOptionsOk());
+                    && (request.resource.data.type != 'COMPOSE' || composeOptionsOk())
+                    // A MUSIC_VIDEO job draws videos of one track, and only one
+                    // a person KEPT (docs/MUSIC-PLAN.md, M4): a discarded or
+                    // undecided track is not something to publish.
+                    && (request.resource.data.type != 'MUSIC_VIDEO' || musicVideoOptionsOk());
 
       // Resubmitting sends the same job back to the queue, exactly as
       // `lease.resubmit` does on the worker. FAILED only: the worker lets go of

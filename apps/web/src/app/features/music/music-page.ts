@@ -1,4 +1,5 @@
 import { DecimalPipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -32,7 +33,7 @@ interface Playing {
  */
 @Component({
   selector: 'app-music-page',
-  imports: [DecimalPipe],
+  imports: [DecimalPipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './music-page.html',
 })
@@ -53,6 +54,9 @@ export class MusicPage implements OnDestroy {
   protected readonly opening = signal<string | null>(null);
   protected readonly notes = signal<Record<string, string>>({});
   protected readonly deciding = signal<string | null>(null);
+  /** Video jobs started from this page, by track id: what to link to. */
+  protected readonly videoJobs = signal<Record<string, string>>({});
+  protected readonly making = signal<string | null>(null);
 
   protected readonly counts = computed(() => {
     const all = this.tracks() ?? [];
@@ -97,6 +101,25 @@ export class MusicPage implements OnDestroy {
       );
     } finally {
       this.opening.set(null);
+    }
+  }
+
+  /**
+   * Draw a kept track's videos: the full track at 16:9 and a Short of its
+   * strongest stretch at 9:16 (docs/MUSIC-PLAN.md, M4). Both arrive in Review,
+   * and are published from there like any clip.
+   */
+  protected async makeVideos(track: Track): Promise<void> {
+    const uid = this.session.uid;
+    if (!uid || track.status !== 'KEPT') return;
+    this.making.set(track.id);
+    try {
+      const jobId = await this.repository.makeVideos(track.id, uid);
+      this.videoJobs.set({ ...this.videoJobs(), [track.id]: jobId });
+    } catch (error) {
+      this.note(track.id, error instanceof Error ? error.message : String(error));
+    } finally {
+      this.making.set(null);
     }
   }
 

@@ -43,6 +43,7 @@ def main() -> None:
         entries[str(path)] = {
             "file": str(path),
             "title": f"{TITLES.get(name, name)} ({seconds} s)",
+            "series": TITLES.get(name, name),
             "prompt": PROMPTS[name],
             "seconds": seconds,
             "instrumental": True,

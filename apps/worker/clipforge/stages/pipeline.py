@@ -27,6 +27,7 @@ from clipforge_contracts import (
     JobType,
     Lane,
     MusicOptions,
+    MusicVideoOptions,
     RemakeOptions,
     ResearchOptions,
     StageName,
@@ -54,6 +55,7 @@ from clipforge.store.firestore import (
     PreferenceStore,
     PublicationStore,
     SourceStore,
+    TrackStore,
     TrendStore,
 )
 from clipforge.store.transcripts import TranscriptArchive, TranscriptStore
@@ -63,6 +65,7 @@ __all__ = [
     "COMPILE_PIPELINE",
     "COMPOSE_PIPELINE",
     "MUSIC_PIPELINE",
+    "MUSIC_VIDEO_PIPELINE",
     "PUBLISH_PIPELINE",
     "REMAKE_PIPELINE",
     "RESEARCH_PIPELINE",
@@ -70,6 +73,7 @@ __all__ = [
     "build_clip_registry",
     "build_clip_stages",
     "build_compile_registry",
+    "build_music_video_registry",
     "build_publish_registry",
     "build_registry_factory",
     "build_remake_registry",
@@ -79,6 +83,7 @@ __all__ = [
     "new_clip_job",
     "new_compile_job",
     "new_music_job",
+    "new_music_video_job",
     "new_publish_job",
     "new_remake_job",
     "new_research_job",
@@ -144,6 +149,10 @@ COMPOSE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
     (StageName.DRAW, Lane.CPU),
     (StageName.ASSEMBLE, Lane.CPU),
 )
+
+# A kept track drawn into videos by ffmpeg (docs/MUSIC-PLAN.md, M4). The CPU
+# lane: nothing here needs the card, so it never waits behind a harvest.
+MUSIC_VIDEO_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.VISUALIZE, Lane.CPU),)
 
 COMPILE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
     (StageName.GATHER, Lane.CPU),
@@ -661,6 +670,40 @@ def build_compile_registry(
     return registry
 
 
+def build_music_video_registry(
+    *, clips: ClipStore, tracks: TrackStore, workspace: Workspace, blobs: BlobStore
+) -> StageRegistry:
+    """The one-stage registry for MUSIC_VIDEO jobs."""
+    from clipforge.stages.music_video import VisualizeStage
+
+    registry = StageRegistry()
+    registry.register(VisualizeStage(clips=clips, tracks=tracks, workspace=workspace, blobs=blobs))
+    return registry
+
+
+def new_music_video_job(
+    *,
+    uid: str,
+    options: MusicVideoOptions,
+    job_id: str | None = None,
+    max_attempts: int = 2,
+) -> Job:
+    """Build a MUSIC_VIDEO job: one kept track, a full video and/or a Short."""
+    now = datetime.now(UTC)
+    return Job(
+        id=job_id or uuid.uuid4().hex,
+        uid=uid,
+        type=JobType.MUSIC_VIDEO,
+        status=JobStatus.QUEUED,
+        music_video_options=options,
+        stages=clip_stages(MUSIC_VIDEO_PIPELINE),
+        attempts=0,
+        max_attempts=max_attempts,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def build_compose_registry(
     *,
     settings: Settings,
@@ -768,6 +811,7 @@ def build_registry_factory(
     channels: ChannelStore | None = None,
     preferences: PreferenceStore | None = None,
     providers: Sequence[TrendProvider] | None = None,
+    tracks: TrackStore | None = None,
 ) -> Callable[[JobType], StageRegistry]:
     """The worker's stage lookup, for every job type it can run.
 
@@ -818,6 +862,13 @@ def build_registry_factory(
         settings=settings, clips=clips, workspace=workspace, blobs=blobs
     )
 
+    music_video = build_music_video_registry(
+        clips=clips,
+        tracks=tracks or TrackStore(clips._db, settings),
+        workspace=workspace,
+        blobs=blobs,
+    )
+
     compile_ = build_compile_registry(
         settings=settings,
         sources=sources,
@@ -848,6 +899,8 @@ def build_registry_factory(
             return compose
         if job_type is JobType.COMPILE:
             return compile_
+        if job_type is JobType.MUSIC_VIDEO:
+            return music_video
         raise NotImplementedError(f"job type {job_type.value} has no stage implementations")
 
     return factory

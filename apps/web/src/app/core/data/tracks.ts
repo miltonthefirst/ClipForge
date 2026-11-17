@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import type { Track, TrackStatus } from '@clipforge/contracts';
+import type { Job, MusicVideoOptions, Track, TrackStatus } from '@clipforge/contracts';
 
 import { FirestoreGateway, type Live } from '../firestore/gateway';
 import type { QuerySpec } from '../firestore/spec';
@@ -48,12 +48,57 @@ export function workspaceKey(localPath: string): string | null {
   return index === -1 ? null : normalised.slice(index + 1);
 }
 
+/**
+ * The music video job a client is allowed to write. Mirrors
+ * `MUSIC_VIDEO_PIPELINE`: one stage, VISUALIZE, on the CPU lane. The rules
+ * accept it only for a track that was kept.
+ */
+export function newMusicVideoJob(id: string, uid: string, options: MusicVideoOptions, now: string) {
+  return {
+    id,
+    uid,
+    type: 'MUSIC_VIDEO',
+    status: 'QUEUED',
+    submission: null,
+    sourceId: null,
+    musicVideoOptions: options,
+    stages: [{ name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' }],
+    workerId: null,
+    leaseExpiresAt: null,
+    attempts: 0,
+    maxAttempts: 2,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    startedAt: null,
+    endedAt: null,
+  } satisfies Job;
+}
+
 @Injectable({ providedIn: 'root' })
 export class TracksRepository {
   private readonly db = inject(FirestoreGateway);
 
   tracks(): Live<Track[]> {
     return this.db.live<Track>(TRACKS_QUERY);
+  }
+
+  /** Ask the PC to draw a kept track's videos: a full one and a Short. */
+  async makeVideos(trackId: string, uid: string): Promise<string> {
+    const id = this.db.newId('jobs');
+    await this.db.create(
+      'jobs',
+      {
+        ...newMusicVideoJob(
+          id,
+          uid,
+          { trackId, full: true, short: true },
+          new Date().toISOString(),
+        ),
+      },
+      id,
+    );
+    return id;
   }
 
   async decide(trackId: string, uid: string, status: TrackStatus): Promise<void> {

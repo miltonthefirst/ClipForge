@@ -258,6 +258,24 @@ def test_an_over_long_title_is_truncated_rather_than_rejected(tmp_path: Path) ->
     assert len(snippet["title"]) == 100
 
 
+def test_a_video_of_generated_music_declares_synthetic_media(tmp_path: Path) -> None:
+    """YouTube's altered-or-synthetic declaration (docs/MUSIC-PLAN.md): set for
+    a generated track's video, absent for an ordinary clip."""
+    captured: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+
+    client = _client(tmp_path, handler)
+    client.start_resumable_upload(title="t", description="d", tags=[], synthetic=True)
+    client.start_resumable_upload(title="t", description="d", tags=[])
+
+    first, second = (body["status"] for body in captured)
+    assert isinstance(first, dict) and first["containsSyntheticMedia"] is True
+    assert isinstance(second, dict) and "containsSyntheticMedia" not in second
+
+
 def test_a_full_quota_refuses_before_reserving_a_session(tmp_path: Path) -> None:
     """Checked before the request, not after. Discovering the limit on the
     seventh upload means discovering it after the encode and the review."""

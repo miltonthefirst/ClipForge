@@ -173,6 +173,8 @@ class PublishStage:
                     tags=list(publication.tags or []),
                     privacy=privacy.value,
                     category_id=publication.category_id or FALLBACK_CATEGORY,
+                    # A video of a generated track declares synthetic media.
+                    synthetic=clip.track_id is not None,
                 )
                 # Checkpointed before the bytes move. The session URL is what a
                 # resume needs, and it is a job-scoped value — it lives on the

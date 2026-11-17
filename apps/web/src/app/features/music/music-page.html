@@ -63,6 +63,16 @@
           <p class="mt-1 text-xs text-ink-subtle">Playing from {{ playing()!.from }}.</p>
         }
 
+        @if (videoJobs()[track.id]; as jobId) {
+          <p class="mt-2 text-xs text-ink-muted">
+            The PC is drawing a full video and a Short. They arrive in Review when done (<a
+              class="underline"
+              [routerLink]="['/jobs', jobId]"
+              >follow the job</a
+            >).
+          </p>
+        }
+
         @if (notes()[track.id]; as message) {
           <p class="mt-2 text-xs text-warn-ink">{{ message }}</p>
         }
@@ -96,6 +106,16 @@
           >
             {{ track.status === 'DISCARDED' ? 'Discarded' : 'Discard' }}
           </button>
+          @if (track.status === 'KEPT' && !videoJobs()[track.id]) {
+            <button
+              type="button"
+              class="rounded-lg border border-forge-600/40 px-3 py-1.5 text-sm text-forge-600 hover:bg-line disabled:opacity-50"
+              [disabled]="making() === track.id"
+              (click)="makeVideos(track)"
+            >
+              {{ making() === track.id ? 'Starting…' : 'Make videos' }}
+            </button>
+          }
         </div>
       </li>
     }

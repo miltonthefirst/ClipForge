@@ -1003,3 +1003,50 @@ describe('usage', () => {
     await assertFails(setDoc(doc(aliceDb(), 'usage/current'), { measuredAt: 'x', days: [] }));
   });
 });
+
+describe('music video jobs', () => {
+  const job = (options: Record<string, unknown>) =>
+    queuedJob(ALICE, {
+      id: 'mv-1',
+      type: 'MUSIC_VIDEO',
+      stages: [{ name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' }],
+      musicVideoOptions: options,
+    });
+  const track = (status: string) => ({
+    id: 'trk_1',
+    title: 'Cinematic (180 s)',
+    prompt: 'uplifting cinematic build',
+    seconds: 180,
+    instrumental: true,
+    model: 'ACE-Step 1.5',
+    licence: 'MIT',
+    localPath: 'P:/x.wav',
+    status,
+    createdAt: '2026-11-17T00:00:00.000Z',
+  });
+
+  it('lets a member make videos of a kept track', async () => {
+    await seed('tracks/trk_1', track('KEPT'));
+    await assertSucceeds(setDoc(doc(aliceDb(), 'jobs/mv-1'), job({ trackId: 'trk_1' })));
+  });
+
+  it('denies a track that was discarded, is undecided, or does not exist', async () => {
+    await seed('tracks/trk_1', track('DISCARDED'));
+    await seed('tracks/trk_2', track('NEW'));
+    await assertFails(setDoc(doc(aliceDb(), 'jobs/mv-1'), job({ trackId: 'trk_1' })));
+    await assertFails(setDoc(doc(aliceDb(), 'jobs/mv-1'), job({ trackId: 'trk_2' })));
+    await assertFails(setDoc(doc(aliceDb(), 'jobs/mv-1'), job({ trackId: 'nope' })));
+  });
+
+  it('denies options the worker cannot make', async () => {
+    await seed('tracks/trk_1', track('KEPT'));
+    for (const options of [
+      { trackId: 'trk_1', full: false, short: false },
+      { trackId: 'trk_1', shortSeconds: 90 },
+      { trackId: 'trk_1', shortSeconds: 5 },
+      { trackId: 'trk_1', upload: true },
+    ]) {
+      await assertFails(setDoc(doc(aliceDb(), 'jobs/mv-1'), job(options)));
+    }
+  });
+});

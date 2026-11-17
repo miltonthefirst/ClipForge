@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { TRACKS_QUERY, trackDecision, workspaceKey } from './tracks';
+import { TRACKS_QUERY, newMusicVideoJob, trackDecision, workspaceKey } from './tracks';
 
 describe('tracks', () => {
   it('maps a worker path to what the loopback file server serves', () => {
@@ -28,5 +28,13 @@ describe('tracks', () => {
   it('listens to a bounded page, newest first', () => {
     expect(TRACKS_QUERY.limit).toBeGreaterThan(0);
     expect(TRACKS_QUERY.orderBy).toEqual([['createdAt', 'desc']]);
+  });
+
+  it('builds the one job the rules let a client write for a kept track', () => {
+    const job = newMusicVideoJob('j1', 'alice', { trackId: 'trk_1' }, '2026-11-17T00:00:00.000Z');
+    expect(job.type).toBe('MUSIC_VIDEO');
+    expect(job.stages).toEqual([{ name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' }]);
+    expect(job.musicVideoOptions).toEqual({ trackId: 'trk_1' });
+    expect(job.attempts).toBe(0);
   });
 });

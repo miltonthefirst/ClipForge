@@ -54,7 +54,7 @@ def import_manifest(manifest: Path, music_dir: Path, store: TrackWriter) -> Impo
     A manifest is ``{"tracks": [{...}, ...]}``; each entry needs ``file``
     (absolute, or relative to the manifest), ``prompt``, ``seconds``, ``model``
     and ``licence``, and may carry ``title``, ``bpm``, ``key``, ``instrumental``,
-    ``seed``, ``steps``, ``generateSeconds`` and ``createdAt``.
+    ``seed``, ``steps``, ``generateSeconds``, ``series`` and ``createdAt``.
     """
     entries = json.loads(manifest.read_text(encoding="utf-8")).get("tracks", [])
     target = music_dir / "generated"
@@ -101,6 +101,7 @@ def _track(track_id: str, path: Path, entry: dict[str, Any]) -> Track:
         generate_seconds=(
             float(entry["generateSeconds"]) if entry.get("generateSeconds") is not None else None
         ),
+        series=(str(entry["series"])[:60] if entry.get("series") else None),
         local_path=str(path.resolve()),
         status=TrackStatus.NEW,
         created_at=datetime.fromisoformat(created) if created else datetime.now(UTC),

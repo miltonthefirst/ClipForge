@@ -140,6 +140,45 @@ maps each file to its prompt). M2 starts once the owner says they are usable.
 - Tracks are grouped into **series** (a mood or theme, a playlist each), so the
   channel reads as curated rather than mass-produced (§5).
 
+**Built 2026-11-17 (0.0.9), M4a.** A `MUSIC_VIDEO` job with one CPU stage,
+`VISUALIZE` (`stages/music_video.py`, `media/visualizer.py`). ffmpeg draws the
+picture rather than Pillow: an animated radial gradient in the series' colours,
+the track's own waveform with a soft glow, and the title, about a minute for a
+three-minute track. It makes a 1920x1080 full video and a 1080x1920 Short of the
+loudest 55 seconds (RMS), faded and normalised to -14 LUFS. Each becomes a clip
+carrying `trackId`, PENDING review; publishing declares `containsSyntheticMedia`
+for any clip with a `trackId`. The rules let a client start one only for a
+KEPT track. The Music page has a "Make videos" button on each kept track.
+
+**Still to do, M4b: playlists per series.** The channel was authorised with
+`youtube.upload` and `youtube.readonly`; creating playlists and adding to them
+needs the `youtube` scope, so the channel has to be authorised once more on the
+YouTube page first. Tracks already carry `series` for it.
+
+### Phase M5: lyrics, from a trend or from notes (asked 2026-11-17)
+
+The owner's asks: songs with lyrics written from what is trending, "so that it
+becomes interesting", and, later, songs made from lecture notes.
+
+- **One writer, two sources.** The local model (`qwen3.5:4b`, already brokered)
+  writes lyrics in ACE-Step's tagged form (`[verse]`, `[chorus]`, `[bridge]`)
+  from either a trend (its topic and angle, from `trends/{id}`) or text the
+  owner pastes (lecture notes). Then a style prompt, as now, and the track is
+  generated with vocals.
+- **Lecture notes:** a study song. The writer is told to keep the facts
+  right and make the chorus the thing to remember; the notes stay on the PC.
+- **Guardrails, from the trend side:** no real person's name or likeness in a
+  lyric (the drawn-video rule), nothing defamatory, no quoting another song's
+  words. A trend about a person is written about the event, not the person.
+- **The open risk: vocals on the 6 GB tier.** M1 measured instrumentals only,
+  with no LM. ACE-Step's DiT does take lyrics without the LM, but vocal quality
+  at INT8 on this card is unmeasured. A spike first (a few lyric songs, judged
+  by ear on the Music page, as M1 was); if vocals are poor, the fallback is the
+  0.6B LM in the 6-8 GB tier settings, measured for memory.
+- **Where it lands:** the same library and the same Keep/Discard, then the same
+  Make videos. A lyric video can show the words in time later; the first
+  version uses the M4 look.
+
 ## 4. What it costs the rest of the system
 
 - GPU time only. 3 to 7 videos a week is a handful of tracks.

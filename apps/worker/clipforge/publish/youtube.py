@@ -219,6 +219,7 @@ class YouTubeClient:
         tags: list[str],
         privacy: str = "unlisted",
         category_id: str = "22",
+        synthetic: bool = False,
     ) -> str:
         """Reserve an upload session and return its URL.
 
@@ -240,6 +241,12 @@ class YouTubeClient:
             },
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
         }
+        if synthetic:
+            # YouTube's altered-or-synthetic content declaration. Generated
+            # music is the case it names, and declaring it does not by itself
+            # limit reach or monetisation (docs/MUSIC-PLAN.md, section 2).
+            status: dict[str, object] = metadata["status"]  # type: ignore[assignment]
+            status["containsSyntheticMedia"] = True
 
         with self._client() as client:
             response = client.post(

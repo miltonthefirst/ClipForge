@@ -98,6 +98,9 @@ export function jobTitle(job: Job): string {
     const options = job.composeOptions;
     return options ? `Drawn video: ${options.topic}` : 'Drawn video';
   }
+  if (job.type === 'MUSIC_VIDEO') {
+    return 'Music video';
+  }
   return job.submission ?? job.id;
 }
 

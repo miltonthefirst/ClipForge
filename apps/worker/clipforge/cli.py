@@ -77,6 +77,7 @@ def run(
         PublicationStore,
         ScheduleStore,
         SourceStore,
+        TrackStore,
         TrendStore,
         WorkerStore,
         firestore_client,
@@ -127,6 +128,8 @@ def run(
             # decides anything, and written to afterwards — as proposals only,
             # which do nothing until a human accepts them.
             preferences=PreferenceStore(client, settings),
+            # Generated music, which a MUSIC_VIDEO job turns into videos.
+            tracks=TrackStore(client, settings),
         ),
         # A job that has ended tells whoever submitted it (clipforge/notify).
         on_job_end=_job_notices(settings, client),

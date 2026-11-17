@@ -16,7 +16,14 @@ from clipforge.notify import Notifier
 __all__ = ["JOB_LABELS", "on_job_end", "wants_youtube_sign_in"]
 
 # Job types whose success is a clip someone will want to look at.
-MAKES_CLIPS = {JobType.CLIP, JobType.REMAKE, JobType.COMPOSE, JobType.COMPILE, JobType.MUSIC}
+MAKES_CLIPS = {
+    JobType.CLIP,
+    JobType.REMAKE,
+    JobType.COMPOSE,
+    JobType.COMPILE,
+    JobType.MUSIC,
+    JobType.MUSIC_VIDEO,
+}
 
 JOB_LABELS = {
     JobType.CLIP: "Clipping",
@@ -28,6 +35,7 @@ JOB_LABELS = {
     JobType.UPLOAD: "An upload",
     JobType.RESEARCH: "Research",
     JobType.ECHO: "A test job",
+    JobType.MUSIC_VIDEO: "A music video",
 }
 
 # How a YouTube credential problem reads once it is a stage error's message:
