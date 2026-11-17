@@ -81,6 +81,7 @@ export function newGenerateMusicJob(
     stages: [
       { name: 'LYRICS', lane: 'GPU', status: 'PENDING' },
       { name: 'SING', lane: 'GPU', status: 'PENDING' },
+      { name: 'ARTWORK', lane: 'GPU', status: 'PENDING' },
     ],
     workerId: null,
     leaseExpiresAt: null,
@@ -134,7 +135,11 @@ export function newMusicVideoJob(id: string, uid: string, options: MusicVideoOpt
     submission: null,
     sourceId: null,
     musicVideoOptions: options,
-    stages: [{ name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' }],
+    // The background is painted first when the track has none (stages/artwork.py).
+    stages: [
+      { name: 'ARTWORK', lane: 'GPU', status: 'PENDING' },
+      { name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' },
+    ],
     workerId: null,
     leaseExpiresAt: null,
     attempts: 0,

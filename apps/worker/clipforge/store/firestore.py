@@ -50,6 +50,7 @@ from clipforge_contracts import (
     SourceProvider,
     StageStatus,
     Track,
+    TrackArtwork,
     TranscriptRef,
     Trend,
     WorkerHeartbeat,
@@ -972,10 +973,19 @@ class TrackStore:
         if existing.exists:
             for decided in ("status", "decidedAt", "decidedBy", "createdAt"):
                 document.pop(decided, None)
+            # A picture painted since is the track's too; an import knows none.
+            if document.get("artwork") is None:
+                document.pop("artwork", None)
             ref.set(document, merge=True)
             return False
         ref.set(document)
         return True
+
+    def set_artwork(self, track_id: str, artwork: TrackArtwork) -> None:
+        """The track's background picture (clipforge/stages/artwork.py)."""
+        self._db.collection(TRACKS).document(track_id).update(
+            {"artwork": artwork.model_dump(mode="json", by_alias=True)}
+        )
 
 
 class TrendStore:

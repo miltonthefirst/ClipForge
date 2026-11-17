@@ -138,6 +138,12 @@ export class MusicPage implements OnDestroy {
     }
   }
 
+  /** 95 -> '1:35'. */
+  protected duration(seconds: number): string {
+    const whole = Math.round(seconds);
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+  }
+
   protected statusLabel(status: TrackStatus): string {
     return status === 'KEPT' ? 'Kept' : status === 'DISCARDED' ? 'Discarded' : 'Not decided';
   }

@@ -156,13 +156,18 @@ COMPOSE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
 
 # A kept track drawn into videos by ffmpeg (docs/MUSIC-PLAN.md, M4). The CPU
 # lane: nothing here needs the card, so it never waits behind a harvest.
-MUSIC_VIDEO_PIPELINE: tuple[tuple[StageName, Lane], ...] = ((StageName.VISUALIZE, Lane.CPU),)
+MUSIC_VIDEO_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
+    # Paints the track's background first, when it has none (stages/artwork.py).
+    (StageName.ARTWORK, Lane.GPU),
+    (StageName.VISUALIZE, Lane.CPU),
+)
 
 # New music (docs/MUSIC-PLAN.md, M2 and M5): the local model writes the song,
 # then the music model sings it. Both hold the card, one after the other.
 GENERATE_MUSIC_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
     (StageName.LYRICS, Lane.GPU),
     (StageName.SING, Lane.GPU),
+    (StageName.ARTWORK, Lane.GPU),
 )
 
 COMPILE_PIPELINE: tuple[tuple[StageName, Lane], ...] = (
@@ -684,10 +689,12 @@ def build_compile_registry(
 def build_music_video_registry(
     *, clips: ClipStore, tracks: TrackStore, workspace: Workspace, blobs: BlobStore
 ) -> StageRegistry:
-    """The one-stage registry for MUSIC_VIDEO jobs."""
+    """The registry for MUSIC_VIDEO jobs: the background, then the videos."""
+    from clipforge.stages.artwork import ArtworkStage
     from clipforge.stages.music_video import VisualizeStage
 
     registry = StageRegistry()
+    registry.register(ArtworkStage(tracks=tracks, workspace=workspace))
     registry.register(VisualizeStage(clips=clips, tracks=tracks, workspace=workspace, blobs=blobs))
     return registry
 
@@ -703,6 +710,9 @@ def build_generate_music_registry(
         LyricsStage(trends=trends, workspace=workspace, notes_files=BucketNotes(settings))
     )
     registry.register(SingStage(tracks=tracks, workspace=workspace))
+    from clipforge.stages.artwork import ArtworkStage
+
+    registry.register(ArtworkStage(tracks=tracks, workspace=workspace))
     return registry
 
 

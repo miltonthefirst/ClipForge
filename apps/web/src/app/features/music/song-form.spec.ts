@@ -19,7 +19,7 @@ const form = (overrides: Partial<SongForm> = {}): SongForm => ({
   trendId: '',
   style: 'amapiano, log drum',
   vocal: 'ANY',
-  seconds: 150,
+  maxSeconds: 240,
   takes: 2,
   ...overrides,
 });
@@ -29,7 +29,7 @@ describe('songOptions', () => {
     expect(songOptions(form())).toEqual({
       lyricsFrom: 'IDEA',
       style: 'amapiano, log drum',
-      seconds: 150,
+      maxSeconds: 240,
       takes: 2,
       vocal: 'ANY',
       idea: 'a slow Sunday',

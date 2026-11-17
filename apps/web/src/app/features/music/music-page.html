@@ -31,6 +31,15 @@
   <ul class="mt-6 space-y-3">
     @for (track of tracks(); track track.id) {
       <li class="rounded-xl border border-line bg-panel p-4">
+        @if (track.artwork?.previewBase64; as preview) {
+          <!-- The background its videos are drawn on, painted on the PC. -->
+          <img
+            class="mb-3 aspect-video w-full rounded-lg object-cover"
+            [src]="'data:image/jpeg;base64,' + preview"
+            [alt]="'Background picture for ' + track.title"
+            loading="lazy"
+          />
+        }
         <div class="flex flex-wrap items-baseline justify-between gap-2">
           <h2 class="font-medium text-ink">{{ track.title }}</h2>
           <span
@@ -50,7 +59,7 @@
         }
         <p class="mt-1 text-sm text-ink-muted">{{ track.prompt }}</p>
         <p class="mt-1 text-xs text-ink-subtle">
-          {{ track.seconds | number: '1.0-0' }} s
+          {{ duration(track.seconds) }}
           @if (track.instrumental) {
             · instrumental
           }

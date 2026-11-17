@@ -42,7 +42,8 @@ export interface SongForm {
   readonly trendId: string;
   readonly style: string;
   readonly vocal: Vocal;
-  readonly seconds: number;
+  /** The longest the song may be; the words decide within it. */
+  readonly maxSeconds: number;
   readonly takes: number;
 }
 
@@ -95,7 +96,7 @@ export function songOptions(form: SongForm): GenerateMusicOptions | null {
   const base: GenerateMusicOptions = {
     lyricsFrom: form.lyricsFrom,
     style,
-    seconds: form.seconds,
+    maxSeconds: form.maxSeconds,
     takes: form.takes,
     ...(form.lyricsFrom === 'NONE' ? {} : { vocal: form.vocal }),
   };

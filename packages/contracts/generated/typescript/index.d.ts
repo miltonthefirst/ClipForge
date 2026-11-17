@@ -92,7 +92,7 @@ export type LyricsSource = 'NONE' | 'TREND' | 'NOTES' | 'IDEA';
  */
 export type PublishPrivacy = 'private' | 'unlisted' | 'public';
 /**
- * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice. VISUALIZE is the single stage of a MUSIC_VIDEO job: it draws the track's videos with ffmpeg on the CPU lane. LYRICS and SING belong to a GENERATE_MUSIC job, both on the GPU lane: the local model writes the song, then the music model, in a process of its own, makes each take.
+ * Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice. VISUALIZE is the single stage of a MUSIC_VIDEO job: it draws the track's videos with ffmpeg on the CPU lane. LYRICS and SING belong to a GENERATE_MUSIC job, both on the GPU lane: the local model writes the song, then the music model, in a process of its own, makes each take. ARTWORK paints a song's background picture with the local image model, wide and tall; it ends a GENERATE_MUSIC job and starts a MUSIC_VIDEO one for a track that has none.
  */
 export type StageName =
   | 'ECHO_ONE'
@@ -117,7 +117,8 @@ export type StageName =
   | 'DRAW'
   | 'VISUALIZE'
   | 'LYRICS'
-  | 'SING';
+  | 'SING'
+  | 'ARTWORK';
 /**
  * Which scheduler lane a stage runs in. The GPU lane is depth 1 because Whisper and the LLM cannot be co-resident in 6 GB of VRAM (docs/PLAN.md 2.1).
  */
@@ -1021,7 +1022,14 @@ export interface GenerateMusicOptions {
    * Who sings. ANY lets each take differ.
    */
   vocal?: 'FEMALE' | 'MALE' | 'ANY';
-  seconds?: number;
+  /**
+   * An exact length. Null (the default) makes the song as long as its lyrics need, up to maxSeconds; an instrumental is then maxSeconds long.
+   */
+  seconds?: number | null;
+  /**
+   * The longest the song may be. The writer aims for it, and a longer one gets more verses and a break. Eight minutes was measured on this card (67 s to make, 5975 of 6144 MiB at the peak, 2026-11-18); the model's own limit, ten, was not tried.
+   */
+  maxSeconds?: number;
   /**
    * How many versions of the same song to make, each with its own seed, to keep the best.
    */
@@ -3128,6 +3136,10 @@ export interface Track {
    */
   jobId?: string | null;
   /**
+   * The background picture its videos are drawn on. Null until ARTWORK has painted one; a video then uses the drawn gradient.
+   */
+  artwork?: TrackArtwork | null;
+  /**
    * Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server.
    */
   localPath: string;
@@ -3135,6 +3147,29 @@ export interface Track {
   createdAt: string;
   decidedAt?: string | null;
   decidedBy?: string | null;
+}
+/**
+ * A song's background picture, painted on this PC by a local image model (FLUX.2 klein 4B, Apache 2.0) from a scene the local language model described: a place, its light and weather, never a person, a face or writing. Two shapes of the same scene, for the full video and the Short. The files stay on the PC; a small preview travels with the track.
+ */
+export interface TrackArtwork {
+  /**
+   * The 16:9 picture's path on the worker, under workspace/music/artwork.
+   */
+  wide: string;
+  /**
+   * The 9:16 picture's path, for the Short.
+   */
+  tall: string;
+  /**
+   * What the image model was asked for.
+   */
+  prompt: string;
+  model: string;
+  /**
+   * A small JPEG of the wide picture, for the Music page.
+   */
+  previewBase64?: string | null;
+  createdAt: string;
 }
 /**
  * One notification, at users/{uid}/notifications/{id}: what the phone was told, kept so one missed is still there. Written by the worker or the agent; the recipient may only mark it read or delete it. A folded notification (the same job failing twice) keeps one id and is rewritten.

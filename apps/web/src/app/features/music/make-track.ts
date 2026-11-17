@@ -36,10 +36,15 @@ const SOURCES: readonly { readonly value: LyricsSource; readonly label: string }
   { value: 'NONE', label: 'No words' },
 ];
 
-const LENGTHS = [
+/** The longest a song may be; it is as long as its words need, up to this. */
+const LONGEST = [
   { seconds: 60, label: '1 min' },
-  { seconds: 150, label: '2½ min' },
-  { seconds: 210, label: '3½ min' },
+  { seconds: 120, label: '2 min' },
+  { seconds: 180, label: '3 min' },
+  { seconds: 240, label: '4 min' },
+  { seconds: 300, label: '5 min' },
+  { seconds: 360, label: '6 min' },
+  { seconds: 480, label: '8 min' },
 ];
 
 /**
@@ -262,12 +267,12 @@ const LENGTHS = [
               </select>
             </label>
             <label class="text-sm text-ink">
-              Length
+              Longest
               <select
                 class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
-                name="seconds"
-                [ngModel]="seconds()"
-                (ngModelChange)="seconds.set(+$event)"
+                name="maxSeconds"
+                [ngModel]="maxSeconds()"
+                (ngModelChange)="maxSeconds.set(+$event)"
               >
                 @for (length of lengths; track length.seconds) {
                   <option [value]="length.seconds">{{ length.label }}</option>
@@ -288,6 +293,14 @@ const LENGTHS = [
               </select>
             </label>
           </div>
+          <p class="text-xs text-ink-subtle">
+            {{
+              lyricsFrom() === 'NONE'
+                ? 'An instrumental is this long.'
+                : 'The song is as long as its words need, up to this. A longer one gets more verses and an instrumental break.'
+            }}
+            Each song gets a background picture painted on the PC for its videos.
+          </p>
 
           @if (error(); as message) {
             <p class="text-sm text-danger-ink">{{ message }}</p>
@@ -325,7 +338,7 @@ export class MakeTrack implements OnDestroy {
 
   protected readonly sources = SOURCES;
   protected readonly styles = SONG_STYLES;
-  protected readonly lengths = LENGTHS;
+  protected readonly lengths = LONGEST;
   protected readonly ideaLimit = IDEA_LIMIT;
   protected readonly focusLimit = FOCUS_LIMIT;
   protected readonly notesAccept = NOTES_ACCEPT;
@@ -344,7 +357,7 @@ export class MakeTrack implements OnDestroy {
   protected readonly trendId = signal('');
   protected readonly style = signal(SONG_STYLES[0]!.style);
   protected readonly vocal = signal<Vocal>('ANY');
-  protected readonly seconds = signal(150);
+  protected readonly maxSeconds = signal(240);
   protected readonly takes = signal(2);
   protected readonly sending = signal(false);
   protected readonly started = signal<string | null>(null);
@@ -417,7 +430,7 @@ export class MakeTrack implements OnDestroy {
       trendId: this.trendId(),
       style: this.style(),
       vocal: this.vocal(),
-      seconds: this.seconds(),
+      maxSeconds: this.maxSeconds(),
       takes: this.takes(),
     };
   }

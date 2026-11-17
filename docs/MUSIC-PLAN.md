@@ -234,6 +234,37 @@ on a busy card, "it should wait for it to be free instead of failing".
   "Waiting for the card: X MiB free, Y needed", and give up only after
   `song_gpu_wait_s` (6 hours).
 
+#### Background pictures, and length from the words (2026-11-18)
+
+The owner's asks: "a very nice background image in relation to the context of
+the music", and "the duration should be determined by the lyrics... and a max
+length as well because sometimes I might need long videos songs".
+
+- **ARTWORK** (GPU lane) ends a GENERATE_MUSIC job and starts a MUSIC_VIDEO
+  one when the track has no picture. LYRICS now also returns a *scene* (one
+  place, its light, weather, colours and objects; never a person or writing,
+  the drawn-videos rule) and an art style; an older track or an instrumental
+  has a scene written from its title, sound and words. FLUX.2 klein 4B
+  (Apache 2.0) in Sarungano's ComfyUI paints it at 1536x864 and 864x1536
+  (measured: 22 s and 17 s), using ona's txt2img graph, copied in
+  `clipforge/media/comfy.py`. The model has no negative prompt and naming a
+  thing to avoid can draw it, so the scene says only what is there. ComfyUI
+  is asked to unload afterwards unless Sarungano has work queued. No ComfyUI:
+  no picture, and the video is drawn on the gradient as before.
+- **The video** drifts the picture slowly (a crop with a moving origin,
+  about 3x real time at 1080p), with the wave a quieter, half-height band low
+  in the frame and the song's title as the big text. A song's YouTube
+  description now carries its lyrics (up to the clip's 2,000 characters) and
+  credits the picture.
+- **Length.** `maxSeconds` (1 to 8 minutes, default 4) replaces the fixed
+  length. The writer aims for it (longer targets get `extended` and `epic`
+  shapes with a third and fourth verse and instrumental breaks), and the song
+  is made as long as its words take: two bars a sung line, four for an intro
+  or outro, eight for a section with no words, at the song's tempo, rounded up
+  to 5 s. An instrumental is `maxSeconds` long. **Eight minutes measured:** 67 s
+  to make, card peak 5,975 of 6,144 MiB, so 8 is the cap rather than the
+  model's own 10.
+
 The writer's prompt (`lyrics-v1`): section tags, six to ten syllables a line,
 one image per song, a repeated hook, abbreviations spelled out (A T P), no
 real people, brands, songs or sides in politics; a notes song uses only facts

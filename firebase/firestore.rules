@@ -685,16 +685,20 @@ service cloud.firestore {
       let source = options == null ? null : options.get('lyricsFrom', null);
       return options is map
              && options.keys().hasOnly(
-                  ['lyricsFrom', 'style', 'vocal', 'seconds', 'takes', 'trendId', 'notes',
+                  ['lyricsFrom', 'style', 'vocal', 'seconds', 'maxSeconds', 'takes', 'trendId', 'notes',
                    'notesFile', 'notesFileName', 'focus', 'idea', 'series', 'seed'])
              && source in ['NONE', 'TREND', 'NOTES', 'IDEA']
              && options.style is string
              && options.style.size() > 0
              && options.style.size() <= 200
              && options.get('vocal', 'ANY') in ['FEMALE', 'MALE', 'ANY']
-             && options.get('seconds', 150) is int
-             && options.get('seconds', 150) >= 30
-             && options.get('seconds', 150) <= 240
+             // An exact length, or none: then the song is as long as its words,
+             // up to maxSeconds. Eight minutes is what was measured on the card.
+             && (options.get('seconds', null) == null
+                 || (options.seconds is int && options.seconds >= 30 && options.seconds <= 480))
+             && options.get('maxSeconds', 240) is int
+             && options.get('maxSeconds', 240) >= 60
+             && options.get('maxSeconds', 240) <= 480
              && options.get('takes', 2) is int
              && options.get('takes', 2) >= 1
              && options.get('takes', 2) <= 3

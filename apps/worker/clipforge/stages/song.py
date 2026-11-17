@@ -49,6 +49,8 @@ from clipforge.synth.lyrics import (
     condense_notes,
     normalise_key,
     series_for,
+    song_seconds,
+    target_seconds,
     write_song,
 )
 from clipforge.synth.notes import NotesError, extract_text, word_count
@@ -221,6 +223,8 @@ class LyricsStage:
                     "key": None,
                     "series": series,
                     "inspiration": None,
+                    # An instrumental has no words to measure: it is as long as allowed.
+                    "seconds": target_seconds(options),
                 }
             )
 
@@ -253,7 +257,7 @@ class LyricsStage:
                         client,
                         text,
                         focus=options.focus,
-                        seconds=options.seconds or 150,
+                        seconds=target_seconds(options),
                         progress=context.progress,
                     )
                 brief = brief_for(
@@ -284,6 +288,11 @@ class LyricsStage:
                 "key": normalise_key(draft.key),
                 "series": series,
                 "inspiration": brief.inspiration,
+                # As long as the words need, unless an exact length was asked for.
+                "seconds": options.seconds
+                or song_seconds(draft.lyrics, draft.bpm, longest=target_seconds(options)),
+                "scene": draft.scene,
+                "artStyle": draft.art_style,
                 "notesWords": word_count(notes_text) if notes_text else None,
                 "keyPoints": key_points[:20],
                 "modelVersion": f"ollama:{client.model}",
@@ -350,7 +359,7 @@ def takes_for(
                 "caption": caption,
                 "lyrics": None if instrumental else song["lyrics"],
                 "instrumental": instrumental,
-                "seconds": options.seconds or 150,
+                "seconds": int(song.get("seconds") or target_seconds(options)),
                 "seed": seed + take,
                 "bpm": song.get("bpm"),
                 "keyscale": song.get("key"),

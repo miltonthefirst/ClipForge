@@ -182,6 +182,33 @@ class VisualSpec:
     start_sec: float
     duration_sec: float
     fade_out: bool = True
+    # The song's painted background (stages/artwork.py), drawn with a slow
+    # drift under the wave and titles. None draws the series' gradient.
+    background: Path | None = None
+
+
+# How much larger than the frame the picture is drawn, so it has room to drift,
+# and how long one slow sway takes.
+DRIFT_ZOOM = 1.08
+DRIFT_PERIOD_S = 40.0
+
+
+def drifting(width: int, height: int) -> str:
+    """The still picture, filled to the frame a little larger, swaying slowly
+    from side to side and up and down, a touch darker so the titles and the
+    wave read over any picture. A crop with a moving origin: cheap, unlike
+    zoompan, so an eight-minute video renders at the speed of a gradient."""
+    big_w = int(width * DRIFT_ZOOM) // 2 * 2
+    big_h = int(height * DRIFT_ZOOM) // 2 * 2
+    period = DRIFT_PERIOD_S
+    return (
+        f"[1:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop={big_w}:{big_h},"
+        f"crop={width}:{height}"
+        f":x='({big_w}-{width})/2*(1+sin(2*PI*t/{period}))'"
+        f":y='({big_h}-{height})/2*(1+sin(2*PI*t/{period * 1.6:.1f}))',"
+        "eq=brightness=-0.05:saturation=1.05,format=yuv420p"
+    )
 
 
 def build_command(spec: VisualSpec, *, encoder: str, ffmpeg_bin: str = "ffmpeg") -> list[str]:
@@ -191,12 +218,25 @@ def build_command(spec: VisualSpec, *, encoder: str, ffmpeg_bin: str = "ffmpeg")
         f"gradients=s={s.width}x{s.height}:c0={p.colors[0]}:c1={p.colors[1]}:c2={p.colors[2]}"
         f":c3={p.colors[3]}:n=4:speed=0.008:duration={duration}:rate=30:type=radial"
     )
+    if spec.background is not None:
+        background_input = ["-loop", "1", "-framerate", "30", "-i", str(spec.background)]
+        backdrop = f"{drifting(s.width, s.height)}[bg];"
+        # Over a picture the wave is a quieter band low in the frame: the
+        # picture is the thing to look at. Over the gradient it is the picture.
+        wave_h = s.wave_height // 2
+        wave_y = s.wave_y + s.wave_height - wave_h // 2
+        opacity = 0.55
+    else:
+        background_input = ["-f", "lavfi", "-i", gradient]
+        backdrop = "[1:v]null[bg];"
+        wave_h, wave_y, opacity = s.wave_height, s.wave_y, 0.8
     video = (
-        f"[0:a]showwaves=s={s.width}x{s.wave_height}:mode=cline:rate=30:colors={p.wave}"
-        f":scale=cbrt:draw=full,format=rgba,colorchannelmixer=aa=0.8,split[w1][w2];"
+        f"{backdrop}"
+        f"[0:a]showwaves=s={s.width}x{wave_h}:mode=cline:rate=30:colors={p.wave}"
+        f":scale=cbrt:draw=full,format=rgba,colorchannelmixer=aa={opacity},split[w1][w2];"
         f"[w2]gblur=sigma=16[wg];"
-        f"[1:v][wg]overlay=0:{s.wave_y}[b1];"
-        f"[b1][w1]overlay=0:{s.wave_y},vignette=PI/5,"
+        f"[bg][wg]overlay=0:{wave_y}[b1];"
+        f"[b1][w1]overlay=0:{wave_y},vignette=PI/5,"
         f"subtitles='{escape_filter_path(spec.titles)}'[v]"
     )
     fades = [f"afade=t=in:d={FADE_SECONDS}"]
@@ -217,10 +257,7 @@ def build_command(spec: VisualSpec, *, encoder: str, ffmpeg_bin: str = "ffmpeg")
         duration,
         "-i",
         str(spec.audio),
-        "-f",
-        "lavfi",
-        "-i",
-        gradient,
+        *background_input,
         "-filter_complex",
         f"{video};{audio}",
         "-map",

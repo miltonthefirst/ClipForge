@@ -73,6 +73,8 @@ def draft(**overrides: Any) -> SongDraft:
         "bpm": 112,
         "key": "a minor",
         "lyrics": LYRICS,
+        "scene": "an empty street at dusk, warm windows, a low golden sun",
+        "art_style": "digital painting",
     }
     values.update(overrides)
     return SongDraft(**values)

@@ -12,6 +12,7 @@ job is created, and this checks it again, because the Admin SDK reads past rules
 
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ log = get_logger(__name__)
 __all__ = ["MusicVideoError", "VisualizeStage", "describe", "headline"]
 
 FOOTER = "ClipForge Music · AI-generated (ACE-Step)"
+DESCRIPTION_LIMIT = 2000
 PROFILE = {"full": "music-16x9", "short": "music-short-9x16"}
 
 
@@ -66,8 +68,15 @@ def _phrases(prompt: str) -> list[str]:
     return [p.strip() for p in prompt.split(",") if p.strip() and p.strip() != "instrumental"]
 
 
+def song_title(track: Track) -> str:
+    """The title without a take number: 'Candle Light (take 2)' is 'Candle Light'."""
+    return re.sub(r"\s*\(take \d+\)$", "", track.title).strip() or track.title
+
+
 def headline(track: Track) -> str:
-    """'Uplifting cinematic build · strings and piano' from the prompt."""
+    """A song's own title; for an instrumental, 'Uplifting cinematic build · strings and piano'."""
+    if not track.instrumental and track.lyrics:
+        return song_title(track)
     phrases = _phrases(track.prompt)[:2] or [track.title]
     text = " · ".join(phrases)
     return text[:1].upper() + text[1:]
@@ -84,19 +93,38 @@ def describe(track: Track, shape: Shape) -> tuple[str, str, list[str]]:
     series = series_of(track)
     head = headline(track)
     title = f"{head} #Shorts" if shape is SHORT else f"{head} | {series} music"
-    description = "\n".join(
-        [
-            track.prompt[:1].upper() + track.prompt[1:] + ".",
-            "",
-            "Made on our own PC with ACE-Step 1.5, an open music model (MIT). "
-            "No samples and no one else's song: AI-generated music.",
-            "",
-            f"ClipForge Music · {series}",
-        ]
-        + (["", "#Shorts"] if shape is SHORT else [])
-    )
-    tags = [series.lower(), "ai music", "instrumental", "background music", "clipforge music"]
-    return title[:100], description[:2000], [t[:40] for t in tags]
+    lines = [
+        track.prompt[:1].upper() + track.prompt[1:] + ".",
+        "",
+        "Made on our own PC with ACE-Step 1.5, an open music model (MIT). "
+        "No samples and no one else's song: AI-generated music.",
+    ]
+    if track.artwork:
+        lines.append("Background picture: AI-generated with FLUX.2 klein (Apache 2.0).")
+    if track.lyrics and shape is not SHORT:
+        sung = [line for line in track.lyrics.splitlines() if not line.strip().startswith("[")]
+        lines += ["", "Lyrics:", *[line.strip() for line in sung]]
+    lines += ["", f"ClipForge Music · {series}"]
+    if shape is SHORT:
+        lines += ["", "#Shorts"]
+    description = "\n".join(lines)
+    # A clip's description holds 2000 characters; the end of the lyrics gives way first,
+    # and the series line is kept.
+    footer = f"\n\nClipForge Music · {series}" + ("\n\n#Shorts" if shape is SHORT else "")
+    if len(description) > DESCRIPTION_LIMIT:
+        body = description[: DESCRIPTION_LIMIT - len(footer) - 2].rsplit("\n", 1)[0]
+        description = body + "\n…" + footer
+    kind = "instrumental" if track.instrumental else "song"
+    tags = [series.lower(), "ai music", kind, "background music", "clipforge music"]
+    return title[:100], description, [t[:40] for t in tags]
+
+
+def background_for(track: Track, shape: Shape) -> Path | None:
+    """The track's painted picture in this shape, if it has one on this PC."""
+    if track.artwork is None:
+        return None
+    path = Path(track.artwork.tall if shape is SHORT else track.artwork.wide)
+    return path if path.is_file() else None
 
 
 class VisualizeStage:
@@ -143,7 +171,10 @@ class VisualizeStage:
                     seconds, start = float(track.seconds), 0.0
                 titles = scratch / f"{shape.name}.ass"
                 titles.write_text(
-                    build_ass(series_of(track), headline(track), FOOTER, shape),
+                    # A song is known by its title; an instrumental by its series.
+                    build_ass(headline(track), series_of(track), FOOTER, shape)
+                    if track.lyrics
+                    else build_ass(series_of(track), headline(track), FOOTER, shape),
                     encoding="utf-8",
                     newline="\n",
                 )
@@ -158,6 +189,7 @@ class VisualizeStage:
                             palette=palette_for(series_of(track)),
                             start_sec=start,
                             duration_sec=seconds,
+                            background=background_for(track, shape),
                         ),
                         encoder=settings.video_encoder,
                         ffmpeg_bin=settings.ffmpeg_bin,

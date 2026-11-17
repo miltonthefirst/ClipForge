@@ -40,7 +40,10 @@ describe('tracks', () => {
   it('builds the one job the rules let a client write for a kept track', () => {
     const job = newMusicVideoJob('j1', 'alice', { trackId: 'trk_1' }, '2026-11-17T00:00:00.000Z');
     expect(job.type).toBe('MUSIC_VIDEO');
-    expect(job.stages).toEqual([{ name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' }]);
+    expect(job.stages).toEqual([
+      { name: 'ARTWORK', lane: 'GPU', status: 'PENDING' },
+      { name: 'VISUALIZE', lane: 'CPU', status: 'PENDING' },
+    ]);
     expect(job.musicVideoOptions).toEqual({ trackId: 'trk_1' });
     expect(job.attempts).toBe(0);
   });
@@ -56,6 +59,7 @@ describe('tracks', () => {
     expect(job.stages.map((stage) => [stage.name, stage.lane])).toEqual([
       ['LYRICS', 'GPU'],
       ['SING', 'GPU'],
+      ['ARTWORK', 'GPU'],
     ]);
     expect(job.generateMusicOptions.idea).toBe('a slow Sunday');
   });

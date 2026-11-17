@@ -2,12 +2,12 @@ import {
   assertFails,
   assertSucceeds,
   type RulesTestEnvironment,
-} from "@firebase/rules-unit-testing";
-import { doc, setDoc } from "firebase/firestore";
-import { deleteObject, getBytes, ref, uploadBytes } from "firebase/storage";
-import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+} from '@firebase/rules-unit-testing';
+import { doc, setDoc } from 'firebase/firestore';
+import { deleteObject, getBytes, ref, uploadBytes } from 'firebase/storage';
+import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
 
-import { ALICE, BOB, createTestEnvironment, userProfile } from "./helpers.js";
+import { ALICE, BOB, createTestEnvironment, userProfile } from './helpers.js';
 
 /**
  * The bucket holds rendered clips, briefly, so a phone can review them.
@@ -51,10 +51,7 @@ async function seedObject(path: string): Promise<void> {
 }
 
 /** Approval lives in Firestore, and the storage rules go and read it. */
-async function approve(
-  uid: string,
-  overrides: Record<string, unknown> = {},
-): Promise<void> {
+async function approve(uid: string, overrides: Record<string, unknown> = {}): Promise<void> {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     await setDoc(doc(ctx.firestore(), `users/${uid}`), {
       ...userProfile(uid),
@@ -66,128 +63,110 @@ async function approve(
 const storageAs = (uid: string) => testEnv.authenticatedContext(uid).storage();
 const anonStorage = () => testEnv.unauthenticatedContext().storage();
 
-describe("reading a clip from the bucket", () => {
+describe('reading a clip from the bucket', () => {
   beforeEach(async () => {
     await seedObject(ALICE_CLIP);
   });
 
-  it("lets an approved member read it", async () => {
+  it('lets an approved member read it', async () => {
     await approve(ALICE);
     await assertSucceeds(getBytes(ref(storageAs(ALICE), ALICE_CLIP)));
   });
 
-  it("lets a different approved member read it — one shared library", async () => {
+  it('lets a different approved member read it — one shared library', async () => {
     // The uid in the path is Alice's. It is not an access decision, and this is
     // the test that would have failed under the rules this replaced.
     await approve(BOB);
     await assertSucceeds(getBytes(ref(storageAs(BOB), ALICE_CLIP)));
   });
 
-  it("denies a signed-in account that has not been approved", async () => {
-    await approve(BOB, { status: "PENDING" });
+  it('denies a signed-in account that has not been approved', async () => {
+    await approve(BOB, { status: 'PENDING' });
     await assertFails(getBytes(ref(storageAs(BOB), ALICE_CLIP)));
   });
 
-  it("denies an account with no profile at all", async () => {
+  it('denies an account with no profile at all', async () => {
     await assertFails(getBytes(ref(storageAs(BOB), ALICE_CLIP)));
   });
 
-  it("denies an anonymous caller", async () => {
+  it('denies an anonymous caller', async () => {
     await assertFails(getBytes(ref(anonStorage(), ALICE_CLIP)));
   });
 });
 
-describe("writing to the bucket", () => {
-  it("denies an approved member uploading a clip", async () => {
+describe('writing to the bucket', () => {
+  it('denies an approved member uploading a clip', async () => {
     // Uploads are the worker's. A client that could write here could put a
     // source video — gigabytes, billed — into a bucket meant for 5-20 MB clips.
     await approve(ALICE);
-    await assertFails(
-      uploadBytes(ref(storageAs(ALICE), ALICE_CLIP), new Uint8Array([9])),
-    );
+    await assertFails(uploadBytes(ref(storageAs(ALICE), ALICE_CLIP), new Uint8Array([9])));
   });
 
-  it("denies an approved member overwriting an existing clip", async () => {
+  it('denies an approved member overwriting an existing clip', async () => {
     await approve(ALICE);
     await seedObject(ALICE_CLIP);
-    await assertFails(
-      uploadBytes(ref(storageAs(ALICE), ALICE_CLIP), new Uint8Array([9])),
-    );
+    await assertFails(uploadBytes(ref(storageAs(ALICE), ALICE_CLIP), new Uint8Array([9])));
   });
 
-  it("denies writing outside the declared layout", async () => {
+  it('denies writing outside the declared layout', async () => {
     await approve(ALICE);
-    await assertFails(
-      uploadBytes(
-        ref(storageAs(ALICE), "sources/huge.mp4"),
-        new Uint8Array([9]),
-      ),
-    );
+    await assertFails(uploadBytes(ref(storageAs(ALICE), 'sources/huge.mp4'), new Uint8Array([9])));
   });
 
-  it("denies reading outside the declared layout", async () => {
+  it('denies reading outside the declared layout', async () => {
     await approve(ALICE);
-    await seedObject("sources/huge.mp4");
-    await assertFails(getBytes(ref(storageAs(ALICE), "sources/huge.mp4")));
+    await seedObject('sources/huge.mp4');
+    await assertFails(getBytes(ref(storageAs(ALICE), 'sources/huge.mp4')));
   });
 });
 
-describe("deleting a clip from the bucket", () => {
+describe('deleting a clip from the bucket', () => {
   beforeEach(async () => {
     await seedObject(ALICE_CLIP);
   });
 
-  it("lets an approved member delete it once reviewed", async () => {
+  it('lets an approved member delete it once reviewed', async () => {
     await approve(ALICE);
     await assertSucceeds(deleteObject(ref(storageAs(ALICE), ALICE_CLIP)));
   });
 
-  it("lets a member delete a clip somebody else submitted", async () => {
+  it('lets a member delete a clip somebody else submitted', async () => {
     await approve(BOB);
     await assertSucceeds(deleteObject(ref(storageAs(BOB), ALICE_CLIP)));
   });
 
-  it("denies an unapproved account deleting anything", async () => {
-    await approve(BOB, { status: "PENDING" });
+  it('denies an unapproved account deleting anything', async () => {
+    await approve(BOB, { status: 'PENDING' });
     await assertFails(deleteObject(ref(storageAs(BOB), ALICE_CLIP)));
   });
 
-  it("denies an anonymous caller deleting anything", async () => {
+  it('denies an anonymous caller deleting anything', async () => {
     await assertFails(deleteObject(ref(anonStorage(), ALICE_CLIP)));
   });
 });
 
-describe("notes for a song", () => {
-  const PDF = "application/pdf";
-  const DOCX =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+describe('notes for a song', () => {
+  const PDF = 'application/pdf';
+  const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   const bytes = new Uint8Array([37, 80, 68, 70]);
 
-  it("lets an approved member upload their own notes in a readable format", async () => {
+  it('lets an approved member upload their own notes in a readable format', async () => {
     await approve(ALICE);
     await assertSucceeds(
-      uploadBytes(
-        ref(storageAs(ALICE), `notes/${ALICE}/u1/Week 3.pdf`),
-        bytes,
-        {
-          contentType: PDF,
-        },
-      ),
+      uploadBytes(ref(storageAs(ALICE), `notes/${ALICE}/u1/Week 3.pdf`), bytes, {
+        contentType: PDF,
+      }),
     );
     await assertSucceeds(
-      uploadBytes(
-        ref(storageAs(ALICE), `notes/${ALICE}/u2/lecture.DOCX`),
-        bytes,
-        {
-          contentType: DOCX,
-        },
-      ),
+      uploadBytes(ref(storageAs(ALICE), `notes/${ALICE}/u2/lecture.DOCX`), bytes, {
+        contentType: DOCX,
+      }),
     );
   });
 
-  it("refuses someone else’s folder, other formats, the unapproved, and reading back", async () => {
+  it('refuses someone else’s folder, other formats, the unapproved, and reading back', async () => {
     await approve(ALICE);
-    await approve(BOB, { status: "PENDING" });
+    await approve(BOB, { status: 'PENDING' });
     await assertFails(
       uploadBytes(ref(storageAs(ALICE), `notes/${BOB}/u1/x.pdf`), bytes, {
         contentType: PDF,
@@ -195,12 +174,12 @@ describe("notes for a song", () => {
     );
     await assertFails(
       uploadBytes(ref(storageAs(ALICE), `notes/${ALICE}/u1/x.exe`), bytes, {
-        contentType: "application/octet-stream",
+        contentType: 'application/octet-stream',
       }),
     );
     await assertFails(
       uploadBytes(ref(storageAs(ALICE), `notes/${ALICE}/u1/x.pdf`), bytes, {
-        contentType: "text/html",
+        contentType: 'text/html',
       }),
     );
     await assertFails(
@@ -209,20 +188,14 @@ describe("notes for a song", () => {
       }),
     );
     await seedObject(`notes/${ALICE}/u9/x.pdf`);
-    await assertFails(
-      getBytes(ref(storageAs(ALICE), `notes/${ALICE}/u9/x.pdf`)),
-    );
+    await assertFails(getBytes(ref(storageAs(ALICE), `notes/${ALICE}/u9/x.pdf`)));
   });
 
-  it("lets the uploader take it back", async () => {
+  it('lets the uploader take it back', async () => {
     await approve(ALICE);
     await approve(BOB);
     await seedObject(`notes/${ALICE}/u1/x.pdf`);
-    await assertFails(
-      deleteObject(ref(storageAs(BOB), `notes/${ALICE}/u1/x.pdf`)),
-    );
-    await assertSucceeds(
-      deleteObject(ref(storageAs(ALICE), `notes/${ALICE}/u1/x.pdf`)),
-    );
+    await assertFails(deleteObject(ref(storageAs(BOB), `notes/${ALICE}/u1/x.pdf`)));
+    await assertSucceeds(deleteObject(ref(storageAs(ALICE), `notes/${ALICE}/u1/x.pdf`)));
   });
 });

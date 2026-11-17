@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 from clipforge_contracts import GenerateMusicOptions, LyricsSource, Trend
 from pydantic import BaseModel, Field
@@ -40,11 +41,13 @@ __all__ = [
     "normalise_key",
     "points_for",
     "series_for",
+    "song_seconds",
+    "target_seconds",
     "tidy_lyrics",
     "write_song",
 ]
 
-LYRICS_PROMPT_VERSION = "lyrics-v3"
+LYRICS_PROMPT_VERSION = "lyrics-v4"
 
 
 class LyricsError(RuntimeError):
@@ -52,6 +55,16 @@ class LyricsError(RuntimeError):
         super().__init__(message)
         self.retryable = retryable
         self.code = "LYRICS"
+
+
+ArtStyle = Literal[
+    "cinematic photograph",
+    "digital painting",
+    "watercolour painting",
+    "anime background art",
+    "soft 3D render",
+    "paper cut-out collage",
+]
 
 
 class SongDraft(BaseModel):
@@ -67,6 +80,15 @@ class SongDraft(BaseModel):
     bpm: int = Field(..., ge=60, le=180)
     key: str = Field(..., max_length=20, description="e.g. 'A minor', 'C major'.")
     lyrics: str = Field(..., min_length=20, max_length=4000)
+    scene: str = Field(
+        ...,
+        max_length=400,
+        description=(
+            "The song's background picture, as one scene: a place, its light, weather and "
+            "colours, and the objects in it. Only places and things."
+        ),
+    )
+    art_style: ArtStyle = Field(..., description="How the picture is made.")
 
 
 @dataclass(frozen=True)
@@ -100,7 +122,9 @@ Content:
 - No sides in politics. No jokes about anyone's loss, death, illness or disaster; if the source is a sad event, write about what people hold on to, without its details.
 - English.
 
-Title: two to five words, the hook if it can be."""
+Title: two to five words, the hook if it can be.
+
+Scene: the picture behind the song's video, in one or two sentences. Choose a single place that carries the song's feeling and describe what is in it: the setting, the time of day, the light, the weather, the colours, a few objects. Only places and things: an empty street, a window, a field, a skyline, a table, a sky. It is painted as it is written, so describe only what should be seen."""
 
 TREND_TASK = """Write a song inspired by something people are talking about right now. Do NOT retell the news and do NOT use any name from it: find the human feeling underneath (pressure, hope, change, being heard, holding on) and build the song on that.
 
@@ -123,7 +147,46 @@ STRUCTURES = {
     "short": "[Verse 1], [Chorus], [Verse 2], [Chorus]",
     "medium": "[Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Chorus], [Outro]",
     "long": "[Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Pre-Chorus], [Chorus], [Bridge], [Final Chorus], [Outro]",
+    "extended": "[Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Pre-Chorus], [Chorus], [Instrumental Break], [Verse 3], [Chorus], [Bridge], [Final Chorus], [Outro]",
+    "epic": "[Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Pre-Chorus], [Chorus], [Instrumental Break], [Verse 3], [Pre-Chorus], [Chorus], [Bridge], [Verse 4], [Chorus], [Guitar Solo], [Final Chorus], [Outro]",
 }
+
+# How a song's length is worked out from its words (song_seconds): a sung line
+# is two bars of 4/4, a section with no words a few bars of music.
+BARS_PER_LINE = 2
+BARS_FOR = {"intro": 4, "outro": 4}
+BARS_FOR_INSTRUMENTAL = 8
+DEFAULT_BPM = 100
+SHORTEST_SONG = 30
+
+
+def target_seconds(options: GenerateMusicOptions) -> int:
+    """What the song is aimed at: an exact length when one was asked for, else the longest allowed."""
+    return int(options.seconds or options.max_seconds or 240)
+
+
+def song_seconds(lyrics: str, bpm: int | None, *, longest: int) -> int:
+    """How long these lyrics take to sing at this tempo, in whole seconds, at most `longest`.
+
+    Two bars a line, four for an intro or an outro, eight for a section with no
+    words (a break, a solo), plus two bars of air at the end; rounded up to five
+    seconds. Measured against the songs made so far, this is what the model
+    fills without stretching a verse or leaving a minute of silence.
+    """
+    bar = 240.0 / (bpm or DEFAULT_BPM)
+    bars = 2.0
+    sections = re.split(r"^\[([^\]]+)\]$", lyrics, flags=re.MULTILINE)
+    # re.split with a group: [before, tag1, body1, tag2, body2, ...]
+    for tag, body in zip(sections[1::2], sections[2::2], strict=False):
+        lines = [line for line in body.splitlines() if line.strip()]
+        name = tag.split("-")[0].strip().lower()
+        if lines:
+            bars += BARS_PER_LINE * len(lines)
+        else:
+            bars += BARS_FOR.get(name, BARS_FOR_INSTRUMENTAL)
+    seconds = int(-(-bars * bar // 5) * 5)
+    return max(SHORTEST_SONG, min(seconds, longest))
+
 
 # Capitalised words that are not names, so a headline in Title Case does not
 # forbid half the language.
@@ -355,7 +418,9 @@ def points_for(seconds: int) -> int:
         return 6
     if seconds <= 140:
         return 10
-    return 14
+    if seconds <= 260:
+        return 14
+    return 20
 
 
 def condense_notes(
@@ -429,7 +494,11 @@ def _structure(seconds: int) -> str:
         return STRUCTURES["short"]
     if seconds <= 140:
         return STRUCTURES["medium"]
-    return STRUCTURES["long"]
+    if seconds <= 260:
+        return STRUCTURES["long"]
+    if seconds <= 380:
+        return STRUCTURES["extended"]
+    return STRUCTURES["epic"]
 
 
 def build_prompt(
@@ -441,12 +510,13 @@ def build_prompt(
     task = {LyricsSource.TREND: TREND_TASK, LyricsSource.NOTES: NOTES_TASK}.get(
         brief.source, IDEA_TASK
     )
-    seconds = options.seconds or 150
+    seconds = target_seconds(options)
     parts = [
         task.format(material=brief.material),
         "",
         f"The music: {options.style}.",
-        f"It lasts about {seconds} seconds. Use these sections, in order: {_structure(seconds)}.",
+        f"It lasts about {seconds // 60} min {seconds % 60} s. "
+        f"Use these sections, in order: {_structure(seconds)}.",
         "Pick a tempo (bpm) and a key that suit the music.",
     ]
     if avoid:

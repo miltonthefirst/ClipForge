@@ -60,7 +60,7 @@ class StageStatus(StrEnum):
 
 class StageName(StrEnum):
     """
-    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice. VISUALIZE is the single stage of a MUSIC_VIDEO job: it draws the track's videos with ffmpeg on the CPU lane. LYRICS and SING belong to a GENERATE_MUSIC job, both on the GPU lane: the local model writes the song, then the music model, in a process of its own, makes each take.
+    Ordered pipeline steps. ECHO_* belong to the ECHO job type only. UPLOAD is the single stage of an UPLOAD job: it copies a clip that already exists on the worker into the bucket so a phone can play it. REMAKE is the single stage of a REMAKE job: it re-cuts a clip from its original source with the reviewer's corrections applied. RESEARCH and CURATE belong to a RESEARCH job: the first gathers signals from the trend providers and ranks them on the CPU lane, the second puts the ranked list to the local model for an angle and a relevance score, and degrades to nothing when no model is available. GATHER, SELECT and ASSEMBLE belong to a COMPILE job: ingest every item, pick one moment from each, and stitch them into one clip. SCRIPT, NARRATE, ALIGN and DRAW belong to a COMPOSE job, which ends in ASSEMBLE too: write the narration and the scenes, speak it, recover word timings from what was spoken, draw each scene, then join them behind the voice. VISUALIZE is the single stage of a MUSIC_VIDEO job: it draws the track's videos with ffmpeg on the CPU lane. LYRICS and SING belong to a GENERATE_MUSIC job, both on the GPU lane: the local model writes the song, then the music model, in a process of its own, makes each take. ARTWORK paints a song's background picture with the local image model, wide and tall; it ends a GENERATE_MUSIC job and starts a MUSIC_VIDEO one for a track that has none.
     """
 
     ECHO_ONE = "ECHO_ONE"
@@ -86,6 +86,7 @@ class StageName(StrEnum):
     VISUALIZE = "VISUALIZE"
     LYRICS = "LYRICS"
     SING = "SING"
+    ARTWORK = "ARTWORK"
 
 
 class Lane(StrEnum):
@@ -1894,65 +1895,6 @@ class TrackStatus(StrEnum):
     DISCARDED = "DISCARDED"
 
 
-class Track(BaseModel):
-    """
-    One piece of music made on this PC, at tracks/{trackId} (docs/MUSIC-PLAN.md). Written by the worker, from the generator's own record of what it made; decided on by a person. The file never leaves the PC on its own: a phone plays it over the home wifi (docs/HOME-NETWORK-PLAN.md), the desktop app through the loopback file server. The id is derived from the audio's bytes, so importing the same file twice is one track.
-    """
-
-    model_config = ConfigDict(
-        extra="forbid",
-        populate_by_name=True,
-    )
-    id: str = Field(..., min_length=1)
-    title: str = Field(..., max_length=120, min_length=1)
-    prompt: str = Field(..., max_length=512, min_length=1)
-    """
-    What the model was asked for: a style, never an artist.
-    """
-    seconds: float = Field(..., gt=0.0)
-    bpm: int | None = None
-    key: str | None = Field(None, max_length=20)
-    instrumental: bool
-    seed: int | None = None
-    steps: int | None = None
-    model: str = Field(..., max_length=120, min_length=1)
-    """
-    The generator and checkpoint, e.g. ACE-Step 1.5 acestep-v15-turbo (int8).
-    """
-    licence: str = Field(..., max_length=200, min_length=1)
-    """
-    The model's licence and what it says about using its output, as read at generation time.
-    """
-    generate_seconds: float | None = Field(None, alias="generateSeconds")
-    """
-    How long it took to make, warm, on this PC.
-    """
-    series: str | None = Field(None, max_length=60)
-    """
-    The themed series it belongs to (Lo-fi, Cinematic...): one look for its videos, and later one playlist.
-    """
-    lyrics: str | None = Field(None, max_length=4096)
-    """
-    What is sung, with its section tags ([Verse], [Chorus]...). Null for an instrumental.
-    """
-    inspiration: str | None = Field(None, max_length=200)
-    """
-    Where the song came from, in a few words: the trend, 'your notes', or the idea it was given.
-    """
-    job_id: str | None = Field(None, alias="jobId")
-    """
-    The GENERATE_MUSIC job that made it. Null for a track imported by hand.
-    """
-    local_path: str = Field(..., alias="localPath", min_length=1)
-    """
-    Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server.
-    """
-    status: TrackStatus
-    created_at: AwareDatetime = Field(..., alias="createdAt")
-    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
-    decided_by: str | None = Field(None, alias="decidedBy")
-
-
 class MatchedTopic(RootModel[str]):
     root: str = Field(..., max_length=80)
 
@@ -2431,6 +2373,35 @@ class LlmScriptResponse(BaseModel):
     Who is in the video. Two or three is a conversation; the narrator is not listed.
     """
     scenes: list[LlmScene] = Field(..., max_length=16, min_length=1)
+
+
+class TrackArtwork(BaseModel):
+    """
+    A song's background picture, painted on this PC by a local image model (FLUX.2 klein 4B, Apache 2.0) from a scene the local language model described: a place, its light and weather, never a person, a face or writing. Two shapes of the same scene, for the full video and the Short. The files stay on the PC; a small preview travels with the track.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    wide: str = Field(..., min_length=1)
+    """
+    The 16:9 picture's path on the worker, under workspace/music/artwork.
+    """
+    tall: str = Field(..., min_length=1)
+    """
+    The 9:16 picture's path, for the Short.
+    """
+    prompt: str = Field(..., max_length=1500, min_length=1)
+    """
+    What the image model was asked for.
+    """
+    model: str = Field(..., max_length=120, min_length=1)
+    preview_base64: str | None = Field(None, alias="previewBase64", max_length=40000)
+    """
+    A small JPEG of the wide picture, for the Music page.
+    """
+    created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
 class Vocal(StrEnum):
@@ -3091,6 +3062,69 @@ class LogGroup(BaseModel):
     watched: bool | None = False
 
 
+class Track(BaseModel):
+    """
+    One piece of music made on this PC, at tracks/{trackId} (docs/MUSIC-PLAN.md). Written by the worker, from the generator's own record of what it made; decided on by a person. The file never leaves the PC on its own: a phone plays it over the home wifi (docs/HOME-NETWORK-PLAN.md), the desktop app through the loopback file server. The id is derived from the audio's bytes, so importing the same file twice is one track.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    id: str = Field(..., min_length=1)
+    title: str = Field(..., max_length=120, min_length=1)
+    prompt: str = Field(..., max_length=512, min_length=1)
+    """
+    What the model was asked for: a style, never an artist.
+    """
+    seconds: float = Field(..., gt=0.0)
+    bpm: int | None = None
+    key: str | None = Field(None, max_length=20)
+    instrumental: bool
+    seed: int | None = None
+    steps: int | None = None
+    model: str = Field(..., max_length=120, min_length=1)
+    """
+    The generator and checkpoint, e.g. ACE-Step 1.5 acestep-v15-turbo (int8).
+    """
+    licence: str = Field(..., max_length=200, min_length=1)
+    """
+    The model's licence and what it says about using its output, as read at generation time.
+    """
+    generate_seconds: float | None = Field(None, alias="generateSeconds")
+    """
+    How long it took to make, warm, on this PC.
+    """
+    series: str | None = Field(None, max_length=60)
+    """
+    The themed series it belongs to (Lo-fi, Cinematic...): one look for its videos, and later one playlist.
+    """
+    lyrics: str | None = Field(None, max_length=4096)
+    """
+    What is sung, with its section tags ([Verse], [Chorus]...). Null for an instrumental.
+    """
+    inspiration: str | None = Field(None, max_length=200)
+    """
+    Where the song came from, in a few words: the trend, 'your notes', or the idea it was given.
+    """
+    job_id: str | None = Field(None, alias="jobId")
+    """
+    The GENERATE_MUSIC job that made it. Null for a track imported by hand.
+    """
+    artwork: TrackArtwork | None = None
+    """
+    The background picture its videos are drawn on. Null until ARTWORK has painted one; a video then uses the drawn gradient.
+    """
+    local_path: str = Field(..., alias="localPath", min_length=1)
+    """
+    Where the file is on the worker machine, under workspace/music. Played only through the home route or the loopback file server.
+    """
+    status: TrackStatus
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+    decided_at: AwareDatetime | None = Field(None, alias="decidedAt")
+    decided_by: str | None = Field(None, alias="decidedBy")
+
+
 class GenerateMusicOptions(BaseModel):
     """
     What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2 and M5). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), or a one-line idea. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
@@ -3109,7 +3143,14 @@ class GenerateMusicOptions(BaseModel):
     """
     Who sings. ANY lets each take differ.
     """
-    seconds: int | None = Field(150, ge=30, le=240)
+    seconds: int | None = Field(None, ge=30, le=480)
+    """
+    An exact length. Null (the default) makes the song as long as its lyrics need, up to maxSeconds; an instrumental is then maxSeconds long.
+    """
+    max_seconds: int | None = Field(240, alias="maxSeconds", ge=60, le=480)
+    """
+    The longest the song may be. The writer aims for it, and a longer one gets more verses and a break. Eight minutes was measured on this card (67 s to make, 5975 of 6144 MiB at the peak, 2026-11-18); the model's own limit, ten, was not tried.
+    """
     takes: int | None = Field(2, ge=1, le=3)
     """
     How many versions of the same song to make, each with its own seed, to keep the best.
