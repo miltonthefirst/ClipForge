@@ -2901,7 +2901,10 @@
         "seconds": { "type": "integer", "minimum": 30, "maximum": 240, "default": 150 },
         "takes": { "type": "integer", "minimum": 1, "maximum": 3, "default": 2, "description": "How many versions of the same song to make, each with its own seed, to keep the best." },
         "trendId": { "type": ["string", "null"], "maxLength": 128, "default": null, "description": "The trend a TREND song is about." },
-        "notes": { "type": ["string", "null"], "maxLength": 8000, "default": null, "description": "A NOTES song's source: what it should teach, in the person's own words." },
+        "notes": { "type": ["string", "null"], "maxLength": 8000, "default": null, "description": "A NOTES song's source typed or pasted in. Longer text is uploaded as a file instead, so the job document stays small." },
+        "notesFile": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "A NOTES song's source as an uploaded file (PDF, Word, PowerPoint or text), at notes/{uid}/... in the bucket. Any length: the worker reads all of it, boils long notes down to their key points, and deletes the file once the song is written." },
+        "notesFileName": { "type": ["string", "null"], "maxLength": 200, "default": null, "description": "The uploaded file's own name, for the track's 'Your notes: ...'." },
+        "focus": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "What part of long notes the song is about (a chapter, a topic). Null teaches the most important points of all of it." },
         "idea": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "An IDEA song's one-line brief." },
         "series": { "type": ["string", "null"], "maxLength": 60, "default": null, "description": "The series the tracks join; null lets the worker name it from the style." },
         "seed": { "type": ["integer", "null"], "default": null, "description": "The first take's seed; the others follow it. Null picks one." }

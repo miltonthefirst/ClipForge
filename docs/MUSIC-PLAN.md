@@ -208,6 +208,32 @@ library for the owner to judge by ear.
   word in the trend is checked for in the result, a song that keeps one is
   asked for again once and then refused.
 
+#### Notes as files, and waiting for the card (2026-11-18)
+
+The owner's asks, after the first songs: "I normally get them in pdf, word or
+PowerPoint... the word count should not be limited", and, after a song failed
+on a busy card, "it should wait for it to be free instead of failing".
+
+- **Files.** The form uploads the notes to `notes/{uid}/{id}/{name}` (PDF,
+  .docx, .pptx, .txt, .md, at most 100 MB; storage.rules). Typed notes over
+  8,000 characters go up the same way as a text file. LYRICS fetches the file,
+  reads the words out of it (`clipforge/synth/notes.py`: pypdf, python-docx
+  with tables, python-pptx with speaker notes), and deletes the bucket copy
+  once the song is written; a lifecycle rule collects any left after two days.
+  Scanned PDFs have no text and say so; old .doc and .ppt say to save as the
+  new format.
+- **No length limit.** Notes over 9,000 characters are read in pieces of
+  9,000; each gives its key facts, and those are cut down to what the song's
+  length can teach (6, 10 or 14 points), in rounds if there are many. An
+  optional *focus* keeps only one part. Measured: 22,500 words in 17 pieces,
+  4.5 minutes, before the song is written.
+- **Waiting, not failing.** The failed song asked for 5000 MiB with 4924 in
+  budget on a card holding only the desktop: the ask was wrong (now 4600, i.e.
+  5300 free, from the 5.2 GB measured). And a busy card is now waited for: the
+  stages ask again every 30 s, free an idle ComfyUI each time, show
+  "Waiting for the card: X MiB free, Y needed", and give up only after
+  `song_gpu_wait_s` (6 hours).
+
 The writer's prompt (`lyrics-v1`): section tags, six to ten syllables a line,
 one image per song, a repeated hook, abbreviations spelled out (A T P), no
 real people, brands, songs or sides in politics; a notes song uses only facts

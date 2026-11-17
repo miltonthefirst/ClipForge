@@ -12,7 +12,21 @@ import type { LyricsSource } from '@clipforge/contracts';
 
 import { SONG_STYLES, TracksRepository } from '../../core/data/tracks';
 import { SessionService } from '../../core/session';
-import { IDEA_LIMIT, NOTES_LIMIT, type SongForm, type Vocal, songOptions } from './song-form';
+import { StorageGateway } from '../../core/storage/gateway';
+import {
+  FOCUS_LIMIT,
+  IDEA_LIMIT,
+  NOTES_ACCEPT,
+  NOTES_TYPES,
+  type NotesMode,
+  type SongForm,
+  type Vocal,
+  extensionOf,
+  notesFileProblem,
+  safeFileName,
+  songOptions,
+  uploadNeeded,
+} from './song-form';
 
 /** Where the words come from, as the form offers it. */
 const SOURCES: readonly { readonly value: LyricsSource; readonly label: string }[] = [
@@ -116,21 +130,83 @@ const LENGTHS = [
               </p>
             }
             @case ('NOTES') {
+              <div class="flex flex-wrap gap-2" role="group" aria-label="How to give the notes">
+                <button
+                  type="button"
+                  class="rounded-lg border px-3 py-1 text-sm"
+                  [class]="
+                    notesMode() === 'FILE'
+                      ? 'border-forge-600 text-forge-600'
+                      : 'border-line-strong text-ink-muted hover:bg-line'
+                  "
+                  [attr.aria-pressed]="notesMode() === 'FILE'"
+                  (click)="notesMode.set('FILE')"
+                >
+                  Upload a file
+                </button>
+                <button
+                  type="button"
+                  class="rounded-lg border px-3 py-1 text-sm"
+                  [class]="
+                    notesMode() === 'TEXT'
+                      ? 'border-forge-600 text-forge-600'
+                      : 'border-line-strong text-ink-muted hover:bg-line'
+                  "
+                  [attr.aria-pressed]="notesMode() === 'TEXT'"
+                  (click)="notesMode.set('TEXT')"
+                >
+                  Type or paste
+                </button>
+              </div>
+
+              @if (notesMode() === 'FILE') {
+                <label class="block text-sm text-ink">
+                  PDF, Word or PowerPoint
+                  <input
+                    type="file"
+                    class="mt-1 block w-full text-sm text-ink file:mr-3 file:rounded-lg file:border-0 file:bg-forge-600 file:px-3 file:py-1.5 file:text-white"
+                    [accept]="notesAccept"
+                    (change)="chooseFile($event)"
+                  />
+                </label>
+                @if (file(); as chosen) {
+                  <p class="text-xs text-ink-muted">
+                    {{ chosen.name }} · {{ megabytes(chosen.size) }} MB
+                  </p>
+                }
+                @if (fileProblem(); as problem) {
+                  <p class="text-xs text-warn-ink">{{ problem }}</p>
+                }
+              } @else {
+                <label class="block text-sm text-ink">
+                  Your notes
+                  <textarea
+                    class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+                    rows="6"
+                    name="notes"
+                    placeholder="Paste a lecture's notes or a chapter summary. The song teaches what they say, and only that."
+                    [ngModel]="notes()"
+                    (ngModelChange)="notes.set($event)"
+                  ></textarea>
+                </label>
+                <p class="text-xs text-ink-subtle">{{ wordCount(notes()) }} words. No limit.</p>
+              }
+
               <label class="block text-sm text-ink">
-                Your notes
-                <textarea
+                Focus on (optional)
+                <input
                   class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
-                  rows="6"
-                  name="notes"
-                  [maxlength]="notesLimit"
-                  placeholder="Paste a lecture's notes or a chapter summary. The song teaches what they say, and only that."
-                  [ngModel]="notes()"
-                  (ngModelChange)="notes.set($event)"
-                ></textarea>
+                  name="focus"
+                  [maxlength]="focusLimit"
+                  placeholder="Chapter 3: enzymes · the causes of the war · leave empty for all of it"
+                  [ngModel]="focus()"
+                  (ngModelChange)="focus.set($event)"
+                />
               </label>
               <p class="text-xs text-ink-subtle">
-                {{ notes().length }} / {{ notesLimit }} characters. The notes are kept with the job
-                and read by the model on the PC; they are not sent anywhere else.
+                The PC reads all of it, however long, and the song teaches the most important
+                points. The file goes to the project's storage only until the PC has read it, then
+                it is deleted.
               </p>
             }
             @case ('NONE') {
@@ -228,7 +304,13 @@ const LENGTHS = [
             class="rounded-lg bg-forge-600 px-4 py-2 text-sm font-medium text-white hover:bg-forge-700 disabled:opacity-50"
             [disabled]="!ready() || sending()"
           >
-            {{ sending() ? 'Sending…' : 'Make it' }}
+            {{
+              uploading() !== null
+                ? 'Uploading… ' + uploading() + '%'
+                : sending()
+                  ? 'Sending…'
+                  : 'Make it'
+            }}
           </button>
         </form>
       }
@@ -238,19 +320,27 @@ const LENGTHS = [
 export class MakeTrack implements OnDestroy {
   private readonly repository = inject(TracksRepository);
   private readonly session = inject(SessionService);
+  private readonly storage = inject(StorageGateway);
   private readonly liveTrends = this.repository.recentTrends();
 
   protected readonly sources = SOURCES;
   protected readonly styles = SONG_STYLES;
   protected readonly lengths = LENGTHS;
-  protected readonly notesLimit = NOTES_LIMIT;
   protected readonly ideaLimit = IDEA_LIMIT;
+  protected readonly focusLimit = FOCUS_LIMIT;
+  protected readonly notesAccept = NOTES_ACCEPT;
   protected readonly trends = this.liveTrends.data;
 
   protected readonly open = signal(false);
   protected readonly lyricsFrom = signal<LyricsSource>('IDEA');
   protected readonly idea = signal('');
+  protected readonly notesMode = signal<NotesMode>('FILE');
   protected readonly notes = signal('');
+  protected readonly file = signal<File | null>(null);
+  protected readonly fileProblem = signal<string | null>(null);
+  protected readonly focus = signal('');
+  /** Upload progress in percent while the notes go up; null otherwise. */
+  protected readonly uploading = signal<number | null>(null);
   protected readonly trendId = signal('');
   protected readonly style = signal(SONG_STYLES[0]!.style);
   protected readonly vocal = signal<Vocal>('ANY');
@@ -266,17 +356,52 @@ export class MakeTrack implements OnDestroy {
     this.liveTrends.release();
   }
 
+  protected chooseFile(event: Event): void {
+    const chosen = (event.target as HTMLInputElement).files?.[0] ?? null;
+    const problem = chosen ? notesFileProblem(chosen.name, chosen.size) : null;
+    this.file.set(chosen && !problem ? chosen : null);
+    this.fileProblem.set(problem);
+  }
+
+  protected megabytes(bytes: number): string {
+    return (bytes / (1024 * 1024)).toFixed(1);
+  }
+
+  protected wordCount(text: string): number {
+    const trimmed = text.trim();
+    return trimmed ? trimmed.split(/\s+/).length : 0;
+  }
+
   protected async submit(): Promise<void> {
     const uid = this.session.uid;
-    const options = songOptions(this.snapshot());
+    const form = this.snapshot();
+    let options = songOptions(form);
     if (!uid || !options) return;
     this.sending.set(true);
     this.error.set(null);
     try {
+      // Notes too big to travel in the job go to the bucket first; the job
+      // names them, and the PC deletes them once it has read them.
+      const upload = uploadNeeded(form);
+      if (upload) {
+        const file = this.file();
+        const name = upload === 'FILE' && file ? safeFileName(file.name) : 'Your pasted notes.txt';
+        const data = upload === 'FILE' && file ? file : new Blob([this.notes().trim()]);
+        const path = `notes/${uid}/${this.repository.newUploadId()}/${name}`;
+        this.uploading.set(0);
+        await this.storage.upload(
+          path,
+          data,
+          NOTES_TYPES[extensionOf(name)] ?? 'text/plain',
+          (fraction) => this.uploading.set(Math.round(fraction * 100)),
+        );
+        options = { ...options, notesFile: path, notesFileName: name };
+      }
       this.started.set(await this.repository.makeSong(uid, options));
     } catch (error) {
       this.error.set(error instanceof Error ? error.message : String(error));
     } finally {
+      this.uploading.set(null);
       this.sending.set(false);
     }
   }
@@ -285,7 +410,10 @@ export class MakeTrack implements OnDestroy {
     return {
       lyricsFrom: this.lyricsFrom(),
       idea: this.idea(),
+      notesMode: this.notesMode(),
       notes: this.notes(),
+      notesFileName: this.file()?.name ?? null,
+      focus: this.focus(),
       trendId: this.trendId(),
       style: this.style(),
       vocal: this.vocal(),

@@ -392,3 +392,174 @@ def test_a_finished_song_says_how_many_takes_to_listen_to() -> None:
     assert calls[0]["title"] == "2 new takes are ready to listen to"
     assert calls[0]["link"] == "/music" and "Sunday Light" in calls[0]["body"]
     assert StageName.SING.value == "SING"
+
+
+# ── Waiting for the card instead of failing (the owner, 2026-11-18) ─────────
+
+
+class BusyBroker:
+    """Refuses `busy` times, then grants."""
+
+    def __init__(self, busy: int) -> None:
+        self.busy = busy
+        self.models: list[str] = []
+
+    @contextmanager
+    def acquire(self, model: str, mb: int) -> Any:
+        from clipforge.models.broker import InsufficientVramError
+
+        if self.busy > 0:
+            self.busy -= 1
+            raise InsufficientVramError(
+                model=model, required_mb=mb, available_mb=2300, holder=None, snapshot=None
+            )
+        self.models.append(model)
+        yield Lease()
+
+
+def test_a_busy_card_is_waited_for_and_the_wait_is_shown() -> None:
+    context = context_for(options())
+    context.broker = BusyBroker(busy=2)
+    slept: list[float] = []
+    with song_module.card(context, "ngoma:ace-step-1.5", 4600, sleep=slept.append) as lease:
+        assert lease is not None
+    assert context.broker.models == ["ngoma:ace-step-1.5"]
+    assert sum(slept) == 2 * song_module.CARD_POLL_S
+    assert context.notes[0] == "Waiting for the card: 2300 MiB free, 4600 needed"
+
+
+def test_a_card_busy_for_hours_gives_up_and_can_be_retried() -> None:
+    context = context_for(options())
+    context.broker = BusyBroker(busy=10_000)
+    ticks = iter(range(0, 10**9, 3600))
+    with (
+        pytest.raises(SongError, match="stayed busy for 6 hours") as raised,
+        song_module.card(
+            context, "m", 4600, sleep=lambda _s: None, clock=lambda: float(next(ticks))
+        ),
+    ):
+        pass
+    assert raised.value.retryable and raised.value.code == "SONG_VRAM"
+
+
+def test_the_default_ask_fits_a_card_with_only_the_desktop_on_it() -> None:
+    # 2026-11-18: 5624 MiB free, 700 kept for the desktop, and 5000 was refused.
+    settings = Settings(use_emulators=True)
+    assert settings.ngoma_vram_mb + settings.vram_reserve_mb <= 5624
+
+
+# ── Long notes and uploaded files ────────────────────────────────────────────
+
+
+class PointsClient(Client):
+    """Answers key-point calls with numbered facts, and song calls with a draft."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.extracts = 0
+        self.selects = 0
+
+    def generate_structured(self, **kwargs: Any) -> Any:
+        from clipforge.synth.lyrics import KeyPoints
+
+        self.prompts.append(kwargs["prompt"])
+        if kwargs["schema_model"] is KeyPoints:
+            if kwargs["prompt"].startswith("Choose"):
+                self.selects += 1
+                return KeyPoints(points=[f"chosen {n}" for n in range(14)])
+            self.extracts += 1
+            return KeyPoints(points=[f"fact {self.extracts}.{n}" for n in range(3)])
+        return draft()
+
+
+def test_short_notes_go_to_the_writer_as_they_are() -> None:
+    from clipforge.synth.lyrics import condense_notes
+
+    client = PointsClient()
+    assert condense_notes(client, "short notes", focus=None, seconds=150) == []  # type: ignore[arg-type]
+    assert client.extracts == 0
+
+
+def test_long_notes_are_all_read_then_cut_to_what_a_song_can_teach() -> None:
+    from clipforge.synth.lyrics import condense_notes
+
+    long_notes = "\n\n".join(f"Section {n}. " + "fact " * 400 for n in range(30))  # ~60k chars
+    client = PointsClient()
+    progress: list[str] = []
+    points = condense_notes(
+        client,  # type: ignore[arg-type]
+        long_notes,
+        focus="momentum",
+        seconds=60,
+        progress=progress.append,
+    )
+    assert client.extracts >= 6  # every piece read
+    assert len(points) == 6  # a one-minute song teaches six things
+    assert "Only facts about: momentum" in client.prompts[0]
+    assert progress[0].startswith("Reading your notes: part 1 of")
+
+
+class Uploads:
+    def __init__(self, source: Path) -> None:
+        self.source = source
+        self.fetched: list[str] = []
+        self.deleted: list[str] = []
+
+    def fetch(self, path: str, into: Path) -> Path:
+        self.fetched.append(path)
+        into.parent.mkdir(parents=True, exist_ok=True)
+        into.write_bytes(self.source.read_bytes())
+        return into
+
+    def delete(self, path: str) -> None:
+        self.deleted.append(path)
+
+
+def _lecture(tmp_path: Path) -> Path:
+    import docx
+
+    document = docx.Document()
+    for n in range(40):
+        document.add_paragraph(f"Point {n}: momentum is mass times velocity. " * 8)
+    path = tmp_path / "source.docx"
+    document.save(str(path))
+    return path
+
+
+def test_an_uploaded_lecture_is_read_taught_and_then_deleted(tmp_path: Path) -> None:
+    opts = options(
+        lyricsFrom="NOTES",
+        idea=None,
+        notesFile="notes/alice/n1/Week 3.docx",
+        notesFileName="Week 3.docx",
+    )
+    uploads = Uploads(_lecture(tmp_path))
+    client = PointsClient()
+    stage = LyricsStage(
+        trends=None,  # type: ignore[arg-type]
+        workspace=Workspace(tmp_path),  # type: ignore[arg-type]
+        notes_files=uploads,
+        client_factory=lambda _c: client,  # type: ignore[arg-type, return-value]
+    )
+    context = context_for(opts)
+    checkpoint = stage.run(context).checkpoint
+
+    assert checkpoint is not None
+    assert checkpoint["inspiration"] == "Your notes: Week 3.docx"
+    assert checkpoint["notesWords"] > 2000 and checkpoint["keyPoints"]
+    assert uploads.fetched == uploads.deleted == ["notes/alice/n1/Week 3.docx"]
+    assert "Key points of the notes" in client.prompts[-1]
+    assert "Reading Week 3.docx" in context.notes
+    assert not (tmp_path / "tmp" / "notes-job1").exists()
+
+
+def test_someone_elses_upload_is_refused(tmp_path: Path) -> None:
+    for path in ("notes/bob/n1/x.pdf", "notes/alice/../bob/x.pdf"):
+        stage = LyricsStage(
+            trends=None,  # type: ignore[arg-type]
+            workspace=Workspace(tmp_path),  # type: ignore[arg-type]
+            notes_files=Uploads(tmp_path / "unused"),
+            client_factory=lambda _c: PointsClient(),  # type: ignore[arg-type, return-value]
+        )
+        with pytest.raises(SongError, match="not this job owner's upload"):
+            stage.run(context_for(options(lyricsFrom="NOTES", notesFile=path)))

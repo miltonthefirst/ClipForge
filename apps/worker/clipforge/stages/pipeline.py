@@ -693,13 +693,15 @@ def build_music_video_registry(
 
 
 def build_generate_music_registry(
-    *, tracks: TrackStore, trends: TrendStore, workspace: Workspace
+    *, settings: Settings, tracks: TrackStore, trends: TrendStore, workspace: Workspace
 ) -> StageRegistry:
     """The two-stage registry for GENERATE_MUSIC jobs."""
-    from clipforge.stages.song import LyricsStage, SingStage
+    from clipforge.stages.song import BucketNotes, LyricsStage, SingStage
 
     registry = StageRegistry()
-    registry.register(LyricsStage(trends=trends))
+    registry.register(
+        LyricsStage(trends=trends, workspace=workspace, notes_files=BucketNotes(settings))
+    )
     registry.register(SingStage(tracks=tracks, workspace=workspace))
     return registry
 
@@ -920,6 +922,7 @@ def build_registry_factory(
     )
 
     generate_music = build_generate_music_registry(
+        settings=settings,
         tracks=tracks or TrackStore(clips._db, settings),
         trends=trends,
         workspace=workspace,

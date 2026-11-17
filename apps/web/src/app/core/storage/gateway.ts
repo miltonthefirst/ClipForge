@@ -76,6 +76,33 @@ export class StorageGateway {
   }
 
   /**
+   * Upload one file, reporting progress from 0 to 1.
+   *
+   * The only client upload there is: notes for a song, under `notes/{uid}/`
+   * (storage.rules). Resumable, because a lecture's PowerPoint from a phone
+   * can be tens of megabytes on a slow connection. Throws on refusal: the
+   * caller has nothing to fall back to, and the message is the reason.
+   */
+  async upload(
+    path: string,
+    data: Blob,
+    contentType: string,
+    onProgress: (fraction: number) => void = () => undefined,
+  ): Promise<void> {
+    const { ref, uploadBytesResumable } = await import('firebase/storage');
+    const task = uploadBytesResumable(ref(this.firebase.storage, path), data, { contentType });
+    await new Promise<void>((resolve, reject) => {
+      task.on(
+        'state_changed',
+        (snapshot) =>
+          onProgress(snapshot.totalBytes ? snapshot.bytesTransferred / snapshot.totalBytes : 0),
+        reject,
+        () => resolve(),
+      );
+    });
+  }
+
+  /**
    * Delete one object, and say whether the pointer to it may now go.
    *
    * True when the object is gone, which includes it having been gone already —

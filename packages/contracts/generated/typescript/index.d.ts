@@ -1031,9 +1031,21 @@ export interface GenerateMusicOptions {
    */
   trendId?: string | null;
   /**
-   * A NOTES song's source: what it should teach, in the person's own words.
+   * A NOTES song's source typed or pasted in. Longer text is uploaded as a file instead, so the job document stays small.
    */
   notes?: string | null;
+  /**
+   * A NOTES song's source as an uploaded file (PDF, Word, PowerPoint or text), at notes/{uid}/... in the bucket. Any length: the worker reads all of it, boils long notes down to their key points, and deletes the file once the song is written.
+   */
+  notesFile?: string | null;
+  /**
+   * The uploaded file's own name, for the track's 'Your notes: ...'.
+   */
+  notesFileName?: string | null;
+  /**
+   * What part of long notes the song is about (a chapter, a topic). Null teaches the most important points of all of it.
+   */
+  focus?: string | null;
   /**
    * An IDEA song's one-line brief.
    */

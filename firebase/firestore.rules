@@ -686,7 +686,7 @@ service cloud.firestore {
       return options is map
              && options.keys().hasOnly(
                   ['lyricsFrom', 'style', 'vocal', 'seconds', 'takes', 'trendId', 'notes',
-                   'idea', 'series', 'seed'])
+                   'notesFile', 'notesFileName', 'focus', 'idea', 'series', 'seed'])
              && source in ['NONE', 'TREND', 'NOTES', 'IDEA']
              && options.style is string
              && options.style.size() > 0
@@ -706,7 +706,18 @@ service cloud.firestore {
                      && exists(/databases/$(database)/documents/trends/$(options.trendId))))
              && (options.get('notes', null) == null
                  || (options.notes is string && options.notes.size() <= 8000))
-             && (source != 'NOTES' || (options.get('notes', null) is string && options.notes.size() > 0))
+             // An uploaded file is the uploader's own, in their notes folder.
+             && (options.get('notesFile', null) == null
+                 || (options.notesFile is string
+                     && options.notesFile.size() <= 300
+                     && options.notesFile.matches('notes/' + request.auth.uid + '/[^/]+/[^/]+')))
+             && (options.get('notesFileName', null) == null
+                 || (options.notesFileName is string && options.notesFileName.size() <= 200))
+             && (options.get('focus', null) == null
+                 || (options.focus is string && options.focus.size() <= 300))
+             && (source != 'NOTES'
+                 || (options.get('notes', null) is string && options.notes.size() > 0)
+                 || options.get('notesFile', null) is string)
              && (options.get('idea', null) == null
                  || (options.idea is string && options.idea.size() <= 300))
              && (source != 'IDEA' || (options.get('idea', null) is string && options.idea.size() > 0));

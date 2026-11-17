@@ -1110,6 +1110,11 @@ def publish(
     typer.echo(job.id)
 
 
+# Uploaded notes are read within minutes of the upload; two days is for a song
+# queued while the PC was off.
+NOTES_RETENTION_DAYS = 2
+
+
 @app.command()
 def retention(
     apply: bool = typer.Option(
@@ -1154,18 +1159,24 @@ def retention(
         {
             "action": {"type": "Delete"},
             "condition": {"age": settings.clip_retention_days, "matchesPrefix": ["clips/"]},
-        }
+        },
+        # Uploaded notes for a song (docs/MUSIC-PLAN.md, M5). The worker deletes
+        # each once its song is written; this collects one whose job never ran.
+        {
+            "action": {"type": "Delete"},
+            "condition": {"age": NOTES_RETENTION_DAYS, "matchesPrefix": ["notes/"]},
+        },
     ]
     current = list(bucket.lifecycle_rules)
 
     typer.echo(f"bucket     {settings.firebase_storage_bucket}")
     typer.echo(f"configured {settings.clip_retention_days} day(s), for objects under clips/")
+    typer.echo(f"           {NOTES_RETENTION_DAYS} day(s), for uploaded notes under notes/")
     typer.echo(f"on bucket  {json.dumps(current) if current else 'no lifecycle rules'}")
 
     if not apply:
-        agreed = (
-            len(current) == 1
-            and current[0].get("condition", {}).get("age") == settings.clip_retention_days
+        agreed = sorted(json.dumps(rule, sort_keys=True) for rule in current) == sorted(
+            json.dumps(rule, sort_keys=True) for rule in wanted
         )
         typer.echo("")
         typer.echo("in step" if agreed else "NOT in step — run with --apply")
@@ -1174,7 +1185,10 @@ def retention(
     bucket.lifecycle_rules = wanted
     bucket.patch()
     typer.echo("")
-    typer.echo(f"applied: clips expire {settings.clip_retention_days} day(s) after upload")
+    typer.echo(
+        f"applied: clips expire {settings.clip_retention_days} day(s) after upload, "
+        f"uploaded notes after {NOTES_RETENTION_DAYS}"
+    )
 
 
 @app.command()

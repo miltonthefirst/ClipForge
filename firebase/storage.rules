@@ -56,6 +56,30 @@ service firebase.storage {
       allow create, update: if false;
     }
 
+    // ── Notes for a song ─────────────────────────────────────────────────────
+    //
+    // The one thing a client uploads (docs/MUSIC-PLAN.md, M5): lecture notes
+    // as a PDF, Word, PowerPoint or text file, for a study song. The worker
+    // reads it through the Admin SDK and deletes it once the song is written;
+    // a lifecycle rule collects any left behind after two days. Only the
+    // uploader's own folder, only those formats, at most 100 MB. Nobody reads
+    // it back through the rules: the owner has the file already.
+    match /notes/{uid}/{uploadId}/{fileName} {
+      allow create: if isApproved()
+                    && request.auth.uid == uid
+                    && request.resource.size < 100 * 1024 * 1024
+                    && fileName.lower().matches('.*[.](pdf|docx|pptx|txt|md)$')
+                    && request.resource.contentType in [
+                         'application/pdf',
+                         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                         'text/plain',
+                         'text/markdown'
+                       ];
+      allow delete: if isApproved() && request.auth.uid == uid;
+      allow read, update: if false;
+    }
+
     // Default deny. Anything not named above — source video above all — has no
     // business in this bucket, and an accidental upload should fail loudly
     // rather than quietly cost money.

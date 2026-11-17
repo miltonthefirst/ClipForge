@@ -128,8 +128,16 @@ class Settings(BaseSettings):
     # shared the card with ComfyUI took twelve minutes a song instead of
     # twenty seconds (docs/MUSIC-PLAN.md).
     ngoma_dir: str = ""
-    ngoma_vram_mb: int = Field(default=5000, ge=0)
+    # What the broker is asked for. It keeps `vram_reserve_mb` free on top, so
+    # 4600 means 5300 MiB free: ACE-Step measured 5.2 GB of the card at its
+    # peak. 5000 (5700 free) refused a song on a card with only the desktop on
+    # it (2026-11-18), which an idle card always has.
+    ngoma_vram_mb: int = Field(default=4600, ge=0)
     ngoma_timeout_s: float = Field(default=1800.0, gt=0)
+    # A song whose card is busy waits for it rather than failing (the owner,
+    # 2026-11-18: "it should wait for it to be free instead of failing"). Only
+    # after this long does it give up.
+    song_gpu_wait_s: float = Field(default=6 * 60 * 60, ge=0)
     # Sarungano's ComfyUI keeps its last model on the card between jobs. When
     # its queue is empty, a song asks it to let go, as Sarungano itself does
     # before training; while it is working, the song waits. "" skips this.

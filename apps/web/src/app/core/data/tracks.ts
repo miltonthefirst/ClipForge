@@ -159,6 +159,11 @@ export class TracksRepository {
     return this.db.live<Trend>(RECENT_TRENDS_QUERY);
   }
 
+  /** A fresh id for an upload's folder under `notes/{uid}/`. */
+  newUploadId(): string {
+    return this.db.newId('jobs');
+  }
+
   /** Ask the PC for a new song. Its takes arrive here as NEW tracks. */
   async makeSong(uid: string, options: GenerateMusicOptions): Promise<string> {
     const id = this.db.newId('jobs');

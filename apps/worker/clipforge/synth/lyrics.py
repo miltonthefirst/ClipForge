@@ -21,6 +21,7 @@ only that. Accuracy over rhyme.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from clipforge_contracts import GenerateMusicOptions, LyricsSource, Trend
@@ -34,14 +35,16 @@ __all__ = [
     "SongBrief",
     "SongDraft",
     "brief_for",
+    "condense_notes",
     "names_in",
     "normalise_key",
+    "points_for",
     "series_for",
     "tidy_lyrics",
     "write_song",
 ]
 
-LYRICS_PROMPT_VERSION = "lyrics-v2"
+LYRICS_PROMPT_VERSION = "lyrics-v3"
 
 
 class LyricsError(RuntimeError):
@@ -271,7 +274,14 @@ def names_in(*texts: str) -> tuple[str, ...]:
     return tuple(found)[:40]
 
 
-def brief_for(options: GenerateMusicOptions, trend: Trend | None = None) -> SongBrief:
+def brief_for(
+    options: GenerateMusicOptions,
+    trend: Trend | None = None,
+    *,
+    notes_text: str | None = None,
+    key_points: list[str] | None = None,
+    file_name: str | None = None,
+) -> SongBrief:
     source = options.lyrics_from
     if source is LyricsSource.TREND:
         if trend is None:
@@ -289,19 +299,129 @@ def brief_for(options: GenerateMusicOptions, trend: Trend | None = None) -> Song
             avoid=names_in(trend.topic, *headlines, *details),
         )
     if source is LyricsSource.NOTES:
-        notes = (options.notes or "").strip()
+        notes = "\n\n".join(t.strip() for t in (notes_text, options.notes) if t and t.strip())
         if not notes:
             raise LyricsError("a song from notes needs the notes")
         first = next((line.strip() for line in notes.splitlines() if line.strip()), "")
-        return SongBrief(
-            source=source, material=notes[:8000], inspiration=f"Your notes: {first}"[:200]
-        )
+        label = file_name or first
+        if key_points:
+            material = "Key points of the notes, in their order:\n" + "\n".join(
+                f"- {point}" for point in key_points
+            )
+        else:
+            material = notes[:DIRECT_NOTES_CHARS]
+        if options.focus:
+            material = f"Focus on: {options.focus}\n\n{material}"
+        return SongBrief(source=source, material=material, inspiration=f"Your notes: {label}"[:200])
     if source is LyricsSource.IDEA:
         idea = (options.idea or "").strip()
         if not idea:
             raise LyricsError("a song from an idea needs the idea")
         return SongBrief(source=source, material=idea[:300], inspiration=f"Idea: {idea}"[:200])
     raise LyricsError("an instrumental has no lyrics to write")
+
+
+# ── Long notes: the key points first ─────────────────────────────────────────
+#
+# A lecture is longer than the model reads well at once (16k tokens, and a 4B
+# model loses the middle of a long prompt well before that), and a song can
+# only teach a dozen things anyway. So notes up to DIRECT_NOTES_CHARS go to
+# the writer as they are; longer ones are read in pieces, each piece gives its
+# key facts, and those are cut down to what a song of this length can carry.
+# Nothing is skipped: every piece is read, however long the notes are.
+
+DIRECT_NOTES_CHARS = 9000
+CHUNK_CHARS = 9000
+
+
+class KeyPoints(BaseModel):
+    """What one piece of the notes says that matters. The format constraint."""
+
+    points: list[str] = Field(..., max_length=14)
+
+
+EXTRACT_SYSTEM = """You pull the key facts out of a student's notes, so they can be turned into a study song.
+
+Each point is one short, plain sentence in the notes' own terms: a definition, a law, a step, a formula written as words, a cause and its effect, a date that matters. Keep the order of the notes. Leave out headers, page and slide numbers, references, admin (deadlines, reading lists) and anything repeated. Add nothing that is not in the text."""
+
+SELECT_SYSTEM = """You choose what a study song will teach from a list of key facts taken from a student's notes.
+
+Keep the most important facts: the ones an exam would ask about and the ones the others depend on. Keep their order. Merge two points that say the same thing. Rewrite nothing into a new claim; shorten only. A point must teach something: never return the topic or the focus itself as a point."""
+
+
+def points_for(seconds: int) -> int:
+    """How many facts a song of this length can teach."""
+    if seconds <= 75:
+        return 6
+    if seconds <= 140:
+        return 10
+    return 14
+
+
+def condense_notes(
+    client: OllamaClient,
+    text: str,
+    *,
+    focus: str | None,
+    seconds: int,
+    progress: Callable[[str], None] = lambda _note: None,
+) -> list[str]:
+    """The key points of long notes, or [] when they are short enough to use as they are."""
+    from clipforge.synth.notes import chunks
+
+    if len(text) <= DIRECT_NOTES_CHARS:
+        return []
+    focus_line = (
+        f"\nOnly facts about: {focus}. A part with nothing about it gives no points."
+        if focus
+        else ""
+    )
+    pieces = list(chunks(text, CHUNK_CHARS))
+    points: list[str] = []
+    for number, piece in enumerate(pieces, start=1):
+        progress(f"Reading your notes: part {number} of {len(pieces)}")
+        found = client.generate_structured(
+            schema_model=KeyPoints,
+            system=EXTRACT_SYSTEM,
+            prompt=f"The notes, part {number} of {len(pieces)}:{focus_line}\n\n{piece}",
+            temperature=0.0,
+        )
+        points += [p.strip() for p in found.points if p.strip()]
+
+    keep = points_for(seconds)
+    # Very long notes give more points than one prompt holds well: cut them down
+    # in rounds until they fit, then choose.
+    while len("\n".join(points)) > DIRECT_NOTES_CHARS:
+        progress("Picking out the most important points")
+        batches = list(chunks("\n\n".join(points), CHUNK_CHARS))
+        reduced: list[str] = []
+        for batch in batches:
+            reduced += _select(client, batch.split("\n\n"), keep, focus)
+        if len(reduced) >= len(points):
+            break
+        points = reduced
+    if len(points) > keep:
+        progress("Picking out the most important points")
+        points = _select(client, points, keep, focus)
+    if not points:
+        raise LyricsError(
+            "nothing in the notes could be taught"
+            + (f" about {focus!r}" if focus else "")
+            + "; check the file has text in it"
+        )
+    return points
+
+
+def _select(client: OllamaClient, points: list[str], keep: int, focus: str | None) -> list[str]:
+    focus_line = f"\nThe song is about: {focus}." if focus else ""
+    listed = "\n".join(f"- {point}" for point in points)
+    chosen = client.generate_structured(
+        schema_model=KeyPoints,
+        system=SELECT_SYSTEM,
+        prompt=f"Choose at most {keep} of these, in order.{focus_line}\n\n{listed}",
+        temperature=0.0,
+    )
+    return [p.strip() for p in chosen.points if p.strip()][:keep]
 
 
 def _structure(seconds: int) -> str:

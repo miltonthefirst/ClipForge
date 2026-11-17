@@ -3120,7 +3120,19 @@ class GenerateMusicOptions(BaseModel):
     """
     notes: str | None = Field(None, max_length=8000)
     """
-    A NOTES song's source: what it should teach, in the person's own words.
+    A NOTES song's source typed or pasted in. Longer text is uploaded as a file instead, so the job document stays small.
+    """
+    notes_file: str | None = Field(None, alias="notesFile", max_length=300)
+    """
+    A NOTES song's source as an uploaded file (PDF, Word, PowerPoint or text), at notes/{uid}/... in the bucket. Any length: the worker reads all of it, boils long notes down to their key points, and deletes the file once the song is written.
+    """
+    notes_file_name: str | None = Field(None, alias="notesFileName", max_length=200)
+    """
+    The uploaded file's own name, for the track's 'Your notes: ...'.
+    """
+    focus: str | None = Field(None, max_length=300)
+    """
+    What part of long notes the song is about (a chapter, a topic). Null teaches the most important points of all of it.
     """
     idea: str | None = Field(None, max_length=300)
     """
