@@ -372,11 +372,13 @@ const LONGEST = [
           </div>
           <p class="text-xs text-ink-subtle">
             {{
-              describesItself(lyricsFrom())
-                ? 'Takes are versions of the same song, to keep the best. Its length is what the brief asks for or the song you like lasts, or what its words need.'
-                : lyricsFrom() === 'NONE'
-                  ? 'An instrumental is this long.'
-                  : 'The song is as long as its words need, up to this. A longer one gets more verses and an instrumental break.'
+              lyricsFrom() === 'REFERENCE'
+                ? 'Takes are versions of the same song, to keep the best. It is as long as the song you like, up to 8 minutes.'
+                : lyricsFrom() === 'BRIEF'
+                  ? 'Takes are versions of the same song, to keep the best. Its length is what the brief asks for, or what its words need.'
+                  : lyricsFrom() === 'NONE'
+                    ? 'An instrumental is this long.'
+                    : 'The song is as long as its words need, up to this. A longer one gets more verses and an instrumental break.'
             }}
             Each song gets a background picture painted on the PC for its videos.
           </p>

@@ -37,8 +37,9 @@ def options(**overrides: Any) -> GenerateMusicOptions:
 
 
 class Fetch:
-    def __init__(self, error: IngestError | None = None) -> None:
+    def __init__(self, error: IngestError | None = None, duration_s: float = 214.0) -> None:
         self.error = error
+        self.duration_s = duration_s
         self.folders: list[Path] = []
 
     def __call__(self, url: str, folder: Path) -> Reference:
@@ -53,7 +54,7 @@ class Fetch:
             audio=audio,
             title="Mbali Zondo - Golden River (Official Video)",
             channel="Mbali Zondo",
-            duration_s=214.0,
+            duration_s=self.duration_s,
             tags=("amapiano", "golden river"),
         )
 
@@ -125,6 +126,8 @@ def test_a_liked_song_becomes_an_original_in_its_style(tmp_path: Path) -> None:
 
     assert checkpoint["title"] == "Paper Boats" and checkpoint["lyrics"] == LYRICS
     assert checkpoint["bpm"] == 113 and checkpoint["language"] == "en"
+    # As long as the original, and the writer aimed its sections at that.
+    assert checkpoint["seconds"] == 214 and "about 3 min 34 s" in written
     assert checkpoint["inspiration"].startswith("In the style of: Mbali Zondo")
     assert checkpoint["reference"]["wordsHeard"] == len(HEARD.split())
     takes = takes_for(context_for(options()), options(takes=1), checkpoint)
@@ -146,6 +149,13 @@ def test_a_draft_named_after_the_original_is_asked_for_again(tmp_path: Path) -> 
     checkpoint = run(tmp_path, client)
     assert "'Golden'" in client.asked[2][1] and "Do not use" in client.asked[2][1]
     assert checkpoint["title"] == "Sunday Light"
+
+
+def test_a_long_original_is_matched_up_to_what_the_card_can_make(tmp_path: Path) -> None:
+    long_one = run(tmp_path, Client(described(), draft()), Fetch(duration_s=600))
+    assert long_one["seconds"] == 480
+    short_one = run(tmp_path, Client(described(), draft()), Fetch(duration_s=12))
+    assert short_one["seconds"] == 30
 
 
 def test_a_song_with_no_words_heard_stays_an_instrumental(tmp_path: Path) -> None:

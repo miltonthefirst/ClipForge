@@ -356,8 +356,10 @@ only), nothing else to choose. LYRICS:
    job fails (`shared_phrases`).
 
 **The music model never hears the original**: it gets the description, so it
-cannot carry the melody across. Fewer than 15 words heard makes an
-instrumental, its length the original's (within 1 to 8 minutes). The track's
+cannot carry the melody across. **The new song is as long as the original**
+(the owner, 2026-11-21), from 30 s to the card's 8 minutes: the writer aims
+its verses and breaks at that length, and the music model fills any rest with
+music. Fewer than 15 words heard makes an instrumental. The track's
 `inspiration` says "In the style of: <title>"; that field is not published.
 
 **The Music page groups the library in tabs**: To listen to, Kept, Discarded,

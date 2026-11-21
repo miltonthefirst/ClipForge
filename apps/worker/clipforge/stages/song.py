@@ -51,6 +51,7 @@ from clipforge.stages.base import StageContext, StageOutcome
 from clipforge.store.firestore import TrackStore, TrendStore
 from clipforge.synth.lyrics import (
     LYRICS_PROMPT_VERSION,
+    SHORTEST_SONG,
     LyricsError,
     SongBrief,
     brief_for,
@@ -428,8 +429,11 @@ class LyricsStage:
 
         client = self._ready_client(context)
         seed = base_seed(context, options)
+        # As long as the original (the owner, 2026-11-21), within what the card
+        # was measured making. The writer aims its verses and breaks at it.
         longest = max(
-            60, min(round(reference.duration_s or target_seconds(options)), LONGEST_SONG_S)
+            SHORTEST_SONG,
+            min(round(reference.duration_s or target_seconds(options)), LONGEST_SONG_S),
         )
         # Its title and channel are names: none of their words may be used.
         avoid = names_in(reference.title, reference.channel)
@@ -496,7 +500,9 @@ class LyricsStage:
             "key": normalise_key(draft.key) if draft else None,
             "series": series,
             "inspiration": f"In the style of: {reference.title}"[:200],
-            "seconds": song_seconds(lyrics, bpm, longest=longest) if lyrics else longest,
+            # Exactly the original's length, not just what the words need: a
+            # shorter song is filled out with music to the same running time.
+            "seconds": longest,
             "scene": spec.scene or (draft.scene if draft else ""),
             "artStyle": spec.art_style,
             "style": style,
