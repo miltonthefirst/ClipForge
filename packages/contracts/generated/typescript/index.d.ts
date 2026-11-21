@@ -84,9 +84,9 @@ export type CompileTransition = 'CUT' | 'FADE';
  */
 export type ComposeStyle = 'STICK';
 /**
- * Where a generated song's words come from. NONE makes an instrumental.
+ * Where a generated song's words come from. NONE makes an instrumental. BRIEF is a pasted brief that may carry the lyrics themselves and says how the song sounds.
  */
-export type LyricsSource = 'NONE' | 'TREND' | 'NOTES' | 'IDEA';
+export type LyricsSource = 'NONE' | 'TREND' | 'NOTES' | 'IDEA' | 'BRIEF';
 /**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
@@ -1010,14 +1010,14 @@ export interface MusicVideoOptions {
   shortSeconds?: number;
 }
 /**
- * What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2 and M5). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), or a one-line idea. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
+ * What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2, M5 and M6). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), a one-line idea, or a brief pasted from anywhere (BRIEF), which also says how the song should sound. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
  */
 export interface GenerateMusicOptions {
   lyricsFrom: LyricsSource;
   /**
-   * The sound, in words: genre, instruments, mood. Never an artist's name.
+   * The sound, in words: genre, instruments, mood. Never an artist's name. Every source needs it except BRIEF, whose brief says it; given with a brief, it wins over what the brief says.
    */
-  style: string;
+  style?: string | null;
   /**
    * Who sings. ANY lets each take differ.
    */
@@ -1058,6 +1058,10 @@ export interface GenerateMusicOptions {
    * An IDEA song's one-line brief.
    */
   idea?: string | null;
+  /**
+   * A BRIEF song's source: whatever a person pasted, typically a chat assistant's answer with a title, a style, lyrics and notes on the voice, the length or the picture. Lyrics in it are sung word for word; the local model reads the rest for the sound, the voice, the language, the tempo, the length and the scene, and writes lyrics from it when there are none.
+   */
+  brief?: string | null;
   /**
    * The series the tracks join; null lets the worker name it from the style.
    */

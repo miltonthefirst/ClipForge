@@ -2416,13 +2416,14 @@ class Vocal(StrEnum):
 
 class LyricsSource(StrEnum):
     """
-    Where a generated song's words come from. NONE makes an instrumental.
+    Where a generated song's words come from. NONE makes an instrumental. BRIEF is a pasted brief that may carry the lyrics themselves and says how the song sounds.
     """
 
     NONE = "NONE"
     TREND = "TREND"
     NOTES = "NOTES"
     IDEA = "IDEA"
+    BRIEF = "BRIEF"
 
 
 class MusicVideoOptions(BaseModel):
@@ -3127,7 +3128,7 @@ class Track(BaseModel):
 
 class GenerateMusicOptions(BaseModel):
     """
-    What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2 and M5). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), or a one-line idea. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
+    What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2, M5 and M6). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), a one-line idea, or a brief pasted from anywhere (BRIEF), which also says how the song should sound. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
     """
 
     model_config = ConfigDict(
@@ -3135,9 +3136,9 @@ class GenerateMusicOptions(BaseModel):
         populate_by_name=True,
     )
     lyrics_from: LyricsSource = Field(..., alias="lyricsFrom")
-    style: str = Field(..., max_length=200, min_length=1)
+    style: str | None = Field(None, max_length=200, min_length=1)
     """
-    The sound, in words: genre, instruments, mood. Never an artist's name.
+    The sound, in words: genre, instruments, mood. Never an artist's name. Every source needs it except BRIEF, whose brief says it; given with a brief, it wins over what the brief says.
     """
     vocal: Vocal | None = "ANY"
     """
@@ -3178,6 +3179,10 @@ class GenerateMusicOptions(BaseModel):
     idea: str | None = Field(None, max_length=300)
     """
     An IDEA song's one-line brief.
+    """
+    brief: str | None = Field(None, max_length=10000)
+    """
+    A BRIEF song's source: whatever a person pasted, typically a chat assistant's answer with a title, a style, lyrics and notes on the voice, the length or the picture. Lyrics in it are sung word for word; the local model reads the rest for the sound, the voice, the language, the tempo, the length and the scene, and writes lyrics from it when there are none.
     """
     series: str | None = Field(None, max_length=60)
     """

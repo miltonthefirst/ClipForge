@@ -676,21 +676,23 @@ service cloud.firestore {
                  && options.get('shortSeconds', 55) <= 59);
     }
 
-    // What a GENERATE_MUSIC job may ask for (docs/MUSIC-PLAN.md, M2 and M5):
+    // What a GENERATE_MUSIC job may ask for (docs/MUSIC-PLAN.md, M2, M5, M6):
     // a style, where the words come from, and the bounded rest. The words'
-    // source must be there: a trend that exists, notes or an idea that are not
-    // empty. Everything here reaches a prompt or the music model.
+    // source must be there: a trend that exists, notes, an idea or a brief that
+    // are not empty. A brief says how the song sounds, so it alone may leave
+    // the style out. Everything here reaches a prompt or the music model.
     function generateMusicOptionsOk() {
       let options = request.resource.data.get('generateMusicOptions', null);
       let source = options == null ? null : options.get('lyricsFrom', null);
       return options is map
              && options.keys().hasOnly(
                   ['lyricsFrom', 'style', 'vocal', 'seconds', 'maxSeconds', 'takes', 'trendId', 'notes',
-                   'notesFile', 'notesFileName', 'focus', 'idea', 'series', 'seed'])
-             && source in ['NONE', 'TREND', 'NOTES', 'IDEA']
-             && options.style is string
-             && options.style.size() > 0
-             && options.style.size() <= 200
+                   'notesFile', 'notesFileName', 'focus', 'idea', 'brief', 'series', 'seed'])
+             && source in ['NONE', 'TREND', 'NOTES', 'IDEA', 'BRIEF']
+             && ((source == 'BRIEF' && options.get('style', null) == null)
+                 || (options.get('style', null) is string
+                     && options.style.size() > 0
+                     && options.style.size() <= 200))
              && options.get('vocal', 'ANY') in ['FEMALE', 'MALE', 'ANY']
              // An exact length, or none: then the song is as long as its words,
              // up to maxSeconds. Eight minutes is what was measured on the card.
@@ -724,7 +726,11 @@ service cloud.firestore {
                  || options.get('notesFile', null) is string)
              && (options.get('idea', null) == null
                  || (options.idea is string && options.idea.size() <= 300))
-             && (source != 'IDEA' || (options.get('idea', null) is string && options.idea.size() > 0));
+             && (source != 'IDEA' || (options.get('idea', null) is string && options.idea.size() > 0))
+             && (options.get('brief', null) == null
+                 || (options.brief is string && options.brief.size() <= 10000))
+             && (source != 'BRIEF'
+                 || (options.get('brief', null) is string && options.brief.size() > 0));
     }
 
     // What a COMPOSE job may ask for. The topic is the one thing it needs;

@@ -276,6 +276,55 @@ one image per song, a repeated hook, abbreviations spelled out (A T P), no
 real people, brands, songs or sides in politics; a notes song uses only facts
 from the notes, accuracy over rhyme.
 
+### Phase M6: a song from a pasted brief (asked 2026-11-21)
+
+The owner's ask: "there are many options for me to choose from of which I'm
+not much of a music person … add an option to type input from either chatgpt
+or anywhere that I can specify everything without choosing on the available
+option, then the system will decode that message and create the video."
+
+**Built 2026-11-21.** A fifth source, `lyricsFrom: BRIEF`, first and selected
+by default in "Make a track". The form shows one large box and **Copy a prompt
+for ChatGPT**, which copies a request asking an assistant for a title, style,
+vocals, language, tempo, length, a video picture and bracketed lyrics; the
+owner adds their idea after its last line and pastes the answer back. The
+style, voice and length pickers are hidden; only Takes remains. The job
+carries `brief` (up to 10,000 characters) and no `style`. The rules let only
+BRIEF leave `style` out, and a style sent with a brief wins.
+
+LYRICS decodes it in two parts (`clipforge/synth/song_brief.py`):
+
+- **The lyrics are found by rule, never by the model**, because a 4B model
+  asked to copy lyrics rewrites them. They run from the first section marker
+  (or a "Lyrics" heading) to a `Style:`-like label or a closing paragraph of
+  chat. `**Verse 1:**`, `(Chorus)` and `## Bridge` become `[Verse 1]` and the
+  rest; "Chorus x2" or "Repeat chorus" sings the first chorus again; lines like
+  `(guitar solo)` are dropped. A plain line counts as a marker only when it is
+  just the name, so "Break the chains" stays sung. Lyrics with no markers under
+  a "Lyrics" heading get them: a stanza that repeats is the chorus.
+- **The rest is read by the local model** into a `BriefSpec`: the sound in
+  words (an artist's name becomes what they sound like), the voice (female,
+  male, duet, choir, instrumental, any), the language, the tempo, the key, a
+  length, a title and the background scene. The scene still goes through
+  ARTWORK's people filter.
+
+With no lyrics, the usual writer writes them from the brief (`BRIEF_TASK`),
+aimed at the length asked for. A brief's own lyrics are sung in full, as long
+as they need, or longer if the brief asks; they are sung in their own language
+if ACE-Step knows it, otherwise as `unknown` so it listens for itself. SING
+uses the brief's style, voice and language over the form's.
+
+Calls made without asking, open to change:
+
+- **The owner's lyrics are not checked for names.** Trend songs are checked
+  because their source is news about named people. A pasted song is the
+  owner's own, and every take still arrives as NEW for review. If a pasted
+  song names someone, nothing stops it.
+- **Lyrics the PC writes from a brief are English**, as every song so far has
+  been; a brief asking for Swahili without giving lyrics gets English words.
+- **BRIEF is the default source**, because the owner asked for the form that
+  needs no choices.
+
 ## 4. What it costs the rest of the system
 
 - GPU time only. 3 to 7 videos a week is a handful of tracks.

@@ -14,6 +14,8 @@ import { SONG_STYLES, TracksRepository } from '../../core/data/tracks';
 import { SessionService } from '../../core/session';
 import { StorageGateway } from '../../core/storage/gateway';
 import {
+  ASSISTANT_PROMPT,
+  BRIEF_LIMIT,
   FOCUS_LIMIT,
   IDEA_LIMIT,
   NOTES_ACCEPT,
@@ -30,6 +32,7 @@ import {
 
 /** Where the words come from, as the form offers it. */
 const SOURCES: readonly { readonly value: LyricsSource; readonly label: string }[] = [
+  { value: 'BRIEF', label: 'Paste a brief' },
   { value: 'IDEA', label: 'An idea' },
   { value: 'TREND', label: 'A trend' },
   { value: 'NOTES', label: 'My notes' },
@@ -48,7 +51,12 @@ const LONGEST = [
 ];
 
 /**
- * Ask the PC for a new song (docs/MUSIC-PLAN.md, M2 and M5).
+ * Ask the PC for a new song (docs/MUSIC-PLAN.md, M2, M5 and M6).
+ *
+ * The first choice needs no musical knowledge: paste a song described
+ * anywhere (a chat assistant's answer, typically) and the PC reads the sound,
+ * the voice, the length and the picture out of it, singing any lyrics in it
+ * word for word. The other choices are the form's own.
  *
  * The local model writes a title and lyrics from an idea, a trend or a
  * person's notes, and the music model sings them, a take per seed. The takes
@@ -75,7 +83,7 @@ const LONGEST = [
       </div>
       @if (!open()) {
         <p class="mt-1 text-sm text-ink-muted">
-          A song written and sung on the PC, from an idea, a trend or your notes.
+          A song written and sung on the PC, from a pasted brief, an idea, a trend or your notes.
         </p>
       } @else {
         <form class="mt-3 space-y-4" (ngSubmit)="submit()">
@@ -101,6 +109,38 @@ const LONGEST = [
           </fieldset>
 
           @switch (lyricsFrom()) {
+            @case ('BRIEF') {
+              <label class="block text-sm text-ink">
+                Your brief
+                <textarea
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 font-mono text-sm text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+                  rows="12"
+                  name="brief"
+                  [maxlength]="briefLimit"
+                  placeholder="Paste a song described anywhere: a ChatGPT answer with a title, a style, lyrics with [Verse] and [Chorus], the voice, the length… or just say what you want: an upbeat afrobeats song about Lagos traffic, male voice, three minutes."
+                  [ngModel]="brief()"
+                  (ngModelChange)="brief.set($event)"
+                ></textarea>
+              </label>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <p class="text-xs text-ink-subtle">
+                  {{ brief().length }} of {{ briefLimit }} characters.
+                </p>
+                <button
+                  type="button"
+                  class="rounded-lg border border-line-strong px-3 py-1 text-sm text-ink hover:bg-line"
+                  (click)="copyPrompt()"
+                >
+                  {{ copied() ? 'Copied: paste it in ChatGPT' : 'Copy a prompt for ChatGPT' }}
+                </button>
+              </div>
+              <p class="text-xs text-ink-subtle">
+                Not sure what to write? Copy the prompt, paste it into ChatGPT (or any assistant),
+                add your idea after the last line, then paste its answer here. Lyrics with their
+                sections in brackets are sung word for word; without lyrics the PC writes them. The
+                sound, the voice, the language, the length and the picture come from the brief.
+              </p>
+            }
             @case ('IDEA') {
               <label class="block text-sm text-ink">
                 The idea
@@ -219,66 +259,70 @@ const LONGEST = [
             }
           }
 
-          <fieldset>
-            <legend class="text-sm font-medium text-ink">The sound</legend>
-            <div class="mt-2 flex flex-wrap gap-2">
-              @for (preset of styles; track preset.name) {
-                <button
-                  type="button"
-                  class="rounded-full border px-3 py-1 text-sm"
-                  [class]="
-                    style() === preset.style
-                      ? 'border-forge-600 bg-forge-600 text-white'
-                      : 'border-line-strong text-ink hover:bg-line'
-                  "
-                  [attr.aria-pressed]="style() === preset.style"
-                  (click)="style.set(preset.style)"
-                >
-                  {{ preset.name }}
-                </button>
-              }
-            </div>
-            <input
-              class="mt-2 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
-              name="style"
-              maxlength="200"
-              aria-label="The sound, in words"
-              [ngModel]="style()"
-              (ngModelChange)="style.set($event)"
-            />
-            <p class="mt-1 text-xs text-ink-subtle">
-              Genre, instruments and mood, in words. Never an artist's name.
-            </p>
-          </fieldset>
+          @if (lyricsFrom() !== 'BRIEF') {
+            <fieldset>
+              <legend class="text-sm font-medium text-ink">The sound</legend>
+              <div class="mt-2 flex flex-wrap gap-2">
+                @for (preset of styles; track preset.name) {
+                  <button
+                    type="button"
+                    class="rounded-full border px-3 py-1 text-sm"
+                    [class]="
+                      style() === preset.style
+                        ? 'border-forge-600 bg-forge-600 text-white'
+                        : 'border-line-strong text-ink hover:bg-line'
+                    "
+                    [attr.aria-pressed]="style() === preset.style"
+                    (click)="style.set(preset.style)"
+                  >
+                    {{ preset.name }}
+                  </button>
+                }
+              </div>
+              <input
+                class="mt-2 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-sm text-ink focus:border-forge-500 focus:outline-none"
+                name="style"
+                maxlength="200"
+                aria-label="The sound, in words"
+                [ngModel]="style()"
+                (ngModelChange)="style.set($event)"
+              />
+              <p class="mt-1 text-xs text-ink-subtle">
+                Genre, instruments and mood, in words. Never an artist's name.
+              </p>
+            </fieldset>
+          }
 
           <div class="flex flex-wrap gap-4">
-            <label class="text-sm text-ink">
-              Voice
-              <select
-                class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
-                name="vocal"
-                [disabled]="lyricsFrom() === 'NONE'"
-                [ngModel]="vocal()"
-                (ngModelChange)="vocal.set($event)"
-              >
-                <option value="ANY">One of each</option>
-                <option value="FEMALE">Female</option>
-                <option value="MALE">Male</option>
-              </select>
-            </label>
-            <label class="text-sm text-ink">
-              Longest
-              <select
-                class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
-                name="maxSeconds"
-                [ngModel]="maxSeconds()"
-                (ngModelChange)="maxSeconds.set(+$event)"
-              >
-                @for (length of lengths; track length.seconds) {
-                  <option [value]="length.seconds">{{ length.label }}</option>
-                }
-              </select>
-            </label>
+            @if (lyricsFrom() !== 'BRIEF') {
+              <label class="text-sm text-ink">
+                Voice
+                <select
+                  class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                  name="vocal"
+                  [disabled]="lyricsFrom() === 'NONE'"
+                  [ngModel]="vocal()"
+                  (ngModelChange)="vocal.set($event)"
+                >
+                  <option value="ANY">One of each</option>
+                  <option value="FEMALE">Female</option>
+                  <option value="MALE">Male</option>
+                </select>
+              </label>
+              <label class="text-sm text-ink">
+                Longest
+                <select
+                  class="mt-1 block rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink"
+                  name="maxSeconds"
+                  [ngModel]="maxSeconds()"
+                  (ngModelChange)="maxSeconds.set(+$event)"
+                >
+                  @for (length of lengths; track length.seconds) {
+                    <option [value]="length.seconds">{{ length.label }}</option>
+                  }
+                </select>
+              </label>
+            }
             <label class="text-sm text-ink">
               Takes
               <select
@@ -295,9 +339,11 @@ const LONGEST = [
           </div>
           <p class="text-xs text-ink-subtle">
             {{
-              lyricsFrom() === 'NONE'
-                ? 'An instrumental is this long.'
-                : 'The song is as long as its words need, up to this. A longer one gets more verses and an instrumental break.'
+              lyricsFrom() === 'BRIEF'
+                ? 'Takes are versions of the same song, to keep the best. Its length is what the brief asks for, or what its words need.'
+                : lyricsFrom() === 'NONE'
+                  ? 'An instrumental is this long.'
+                  : 'The song is as long as its words need, up to this. A longer one gets more verses and an instrumental break.'
             }}
             Each song gets a background picture painted on the PC for its videos.
           </p>
@@ -340,13 +386,18 @@ export class MakeTrack implements OnDestroy {
   protected readonly styles = SONG_STYLES;
   protected readonly lengths = LONGEST;
   protected readonly ideaLimit = IDEA_LIMIT;
+  protected readonly briefLimit = BRIEF_LIMIT;
   protected readonly focusLimit = FOCUS_LIMIT;
   protected readonly notesAccept = NOTES_ACCEPT;
   protected readonly trends = this.liveTrends.data;
 
   protected readonly open = signal(false);
-  protected readonly lyricsFrom = signal<LyricsSource>('IDEA');
+  protected readonly lyricsFrom = signal<LyricsSource>('BRIEF');
   protected readonly idea = signal('');
+  protected readonly brief = signal('');
+  /** The assistant prompt went to the clipboard a moment ago. */
+  protected readonly copied = signal(false);
+  private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   protected readonly notesMode = signal<NotesMode>('FILE');
   protected readonly notes = signal('');
   protected readonly file = signal<File | null>(null);
@@ -367,6 +418,21 @@ export class MakeTrack implements OnDestroy {
 
   ngOnDestroy(): void {
     this.liveTrends.release();
+    clearTimeout(this.copiedTimer);
+  }
+
+  protected async copyPrompt(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(ASSISTANT_PROMPT);
+    } catch {
+      // No clipboard (an insecure context, or refused): put the prompt in the
+      // box instead, to be copied from there.
+      if (!this.brief().trim()) this.brief.set(ASSISTANT_PROMPT);
+      return;
+    }
+    this.copied.set(true);
+    clearTimeout(this.copiedTimer);
+    this.copiedTimer = setTimeout(() => this.copied.set(false), 4000);
   }
 
   protected chooseFile(event: Event): void {
@@ -428,6 +494,7 @@ export class MakeTrack implements OnDestroy {
       notesFileName: this.file()?.name ?? null,
       focus: this.focus(),
       trendId: this.trendId(),
+      brief: this.brief(),
       style: this.style(),
       vocal: this.vocal(),
       maxSeconds: this.maxSeconds(),

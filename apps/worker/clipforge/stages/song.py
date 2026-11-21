@@ -1,7 +1,10 @@
 """LYRICS and SING: a GENERATE_MUSIC job (docs/MUSIC-PLAN.md, M2 and M5).
 
 LYRICS has the local model write the song: a title and lyrics from a trend, a
-person's notes or an idea (clipforge/synth/lyrics.py). Notes can be a file the
+person's notes or an idea (clipforge/synth/lyrics.py). A pasted brief
+(clipforge/synth/song_brief.py) brings its own lyrics, sung word for word, and says
+how the song should sound; the model reads that, and writes lyrics only when
+the brief has none. Notes can be a file the
 phone uploaded (PDF, Word, PowerPoint): it is fetched from the bucket, read
 (clipforge/synth/notes.py), boiled down to its key points when it is long, and
 deleted from the bucket once the song is written. An instrumental skips the
@@ -54,6 +57,13 @@ from clipforge.synth.lyrics import (
     write_song,
 )
 from clipforge.synth.notes import NotesError, extract_text, word_count
+from clipforge.synth.song_brief import (
+    SONG_BRIEF_PROMPT_VERSION,
+    decode_brief,
+    find_lyrics,
+    language_code,
+    voice_caption,
+)
 from clipforge.tracks import import_manifest
 
 log = get_logger(__name__)
@@ -70,6 +80,8 @@ __all__ = [
 
 # How often a song waiting for the card asks again.
 CARD_POLL_S = 30.0
+# The longest song the card was measured making (docs/MUSIC-PLAN.md, M5).
+LONGEST_SONG_S = 480
 
 
 class SongError(RuntimeError):
@@ -228,6 +240,9 @@ class LyricsStage:
                 }
             )
 
+        if options.lyrics_from is LyricsSource.BRIEF:
+            return StageOutcome(checkpoint=self._from_brief(context, options))
+
         trend = None
         if options.lyrics_from is LyricsSource.TREND:
             if not options.trend_id:
@@ -240,13 +255,7 @@ class LyricsStage:
             uploaded = _safe_notes_path(options.notes_file, context.job.uid)
             notes_text = self._read_upload(context, uploaded, options)
 
-        client = self._build_client(context)
-        if not client.is_available():
-            raise SongError(
-                "no model is reachable to write the words; start Ollama",
-                retryable=True,
-                code="LYRICS",
-            )
+        client = self._ready_client(context)
         context.progress("Waiting for the GPU")
         key_points: list[str] = []
         with card(context, f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
@@ -301,6 +310,85 @@ class LyricsStage:
             }
         )
 
+    def _from_brief(self, context: StageContext, options: GenerateMusicOptions) -> dict[str, Any]:
+        """A song as a pasted brief describes it: its lyrics as they are, the rest read by the model."""
+        text = (options.brief or "").strip()
+        if not text:
+            raise SongError("a song from a brief needs the brief", code="LYRICS")
+        given = find_lyrics(text)
+        client = self._ready_client(context)
+        seed = base_seed(context, options)
+        draft = None
+        context.progress("Waiting for the GPU")
+        with card(context, f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
+            try:
+                context.progress("Reading your brief")
+                spec = decode_brief(client, text, given, seed=seed)
+                style = (options.style or spec.style).strip()[:200]
+                asked = max(30, min(spec.seconds, LONGEST_SONG_S)) if spec.seconds else None
+                if given is None and spec.vocal != "instrumental":
+                    context.progress("Writing the song from your brief")
+                    writing = options.model_copy(
+                        update={"style": style, "max_seconds": asked or options.max_seconds}
+                    )
+                    draft = write_song(client, brief_for(options), writing, seed=seed)
+            except OllamaError as exc:
+                raise SongError(str(exc), retryable=exc.retryable, code="LYRICS") from exc
+            except LyricsError as exc:
+                raise SongError(str(exc), code="LYRICS") from exc
+            leased.observe()
+
+        lyrics = given or (draft.lyrics if draft else None)
+        # The brief's tempo and key when it gave them; the writer's otherwise.
+        bpm = spec.bpm if 40 <= spec.bpm <= 200 else (draft.bpm if draft else None)
+        key = normalise_key(spec.key) or (normalise_key(draft.key) if draft else None)
+        # A title the brief itself gives wins; else the one written with the words.
+        named = bool(spec.title) and spec.title.lower() in text.lower()
+        title = spec.title if named or draft is None else draft.title
+        if lyrics is None:
+            seconds = asked or target_seconds(options)
+        elif given:
+            # The person's words are sung in full, and a length asked for that
+            # is longer than they need is filled with music.
+            needed = song_seconds(lyrics, bpm, longest=LONGEST_SONG_S)
+            seconds = max(needed, asked or 0)
+        else:
+            seconds = options.seconds or song_seconds(
+                lyrics, bpm, longest=asked or target_seconds(options)
+            )
+        return {
+            "title": (title or "Untitled")[:60],
+            "lyrics": lyrics,
+            "theme": spec.about,
+            "mood": spec.mood,
+            "bpm": bpm,
+            "key": key,
+            "series": series_for(options, style),
+            "inspiration": f"Your brief: {spec.about}"[:200] if spec.about else "Your brief",
+            "seconds": seconds,
+            "scene": spec.scene or (draft.scene if draft else ""),
+            "artStyle": spec.art_style,
+            "style": style,
+            "voice": voice_caption(spec.vocal),
+            # The writer writes English; a brief's own lyrics are sung in theirs.
+            "language": language_code(spec.language) if given else "en",
+            "lyricsGiven": given is not None,
+            "modelVersion": f"ollama:{client.model}",
+            "promptVersion": SONG_BRIEF_PROMPT_VERSION
+            + (f"+{LYRICS_PROMPT_VERSION}" if draft else ""),
+            "llm": dict(client.stats.summary()),
+        }
+
+    def _ready_client(self, context: StageContext) -> OllamaClient:
+        client = self._build_client(context)
+        if not client.is_available():
+            raise SongError(
+                "no model is reachable to write the words; start Ollama",
+                retryable=True,
+                code="LYRICS",
+            )
+        return client
+
     def _read_upload(self, context: StageContext, path: str, options: GenerateMusicOptions) -> str:
         if self._notes_files is None or self._workspace is None:
             raise SongError("this worker cannot read uploaded notes")
@@ -342,12 +430,14 @@ def takes_for(
     seed = base_seed(context, options)
     title = str(song.get("title") or "Untitled")
     tracks = []
+    # A brief's song carries the sound, the voice and the language it asked for.
+    style = str(song.get("style") or options.style or "")
     for take in range(count):
-        parts = [options.style.strip().rstrip(",")]
+        parts = [style.strip().rstrip(",")]
         if instrumental:
             parts.append("instrumental")
         else:
-            parts.append(_voice(options.vocal, take))
+            parts.append(str(song.get("voice") or _voice(options.vocal, take)))
             if song.get("mood"):
                 parts.append(str(song["mood"]))
         caption = ", ".join(p for p in parts if p)[:512]
@@ -363,7 +453,7 @@ def takes_for(
                 "seed": seed + take,
                 "bpm": song.get("bpm"),
                 "keyscale": song.get("key"),
-                "vocalLanguage": "unknown" if instrumental else "en",
+                "vocalLanguage": "unknown" if instrumental else str(song.get("language") or "en"),
             }
         )
     return tracks

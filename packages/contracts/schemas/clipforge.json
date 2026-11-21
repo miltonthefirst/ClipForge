@@ -2912,13 +2912,13 @@
 
     "GenerateMusicOptions": {
       "title": "GenerateMusicOptions",
-      "description": "What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2 and M5). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), or a one-line idea. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.",
+      "description": "What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2, M5 and M6). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), a one-line idea, or a brief pasted from anywhere (BRIEF), which also says how the song should sound. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["lyricsFrom", "style"],
+      "required": ["lyricsFrom"],
       "properties": {
         "lyricsFrom": { "$ref": "#/definitions/LyricsSource" },
-        "style": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The sound, in words: genre, instruments, mood. Never an artist's name." },
+        "style": { "type": ["string", "null"], "minLength": 1, "maxLength": 200, "default": null, "description": "The sound, in words: genre, instruments, mood. Never an artist's name. Every source needs it except BRIEF, whose brief says it; given with a brief, it wins over what the brief says." },
         "vocal": { "type": "string", "enum": ["FEMALE", "MALE", "ANY"], "default": "ANY", "description": "Who sings. ANY lets each take differ." },
         "seconds": { "type": ["integer", "null"], "minimum": 30, "maximum": 480, "default": null, "description": "An exact length. Null (the default) makes the song as long as its lyrics need, up to maxSeconds; an instrumental is then maxSeconds long." },
         "maxSeconds": { "type": "integer", "minimum": 60, "maximum": 480, "default": 240, "description": "The longest the song may be. The writer aims for it, and a longer one gets more verses and a break. Eight minutes was measured on this card (67 s to make, 5975 of 6144 MiB at the peak, 2026-11-18); the model's own limit, ten, was not tried." },
@@ -2929,6 +2929,7 @@
         "notesFileName": { "type": ["string", "null"], "maxLength": 200, "default": null, "description": "The uploaded file's own name, for the track's 'Your notes: ...'." },
         "focus": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "What part of long notes the song is about (a chapter, a topic). Null teaches the most important points of all of it." },
         "idea": { "type": ["string", "null"], "maxLength": 300, "default": null, "description": "An IDEA song's one-line brief." },
+        "brief": { "type": ["string", "null"], "maxLength": 10000, "default": null, "description": "A BRIEF song's source: whatever a person pasted, typically a chat assistant's answer with a title, a style, lyrics and notes on the voice, the length or the picture. Lyrics in it are sung word for word; the local model reads the rest for the sound, the voice, the language, the tempo, the length and the scene, and writes lyrics from it when there are none." },
         "series": { "type": ["string", "null"], "maxLength": 60, "default": null, "description": "The series the tracks join; null lets the worker name it from the style." },
         "seed": { "type": ["integer", "null"], "default": null, "description": "The first take's seed; the others follow it. Null picks one." }
       }
@@ -2936,9 +2937,9 @@
 
     "LyricsSource": {
       "title": "LyricsSource",
-      "description": "Where a generated song's words come from. NONE makes an instrumental.",
+      "description": "Where a generated song's words come from. NONE makes an instrumental. BRIEF is a pasted brief that may carry the lyrics themselves and says how the song sounds.",
       "type": "string",
-      "enum": ["NONE", "TREND", "NOTES", "IDEA"]
+      "enum": ["NONE", "TREND", "NOTES", "IDEA", "BRIEF"]
     },
 
     "MusicVideoOptions": {

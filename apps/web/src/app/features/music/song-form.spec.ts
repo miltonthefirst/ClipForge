@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ASSISTANT_PROMPT,
+  BRIEF_LIMIT,
   NOTES_INLINE_LIMIT,
   type SongForm,
   notesFileProblem,
@@ -17,6 +19,7 @@ const form = (overrides: Partial<SongForm> = {}): SongForm => ({
   notesFileName: null,
   focus: '',
   trendId: '',
+  brief: '',
   style: 'amapiano, log drum',
   vocal: 'ANY',
   maxSeconds: 240,
@@ -51,6 +54,27 @@ describe('songOptions', () => {
     expect(options).not.toBeNull();
     expect(options).not.toHaveProperty('vocal');
     expect(options).not.toHaveProperty('idea');
+  });
+});
+
+describe('a pasted brief', () => {
+  it('sends the brief and the takes, and leaves the sound, voice and length to it', () => {
+    expect(
+      songOptions(form({ lyricsFrom: 'BRIEF', brief: '  [Verse 1]\nhello\n', takes: 3 })),
+    ).toEqual({ lyricsFrom: 'BRIEF', brief: '[Verse 1]\nhello', takes: 3 });
+  });
+
+  it('waits for a brief, and refuses one longer than a job carries', () => {
+    expect(songOptions(form({ lyricsFrom: 'BRIEF', brief: '   ' }))).toBeNull();
+    expect(
+      songOptions(form({ lyricsFrom: 'BRIEF', brief: 'x'.repeat(BRIEF_LIMIT + 1) })),
+    ).toBeNull();
+    expect(songOptions(form({ lyricsFrom: 'BRIEF', brief: 'x', style: ' ' }))).not.toBeNull();
+  });
+
+  it('asks the assistant for lyrics with their sections in brackets', () => {
+    expect(ASSISTANT_PROMPT).toContain('[Verse 1], [Chorus]');
+    expect(ASSISTANT_PROMPT.endsWith('My song idea: ')).toBe(true);
   });
 });
 

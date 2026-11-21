@@ -15,6 +15,27 @@ export type NotesMode = 'FILE' | 'TEXT';
 export const NOTES_INLINE_LIMIT = 8000;
 export const IDEA_LIMIT = 300;
 export const FOCUS_LIMIT = 300;
+/** A pasted brief: a chat assistant's whole answer, lyrics and all, fits easily. */
+export const BRIEF_LIMIT = 10000;
+
+/**
+ * What to ask a chat assistant for, so its answer reads well as a brief: the
+ * parts the PC looks for, lyrics with their sections in brackets. The person
+ * types their idea after the last line. Any other answer works too; this one
+ * leaves the least to guess.
+ */
+export const ASSISTANT_PROMPT = `Write a complete song for me to make with an AI music generator. Reply with these parts, in this order:
+
+Title:
+Style: the genre, instruments, mood and energy, in plain words (no artist names)
+Vocals: female, male, duet, choir or instrumental
+Language:
+Tempo: in BPM
+Length: in minutes (at most 8)
+Video picture: one scene for the background of the video: a place, its light, colours and objects, with no people, logos or writing
+Lyrics: each section's name on its own line in square brackets, like [Verse 1], [Chorus], [Bridge], [Outro]. Short lines, and a catchy chorus that repeats word for word. No real people, brands or other songs.
+
+My song idea: `;
 /** storage.rules allows up to 100 MB. */
 export const NOTES_FILE_MAX_BYTES = 100 * 1024 * 1024;
 
@@ -40,6 +61,8 @@ export interface SongForm {
   readonly notesFileName: string | null;
   readonly focus: string;
   readonly trendId: string;
+  /** A BRIEF song's pasted text: it says the sound, the voice and the length too. */
+  readonly brief: string;
   readonly style: string;
   readonly vocal: Vocal;
   /** The longest the song may be; the words decide within it. */
@@ -91,6 +114,13 @@ export function uploadNeeded(form: SongForm): 'FILE' | 'TEXT' | null {
  * missing. An upload's `notesFile` is added once it is in the bucket.
  */
 export function songOptions(form: SongForm): GenerateMusicOptions | null {
+  if (form.lyricsFrom === 'BRIEF') {
+    // Only the brief and how many takes: the PC reads the sound, the voice
+    // and the length out of the brief itself.
+    const brief = form.brief.trim();
+    if (!brief || brief.length > BRIEF_LIMIT) return null;
+    return { lyricsFrom: 'BRIEF', brief, takes: form.takes };
+  }
   const style = form.style.trim().slice(0, 200);
   if (!style) return null;
   const base: GenerateMusicOptions = {

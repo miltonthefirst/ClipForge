@@ -1160,7 +1160,7 @@ describe('song jobs', () => {
     });
   const style = 'amapiano, log drum, warm piano';
 
-  it('lets a member ask for a song from an idea, notes, a trend or nothing', async () => {
+  it('lets a member ask for a song from an idea, notes, a trend, a brief or nothing', async () => {
     await seed('trends/t1', { topic: 'something', uid: ALICE });
     for (const [n, options] of [
       { lyricsFrom: 'IDEA', style, idea: 'a slow Sunday' },
@@ -1193,6 +1193,8 @@ describe('song jobs', () => {
         notesFileName: 'Week 3.pdf',
         focus: 'momentum',
       },
+      { lyricsFrom: 'BRIEF', brief: '[Verse 1]\nA pasted song\n\nStyle: amapiano' },
+      { lyricsFrom: 'BRIEF', brief: 'x'.repeat(10000), style, takes: 1 },
     ].entries()) {
       await assertSucceeds(setDoc(doc(aliceDb(), `jobs/song-${n}`), job(options, `song-${n}`)));
     }
@@ -1205,6 +1207,11 @@ describe('song jobs', () => {
       { lyricsFrom: 'NOTES', style },
       { lyricsFrom: 'TREND', style, trendId: 'gone' },
       { lyricsFrom: 'IDEA', style: '', idea: 'x' },
+      { lyricsFrom: 'IDEA', idea: 'no sound given' },
+      { lyricsFrom: 'BRIEF' },
+      { lyricsFrom: 'BRIEF', brief: '' },
+      { lyricsFrom: 'BRIEF', brief: 'x'.repeat(10001) },
+      { lyricsFrom: 'BRIEF', brief: 'x', style: '' },
       { lyricsFrom: 'IDEA', style, idea: 'x', takes: 4 },
       { lyricsFrom: 'IDEA', style, idea: 'x', seconds: 600 },
       { lyricsFrom: 'IDEA', style, idea: 'x', maxSeconds: 600 },

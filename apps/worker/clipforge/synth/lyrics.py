@@ -143,6 +143,11 @@ The notes:
 IDEA_TASK = """Write a song from this idea:
 {material}"""
 
+BRIEF_TASK = """Write a song from this brief. Do what it asks about the story, the words, the hook and the feeling; the sound and the video are already taken care of.
+
+The brief:
+{material}"""
+
 STRUCTURES = {
     "short": "[Verse 1], [Chorus], [Verse 2], [Chorus]",
     "medium": "[Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Chorus], [Outro]",
@@ -376,6 +381,11 @@ def brief_for(
         if options.focus:
             material = f"Focus on: {options.focus}\n\n{material}"
         return SongBrief(source=source, material=material, inspiration=f"Your notes: {label}"[:200])
+    if source is LyricsSource.BRIEF:
+        text = (options.brief or "").strip()
+        if not text:
+            raise LyricsError("a song from a brief needs the brief")
+        return SongBrief(source=source, material=text[:6000], inspiration="Your brief")
     if source is LyricsSource.IDEA:
         idea = (options.idea or "").strip()
         if not idea:
@@ -507,9 +517,11 @@ def build_prompt(
     avoid: tuple[str, ...] = (),
     refused: tuple[str, ...] = (),
 ) -> str:
-    task = {LyricsSource.TREND: TREND_TASK, LyricsSource.NOTES: NOTES_TASK}.get(
-        brief.source, IDEA_TASK
-    )
+    task = {
+        LyricsSource.TREND: TREND_TASK,
+        LyricsSource.NOTES: NOTES_TASK,
+        LyricsSource.BRIEF: BRIEF_TASK,
+    }.get(brief.source, IDEA_TASK)
     seconds = target_seconds(options)
     parts = [
         task.format(material=brief.material),
@@ -630,11 +642,14 @@ def normalise_key(key: str | None) -> str | None:
     return f"{note.upper()}{accidental} {quality}"
 
 
-def series_for(options: GenerateMusicOptions) -> str:
-    """The series a new track joins: the one asked for, else one named from the style."""
+def series_for(options: GenerateMusicOptions, style: str | None = None) -> str:
+    """The series a new track joins: the one asked for, else one named from the style.
+
+    `style` is the sound a brief asked for, when the options carry none.
+    """
     if options.series:
         return options.series.strip()[:60]
     if options.lyrics_from is LyricsSource.NOTES:
         return "Study songs"
-    first = options.style.split(",")[0].strip() or "Music"
+    first = (options.style or style or "").split(",")[0].strip() or "Music"
     return first[:1].upper() + first[1:60]
