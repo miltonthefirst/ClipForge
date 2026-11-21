@@ -1,6 +1,6 @@
 {
   "name": "clipforge-desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Tauri shell around the ClipForge PWA, for reviewing on the machine that renders",
   "scripts": {

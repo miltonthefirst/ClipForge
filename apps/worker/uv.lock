@@ -242,7 +242,7 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
 
 [[package]]
 name = "clipforge-worker"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "clipforge-contracts" },
