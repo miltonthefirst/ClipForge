@@ -697,12 +697,12 @@ service cloud.firestore {
                      && options.style.size() <= 200))
              && options.get('vocal', 'ANY') in ['FEMALE', 'MALE', 'ANY']
              // An exact length, or none: then the song is as long as its words,
-             // up to maxSeconds. Eight minutes is what was measured on the card.
+             // up to maxSeconds. Ten minutes, the model's limit, was measured on the card.
              && (options.get('seconds', null) == null
-                 || (options.seconds is int && options.seconds >= 30 && options.seconds <= 480))
+                 || (options.seconds is int && options.seconds >= 30 && options.seconds <= 600))
              && options.get('maxSeconds', 240) is int
              && options.get('maxSeconds', 240) >= 60
-             && options.get('maxSeconds', 240) <= 480
+             && options.get('maxSeconds', 240) <= 600
              && options.get('takes', 2) is int
              && options.get('takes', 2) >= 1
              && options.get('takes', 2) <= 3

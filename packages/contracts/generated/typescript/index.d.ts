@@ -1027,7 +1027,7 @@ export interface GenerateMusicOptions {
    */
   seconds?: number | null;
   /**
-   * The longest the song may be. The writer aims for it, and a longer one gets more verses and a break. Eight minutes was measured on this card (67 s to make, 5975 of 6144 MiB at the peak, 2026-11-18); the model's own limit, ten, was not tried.
+   * The longest the song may be. The writer aims for it, and a longer one gets more verses and a break. Ten minutes, the model's own limit, was measured on this card (136 s to make, 5921 of 6144 MiB at the peak, 2026-11-21); eight took 67 s and 5975 MiB.
    */
   maxSeconds?: number;
   /**

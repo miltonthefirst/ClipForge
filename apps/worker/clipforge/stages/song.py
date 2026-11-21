@@ -88,8 +88,9 @@ __all__ = [
 
 # How often a song waiting for the card asks again.
 CARD_POLL_S = 30.0
-# The longest song the card was measured making (docs/MUSIC-PLAN.md, M5).
-LONGEST_SONG_S = 480
+# The longest song the music model makes in one pass, measured on this card:
+# 136 s and 5921 of 6144 MiB (docs/MUSIC-PLAN.md, 2026-11-21).
+LONGEST_SONG_S = 600
 # Fewer words heard than this in a liked song, and it is an instrumental.
 FEWEST_SUNG_WORDS = 15
 # What Whisper asks of the card (clipforge/models/whisper.py).

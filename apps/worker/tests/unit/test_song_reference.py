@@ -152,8 +152,8 @@ def test_a_draft_named_after_the_original_is_asked_for_again(tmp_path: Path) -> 
 
 
 def test_a_long_original_is_matched_up_to_what_the_card_can_make(tmp_path: Path) -> None:
-    long_one = run(tmp_path, Client(described(), draft()), Fetch(duration_s=600))
-    assert long_one["seconds"] == 480
+    long_one = run(tmp_path, Client(described(), draft()), Fetch(duration_s=900))
+    assert long_one["seconds"] == 600
     short_one = run(tmp_path, Client(described(), draft()), Fetch(duration_s=12))
     assert short_one["seconds"] == 30
 

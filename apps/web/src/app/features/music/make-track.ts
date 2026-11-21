@@ -52,6 +52,7 @@ const LONGEST = [
   { seconds: 300, label: '5 min' },
   { seconds: 360, label: '6 min' },
   { seconds: 480, label: '8 min' },
+  { seconds: 600, label: '10 min' },
 ];
 
 /**
@@ -373,7 +374,7 @@ const LONGEST = [
           <p class="text-xs text-ink-subtle">
             {{
               lyricsFrom() === 'REFERENCE'
-                ? 'Takes are versions of the same song, to keep the best. It is as long as the song you like, up to 8 minutes.'
+                ? 'Takes are versions of the same song, to keep the best. It is as long as the song you like, up to 10 minutes.'
                 : lyricsFrom() === 'BRIEF'
                   ? 'Takes are versions of the same song, to keep the best. Its length is what the brief asks for, or what its words need.'
                   : lyricsFrom() === 'NONE'

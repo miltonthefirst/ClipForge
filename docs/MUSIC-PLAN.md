@@ -262,14 +262,15 @@ length as well because sometimes I might need long videos songs".
   in the frame and the song's title as the big text. A song's YouTube
   description now carries its lyrics (up to the clip's 2,000 characters) and
   credits the picture.
-- **Length.** `maxSeconds` (1 to 8 minutes, default 4) replaces the fixed
+- **Length.** `maxSeconds` (1 to 10 minutes since 2026-11-21, default 4) replaces the fixed
   length. The writer aims for it (longer targets get `extended` and `epic`
   shapes with a third and fourth verse and instrumental breaks), and the song
   is made as long as its words take: two bars a sung line, four for an intro
   or outro, eight for a section with no words, at the song's tempo, rounded up
   to 5 s. An instrumental is `maxSeconds` long. **Eight minutes measured:** 67 s
-  to make, card peak 5,975 of 6,144 MiB, so 8 is the cap rather than the
-  model's own 10.
+  to make, card peak 5,975 of 6,144 MiB. **Ten minutes measured
+  2026-11-21**, when the owner asked for no 8-minute limit: 136 s to make, peak
+  5,921 MiB, so the cap is now the model's own 10 (`DURATION_MAX = 600`).
 
 The writer's prompt (`lyrics-v1`): section tags, six to ten syllables a line,
 one image per song, a repeated hook, abbreviations spelled out (A T P), no
@@ -357,7 +358,7 @@ only), nothing else to choose. LYRICS:
 
 **The music model never hears the original**: it gets the description, so it
 cannot carry the melody across. **The new song is as long as the original**
-(the owner, 2026-11-21), from 30 s to the card's 8 minutes: the writer aims
+(the owner, 2026-11-21), from 30 s to the model's 10 minutes: the writer aims
 its verses and breaks at that length, and the music model fills any rest with
 music. Fewer than 15 words heard makes an instrumental. The track's
 `inspiration` says "In the style of: <title>"; that field is not published.
