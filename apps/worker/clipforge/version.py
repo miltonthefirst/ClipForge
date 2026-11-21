@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Final
 
-__version__: Final[str] = "0.1.6"
+__version__: Final[str] = "0.1.7"
 
 
 def version_tuple() -> tuple[int, int, int]:
