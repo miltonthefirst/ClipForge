@@ -84,9 +84,9 @@ export type CompileTransition = 'CUT' | 'FADE';
  */
 export type ComposeStyle = 'STICK';
 /**
- * Where a generated song's words come from. NONE makes an instrumental. BRIEF is a pasted brief that may carry the lyrics themselves and says how the song sounds.
+ * Where a generated song's words come from. NONE makes an instrumental. BRIEF is a pasted brief that may carry the lyrics themselves and says how the song sounds. REFERENCE is a song the person likes: an original is made in its style.
  */
-export type LyricsSource = 'NONE' | 'TREND' | 'NOTES' | 'IDEA' | 'BRIEF';
+export type LyricsSource = 'NONE' | 'TREND' | 'NOTES' | 'IDEA' | 'BRIEF' | 'REFERENCE';
 /**
  * Defaults to unlisted. Publishing something to the world by accident is not recoverable in the way an unlisted upload is.
  */
@@ -1010,12 +1010,12 @@ export interface MusicVideoOptions {
   shortSeconds?: number;
 }
 /**
- * What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2, M5 and M6). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), a one-line idea, or a brief pasted from anywhere (BRIEF), which also says how the song should sound. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
+ * What a GENERATE_MUSIC job makes (docs/MUSIC-PLAN.md, M2, M5, M6 and M7). The words come from one place: nothing (an instrumental), a trend the research run found, a person's notes (a lecture, a chapter), a one-line idea, a brief pasted from anywhere (BRIEF), which also says how the song should sound, or a song the person likes (REFERENCE), whose style, never its melody or words, the new song takes. The local model turns that into a title and lyrics; it never names a real person, a brand or another song, because a song is published under the channel's name. Each take is one track, NEW in the library.
  */
 export interface GenerateMusicOptions {
   lyricsFrom: LyricsSource;
   /**
-   * The sound, in words: genre, instruments, mood. Never an artist's name. Every source needs it except BRIEF, whose brief says it; given with a brief, it wins over what the brief says.
+   * The sound, in words: genre, instruments, mood. Never an artist's name. Every source needs it except BRIEF and REFERENCE, which say it themselves; given with one, it wins.
    */
   style?: string | null;
   /**
@@ -1062,6 +1062,10 @@ export interface GenerateMusicOptions {
    * A BRIEF song's source: whatever a person pasted, typically a chat assistant's answer with a title, a style, lyrics and notes on the voice, the length or the picture. Lyrics in it are sung word for word; the local model reads the rest for the sound, the voice, the language, the tempo, the length and the scene, and writes lyrics from it when there are none.
    */
   brief?: string | null;
+  /**
+   * A REFERENCE song's source: a YouTube video of a song the person likes. The worker downloads its audio, measures its tempo, listens to its words only for their theme and language, and deletes it; the local model describes its sound in words. The music model never hears it, and the new lyrics are checked for any phrase taken from the original, so the song is an original in the same style.
+   */
+  referenceUrl?: string | null;
   /**
    * The series the tracks join; null lets the worker name it from the style.
    */

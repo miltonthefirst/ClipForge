@@ -37,6 +37,7 @@ __all__ = [
     "SONG_BRIEF_PROMPT_VERSION",
     "BriefSpec",
     "decode_brief",
+    "decode_reference",
     "find_lyrics",
     "language_code",
     "voice_caption",
@@ -108,6 +109,10 @@ def decode_brief(
         temperature=0.0,
         seed=seed,
     )
+    return _tidied(spec)
+
+
+def _tidied(spec: BriefSpec) -> BriefSpec:
     return spec.model_copy(
         update={
             "title": spec.title.strip().strip('"').strip(),
@@ -118,6 +123,57 @@ def decode_brief(
 
 
 DEFAULT_STYLE = "pop, catchy melody, warm modern production"
+
+
+# ── A song someone likes (M7) ────────────────────────────────────────────────
+
+REFERENCE_SYSTEM = """You describe a song someone likes so that a music model can make a NEW, original song in the same style. You are given what its video says about itself, its measured tempo and length, and the words heard in it. Style is free to use; the song's melody, words and title are not, so you describe and never copy.
+
+- style: the sound in plain words for a music model: genre and sub-genre, instruments, production, energy, mood, e.g. "amapiano, deep log drum, shakers, airy pads, warm piano chords, soulful". Work it out from the title, channel, tags, description and words. If they name an artist or a song, describe how that music sounds; never write a name. Never the tempo or key here.
+- vocal: who sings in it, judging by the words heard: none or almost none is "instrumental"; "duet" for a man and a woman; "any" if you cannot tell.
+- language: the language of the words heard; English if none.
+- about: what the song is about, as a general theme in one sentence of your own, e.g. "missing someone who moved far away". Never a line or a phrase from it.
+- title: a NEW title of two to five words for the new song. It shares no word with the original title.
+- mood: three or four words.
+- bpm: the measured tempo when one is given, else one that suits the style.
+- key: an empty string.
+- seconds: the original's length in seconds.
+- scene: the picture behind the new song's video, in one or two sentences: a single place with its time of day, light, weather, colours and a few objects that carry the song's feeling. Only places and things: no person, crowd, figure, face, logo or writing.
+- art_style: how that picture is made."""
+
+
+def decode_reference(
+    client: OllamaClient,
+    *,
+    title: str,
+    channel: str,
+    tags: tuple[str, ...],
+    description: str,
+    duration_s: float | None,
+    tempo: float | None,
+    heard: str,
+    language: str | None,
+    seed: int = 0,
+) -> BriefSpec:
+    """What a liked song sounds like, in words, and a theme and title of the new song's own."""
+    lines = [
+        f"Video title: {title}",
+        f"Channel: {channel}",
+        f"Tags: {', '.join(tags) or '(none)'}",
+        f"Length: {round(duration_s)} s" if duration_s else "Length: unknown",
+        f"Measured tempo: {round(tempo)} bpm" if tempo else "Measured tempo: unclear",
+        f"Language heard: {language or 'unknown'}",
+        f"Description:\n{description.strip()[:1200] or '(none)'}",
+        f"Words heard:\n{heard.strip()[:3000] or '(no words: an instrumental)'}",
+    ]
+    spec = client.generate_structured(
+        schema_model=BriefSpec,
+        system=REFERENCE_SYSTEM,
+        prompt="\n".join(lines),
+        temperature=0.0,
+        seed=seed,
+    )
+    return _tidied(spec)
 
 
 # ── The lyrics, by rule ──────────────────────────────────────────────────────

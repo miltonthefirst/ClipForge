@@ -102,6 +102,9 @@ def run(
         # the record and the file are removed separately and deliberately.
         clips=ClipStore(client, settings),
         trash=Trash(workspace.trash_dir),
+        # And the files of tracks deleted on the Music page (tidy_tracks.py).
+        tracks=TrackStore(client, settings),
+        music_dir=workspace.music_dir,
         # The standing research schedules, fired from here because this is
         # the only process that runs unattended and can also run the job.
         research_scheduler=ResearchScheduler(

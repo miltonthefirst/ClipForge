@@ -20,10 +20,13 @@ import {
   IDEA_LIMIT,
   NOTES_ACCEPT,
   NOTES_TYPES,
+  REFERENCE_LIMIT,
   type NotesMode,
   type SongForm,
   type Vocal,
+  describesItself,
   extensionOf,
+  isVideoUrl,
   notesFileProblem,
   safeFileName,
   songOptions,
@@ -33,6 +36,7 @@ import {
 /** Where the words come from, as the form offers it. */
 const SOURCES: readonly { readonly value: LyricsSource; readonly label: string }[] = [
   { value: 'BRIEF', label: 'Paste a brief' },
+  { value: 'REFERENCE', label: 'A song I like' },
   { value: 'IDEA', label: 'An idea' },
   { value: 'TREND', label: 'A trend' },
   { value: 'NOTES', label: 'My notes' },
@@ -56,7 +60,11 @@ const LONGEST = [
  * The first choice needs no musical knowledge: paste a song described
  * anywhere (a chat assistant's answer, typically) and the PC reads the sound,
  * the voice, the length and the picture out of it, singing any lyrics in it
- * word for word. The other choices are the form's own.
+ * word for word. The second takes a YouTube link to a song someone likes and
+ * makes an original in its style: the PC studies the song, deletes it, and
+ * never lets the music model hear it, and the new words are checked for any
+ * phrase taken from it (docs/MUSIC-PLAN.md, M7). The other choices are the
+ * form's own.
  *
  * The local model writes a title and lyrics from an idea, a trend or a
  * person's notes, and the music model sings them, a take per seed. The takes
@@ -139,6 +147,31 @@ const LONGEST = [
                 add your idea after the last line, then paste its answer here. Lyrics with their
                 sections in brackets are sung word for word; without lyrics the PC writes them. The
                 sound, the voice, the language, the length and the picture come from the brief.
+              </p>
+            }
+            @case ('REFERENCE') {
+              <label class="block text-sm text-ink">
+                YouTube link to the song
+                <input
+                  class="mt-1 w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 text-ink placeholder:text-ink-subtle focus:border-forge-500 focus:outline-none"
+                  name="reference"
+                  type="url"
+                  inputmode="url"
+                  [maxlength]="referenceLimit"
+                  placeholder="https://youtu.be/…"
+                  [ngModel]="reference()"
+                  (ngModelChange)="reference.set($event)"
+                />
+              </label>
+              @if (reference().trim() && !referenceOk()) {
+                <p class="text-xs text-warn-ink">Paste the link of one YouTube video.</p>
+              }
+              <p class="text-xs text-ink-subtle">
+                The PC listens to the song to learn its style (the genre, instruments, tempo, voice
+                and mood) and its theme, then deletes it. It makes a new song in that style: its own
+                melody, its own words and its own title. The music model never hears the original,
+                and words that borrow a phrase from it are written again. Style is free to use; a
+                melody, lyrics and a recording are not, so nothing of those is copied.
               </p>
             }
             @case ('IDEA') {
@@ -259,7 +292,7 @@ const LONGEST = [
             }
           }
 
-          @if (lyricsFrom() !== 'BRIEF') {
+          @if (!describesItself(lyricsFrom())) {
             <fieldset>
               <legend class="text-sm font-medium text-ink">The sound</legend>
               <div class="mt-2 flex flex-wrap gap-2">
@@ -294,7 +327,7 @@ const LONGEST = [
           }
 
           <div class="flex flex-wrap gap-4">
-            @if (lyricsFrom() !== 'BRIEF') {
+            @if (!describesItself(lyricsFrom())) {
               <label class="text-sm text-ink">
                 Voice
                 <select
@@ -339,8 +372,8 @@ const LONGEST = [
           </div>
           <p class="text-xs text-ink-subtle">
             {{
-              lyricsFrom() === 'BRIEF'
-                ? 'Takes are versions of the same song, to keep the best. Its length is what the brief asks for, or what its words need.'
+              describesItself(lyricsFrom())
+                ? 'Takes are versions of the same song, to keep the best. Its length is what the brief asks for or the song you like lasts, or what its words need.'
                 : lyricsFrom() === 'NONE'
                   ? 'An instrumental is this long.'
                   : 'The song is as long as its words need, up to this. A longer one gets more verses and an instrumental break.'
@@ -387,6 +420,8 @@ export class MakeTrack implements OnDestroy {
   protected readonly lengths = LONGEST;
   protected readonly ideaLimit = IDEA_LIMIT;
   protected readonly briefLimit = BRIEF_LIMIT;
+  protected readonly referenceLimit = REFERENCE_LIMIT;
+  protected readonly describesItself = describesItself;
   protected readonly focusLimit = FOCUS_LIMIT;
   protected readonly notesAccept = NOTES_ACCEPT;
   protected readonly trends = this.liveTrends.data;
@@ -395,6 +430,8 @@ export class MakeTrack implements OnDestroy {
   protected readonly lyricsFrom = signal<LyricsSource>('BRIEF');
   protected readonly idea = signal('');
   protected readonly brief = signal('');
+  protected readonly reference = signal('');
+  protected readonly referenceOk = computed(() => isVideoUrl(this.reference()));
   /** The assistant prompt went to the clipboard a moment ago. */
   protected readonly copied = signal(false);
   private copiedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -495,6 +532,7 @@ export class MakeTrack implements OnDestroy {
       focus: this.focus(),
       trendId: this.trendId(),
       brief: this.brief(),
+      reference: this.reference(),
       style: this.style(),
       vocal: this.vocal(),
       maxSeconds: this.maxSeconds(),

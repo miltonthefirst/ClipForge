@@ -5,6 +5,8 @@ import {
   BRIEF_LIMIT,
   NOTES_INLINE_LIMIT,
   type SongForm,
+  describesItself,
+  isVideoUrl,
   notesFileProblem,
   safeFileName,
   songOptions,
@@ -20,6 +22,7 @@ const form = (overrides: Partial<SongForm> = {}): SongForm => ({
   focus: '',
   trendId: '',
   brief: '',
+  reference: '',
   style: 'amapiano, log drum',
   vocal: 'ANY',
   maxSeconds: 240,
@@ -75,6 +78,29 @@ describe('a pasted brief', () => {
   it('asks the assistant for lyrics with their sections in brackets', () => {
     expect(ASSISTANT_PROMPT).toContain('[Verse 1], [Chorus]');
     expect(ASSISTANT_PROMPT.endsWith('My song idea: ')).toBe(true);
+  });
+});
+
+describe('a song I like', () => {
+  const link = 'https://youtu.be/Msdsdts3NlI?si=iuI21QuXZLHi456j';
+
+  it('sends the link and the takes, and leaves the sound to the song', () => {
+    expect(songOptions(form({ lyricsFrom: 'REFERENCE', reference: ` ${link} ` }))).toEqual({
+      lyricsFrom: 'REFERENCE',
+      referenceUrl: link,
+      takes: 2,
+    });
+    expect(describesItself('REFERENCE')).toBe(true);
+    expect(describesItself('IDEA')).toBe(false);
+  });
+
+  it('takes one YouTube video and nothing else', () => {
+    expect(isVideoUrl('https://www.youtube.com/watch?v=Msdsdts3NlI')).toBe(true);
+    expect(isVideoUrl('https://music.youtube.com/watch?v=Msdsdts3NlI')).toBe(true);
+    expect(isVideoUrl('https://example.com/song.mp3')).toBe(false);
+    expect(isVideoUrl('youtu.be/Msdsdts3NlI')).toBe(false);
+    expect(isVideoUrl(`https://youtu.be/${'x'.repeat(300)}`)).toBe(false);
+    expect(songOptions(form({ lyricsFrom: 'REFERENCE', reference: 'not a link' }))).toBeNull();
   });
 });
 

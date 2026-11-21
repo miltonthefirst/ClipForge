@@ -198,6 +198,15 @@ export class TracksRepository {
     return id;
   }
 
+  /**
+   * Delete a track from the library. Only the record goes from here: the file
+   * is on the PC, and the worker moves it to the bin once no track names it
+   * (clipforge/scheduler/tidy_tracks.py). Videos already made from it stay.
+   */
+  async remove(trackId: string): Promise<void> {
+    await this.db.remove('tracks', trackId);
+  }
+
   async decide(trackId: string, uid: string, status: TrackStatus): Promise<void> {
     await this.db.update('tracks', trackId, { ...trackDecision(uid, status) });
   }

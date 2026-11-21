@@ -28,8 +28,74 @@
     No music yet. Make a track above; its takes appear here when the PC has sung them.
   </p>
 } @else {
-  <ul class="mt-6 space-y-3">
-    @for (track of tracks(); track track.id) {
+  <div class="mt-6 flex flex-wrap gap-2 border-b border-line" role="tablist" aria-label="Tracks">
+    @for (entry of tabs; track entry.tab) {
+      <button
+        type="button"
+        role="tab"
+        class="-mb-px border-b-2 px-3 py-2 text-sm"
+        [class]="
+          tab() === entry.tab
+            ? 'border-forge-600 font-medium text-forge-600'
+            : 'border-transparent text-ink-muted hover:text-ink'
+        "
+        [attr.aria-selected]="tab() === entry.tab"
+        (click)="pickTab(entry.tab)"
+      >
+        {{ entry.label }}
+        <span class="ml-1 text-xs text-ink-subtle">{{ tabCounts()[entry.tab] }}</span>
+      </button>
+    }
+  </div>
+
+  @if (tab() === 'DISCARDED' && shown().length > 0) {
+    <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+      @if (!confirmingAll()) {
+        <button
+          type="button"
+          class="rounded-lg border border-danger-line px-3 py-1.5 text-danger-ink hover:bg-danger-bg"
+          (click)="confirmingAll.set(true)"
+        >
+          Delete all {{ shown().length }} discarded
+        </button>
+      } @else {
+        <span class="text-ink">Delete all {{ shown().length }} for good?</span>
+        <button
+          type="button"
+          class="rounded-lg bg-danger-solid px-3 py-1.5 font-medium text-white disabled:opacity-50"
+          [disabled]="deleting() === 'ALL'"
+          (click)="removeDiscarded()"
+        >
+          {{ deleting() === 'ALL' ? 'Deleting…' : 'Yes, delete them' }}
+        </button>
+        <button
+          type="button"
+          class="rounded-lg border border-line-strong px-3 py-1.5 text-ink hover:bg-line"
+          (click)="confirmingAll.set(false)"
+        >
+          No
+        </button>
+      }
+      @if (noteFor('ALL'); as message) {
+        <p class="w-full text-xs text-warn-ink">{{ message }}</p>
+      }
+    </div>
+  }
+
+  @if (shown().length === 0) {
+    <p class="mt-4 rounded-lg border border-line bg-panel px-4 py-3 text-sm text-ink-muted">
+      {{
+        tab() === 'NEW'
+          ? 'Nothing waiting to be listened to.'
+          : tab() === 'KEPT'
+            ? 'Nothing kept yet.'
+            : 'Nothing discarded.'
+      }}
+    </p>
+  }
+
+  <ul class="mt-4 space-y-3">
+    @for (track of shown(); track track.id) {
       <li class="rounded-xl border border-line bg-panel p-4">
         @if (track.artwork?.previewBase64; as preview) {
           <!-- The background its videos are drawn on, painted on the PC. -->
@@ -126,6 +192,32 @@
           >
             {{ track.status === 'DISCARDED' ? 'Discarded' : 'Discard' }}
           </button>
+          @if (confirming() !== track.id) {
+            <button
+              type="button"
+              class="rounded-lg px-3 py-1.5 text-sm text-danger-ink hover:bg-danger-bg"
+              (click)="confirming.set(track.id)"
+            >
+              Delete
+            </button>
+          } @else {
+            <span class="self-center text-sm text-ink">Delete for good?</span>
+            <button
+              type="button"
+              class="rounded-lg bg-danger-solid px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              [disabled]="deleting() === track.id"
+              (click)="remove(track)"
+            >
+              {{ deleting() === track.id ? 'Deleting…' : 'Yes, delete' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-line-strong px-3 py-1.5 text-sm text-ink hover:bg-line"
+              (click)="confirming.set(null)"
+            >
+              No
+            </button>
+          }
           @if (track.status === 'KEPT' && !videoJobs()[track.id]) {
             <button
               type="button"

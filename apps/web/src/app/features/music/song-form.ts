@@ -17,6 +17,24 @@ export const IDEA_LIMIT = 300;
 export const FOCUS_LIMIT = 300;
 /** A pasted brief: a chat assistant's whole answer, lyrics and all, fits easily. */
 export const BRIEF_LIMIT = 10000;
+export const REFERENCE_LIMIT = 300;
+
+/** One YouTube video, as firestore.rules accepts it for a liked song. */
+const VIDEO_URL = /^https:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\/\S+$/;
+
+/** Whether this is a link the PC can study a song from. */
+export function isVideoUrl(text: string): boolean {
+  const url = text.trim();
+  return url.length <= REFERENCE_LIMIT && VIDEO_URL.test(url);
+}
+
+/**
+ * The sources that say how the song sounds themselves, so the form hides its
+ * sound, voice and length: a brief, and a song someone likes.
+ */
+export function describesItself(source: LyricsSource): boolean {
+  return source === 'BRIEF' || source === 'REFERENCE';
+}
 
 /**
  * What to ask a chat assistant for, so its answer reads well as a brief: the
@@ -63,6 +81,8 @@ export interface SongForm {
   readonly trendId: string;
   /** A BRIEF song's pasted text: it says the sound, the voice and the length too. */
   readonly brief: string;
+  /** A REFERENCE song's YouTube link: the song whose style an original takes. */
+  readonly reference: string;
   readonly style: string;
   readonly vocal: Vocal;
   /** The longest the song may be; the words decide within it. */
@@ -120,6 +140,11 @@ export function songOptions(form: SongForm): GenerateMusicOptions | null {
     const brief = form.brief.trim();
     if (!brief || brief.length > BRIEF_LIMIT) return null;
     return { lyricsFrom: 'BRIEF', brief, takes: form.takes };
+  }
+  if (form.lyricsFrom === 'REFERENCE') {
+    const referenceUrl = form.reference.trim();
+    if (!isVideoUrl(referenceUrl)) return null;
+    return { lyricsFrom: 'REFERENCE', referenceUrl, takes: form.takes };
   }
   const style = form.style.trim().slice(0, 200);
   if (!style) return null;

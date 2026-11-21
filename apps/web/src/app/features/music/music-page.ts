@@ -16,6 +16,10 @@ import { HomeRouteService } from '../../core/home-route';
 import { PlaybackService } from '../../core/playback';
 import { SessionService } from '../../core/session';
 import { MakeTrack } from './make-track';
+import { TRACK_TABS, type TrackTab, openingTab, tabCounts, tracksIn } from './track-tabs';
+
+/** Where the tab last chosen is remembered, on this device only. */
+const TAB_KEY = 'clipforge.music.tab';
 
 /** Where the track that is playing came from. */
 interface Playing {
@@ -31,6 +35,10 @@ interface Playing {
  * loopback file server when this app is open on the PC, or over the home wifi
  * from a phone (docs/HOME-NETWORK-PLAN.md). Anywhere else the page says so
  * rather than offering a play button that cannot work.
+ *
+ * The library is shown in tabs by verdict (to listen to, kept, discarded,
+ * all), and a track can be deleted: its record goes at once, and the PC moves
+ * its file to the bin (docs/MUSIC-PLAN.md, M7).
  */
 @Component({
   selector: 'app-music-page',
@@ -67,6 +75,21 @@ export class MusicPage implements OnDestroy {
       waiting: all.filter((track) => track.status === 'NEW').length,
     };
   });
+
+  protected readonly tabs = TRACK_TABS;
+  /** The tab a person picked; null until they pick one, then it sticks. */
+  private readonly picked = signal<TrackTab | null>(null);
+  protected readonly tab = computed(
+    () => this.picked() ?? openingTab(this.tracks() ?? [], readTab()),
+  );
+  protected readonly tabCounts = computed(() => tabCounts(this.tracks() ?? []));
+  protected readonly shown = computed(() => tracksIn(this.tracks() ?? [], this.tab()));
+
+  /** The track whose Delete is waiting for a yes. */
+  protected readonly confirming = signal<string | null>(null);
+  protected readonly deleting = signal<string | null>(null);
+  /** "Delete all discarded" is waiting for a yes. */
+  protected readonly confirmingAll = signal(false);
 
   ngOnDestroy(): void {
     this.live.release();
@@ -138,6 +161,46 @@ export class MusicPage implements OnDestroy {
     }
   }
 
+  protected pickTab(tab: TrackTab): void {
+    this.picked.set(tab);
+    this.confirming.set(null);
+    this.confirmingAll.set(false);
+    try {
+      localStorage.setItem(TAB_KEY, tab);
+    } catch {
+      // No storage (a private window): the tab is simply not remembered.
+    }
+  }
+
+  /** Delete one track: its record now, its file to the PC's bin later. */
+  protected async remove(track: Track): Promise<void> {
+    this.deleting.set(track.id);
+    try {
+      if (this.playing()?.id === track.id) this.playing.set(null);
+      await this.repository.remove(track.id);
+      this.confirming.set(null);
+    } catch (error) {
+      this.note(track.id, error instanceof Error ? error.message : String(error));
+    } finally {
+      this.deleting.set(null);
+    }
+  }
+
+  /** Clear the Discarded tab in one go. */
+  protected async removeDiscarded(): Promise<void> {
+    const discarded = tracksIn(this.tracks() ?? [], 'DISCARDED');
+    this.deleting.set('ALL');
+    try {
+      if (discarded.some((track) => track.id === this.playing()?.id)) this.playing.set(null);
+      await Promise.all(discarded.map((track) => this.repository.remove(track.id)));
+    } catch (error) {
+      this.note('ALL', error instanceof Error ? error.message : String(error));
+    } finally {
+      this.deleting.set(null);
+      this.confirmingAll.set(false);
+    }
+  }
+
   /** 95 -> '1:35'. */
   protected duration(seconds: number): string {
     const whole = Math.round(seconds);
@@ -148,10 +211,22 @@ export class MusicPage implements OnDestroy {
     return status === 'KEPT' ? 'Kept' : status === 'DISCARDED' ? 'Discarded' : 'Not decided';
   }
 
+  protected noteFor(id: string): string | undefined {
+    return this.notes()[id];
+  }
+
   private note(id: string, message: string | null): void {
     const next = { ...this.notes() };
     if (message) next[id] = message;
     else delete next[id];
     this.notes.set(next);
+  }
+}
+
+function readTab(): string | null {
+  try {
+    return localStorage.getItem(TAB_KEY);
+  } catch {
+    return null;
   }
 }

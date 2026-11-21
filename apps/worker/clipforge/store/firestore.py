@@ -987,6 +987,10 @@ class TrackStore:
             {"artwork": artwork.model_dump(mode="json", by_alias=True)}
         )
 
+    def all(self) -> list[Track]:
+        """Every track: what the tidy pass keeps the files of (scheduler/tidy_tracks.py)."""
+        return [_read(Track, snap.to_dict() or {}) for snap in self._db.collection(TRACKS).stream()]
+
 
 class TrendStore:
     """What the web is talking about, at ``trends/{trendId}``, one set per run.

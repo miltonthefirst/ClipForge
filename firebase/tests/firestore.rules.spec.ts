@@ -916,9 +916,13 @@ describe('tracks', () => {
     );
   });
 
-  it('denies making or deleting a track: the worker owns them', async () => {
+  it('denies making a track: the worker owns them', async () => {
     await assertFails(setDoc(doc(aliceDb(), 'tracks/trk_2'), { ...TRACK, id: 'trk_2' }));
-    await assertFails(deleteDoc(doc(aliceDb(), 'tracks/trk_1')));
+  });
+
+  it('lets a member delete a track, and nobody else; the PC bins its file', async () => {
+    await assertFails(deleteDoc(doc(anonDb(), 'tracks/trk_1')));
+    await assertSucceeds(deleteDoc(doc(aliceDb(), 'tracks/trk_1')));
   });
 });
 
@@ -1195,6 +1199,12 @@ describe('song jobs', () => {
       },
       { lyricsFrom: 'BRIEF', brief: '[Verse 1]\nA pasted song\n\nStyle: amapiano' },
       { lyricsFrom: 'BRIEF', brief: 'x'.repeat(10000), style, takes: 1 },
+      { lyricsFrom: 'REFERENCE', referenceUrl: 'https://youtu.be/Msdsdts3NlI?si=iuI21QuXZLHi456j' },
+      {
+        lyricsFrom: 'REFERENCE',
+        referenceUrl: 'https://www.youtube.com/watch?v=Msdsdts3NlI',
+        takes: 3,
+      },
     ].entries()) {
       await assertSucceeds(setDoc(doc(aliceDb(), `jobs/song-${n}`), job(options, `song-${n}`)));
     }
@@ -1212,6 +1222,10 @@ describe('song jobs', () => {
       { lyricsFrom: 'BRIEF', brief: '' },
       { lyricsFrom: 'BRIEF', brief: 'x'.repeat(10001) },
       { lyricsFrom: 'BRIEF', brief: 'x', style: '' },
+      { lyricsFrom: 'REFERENCE' },
+      { lyricsFrom: 'REFERENCE', referenceUrl: 'https://example.com/song.mp3' },
+      { lyricsFrom: 'REFERENCE', referenceUrl: 'file:///C:/secret.wav' },
+      { lyricsFrom: 'REFERENCE', referenceUrl: 'https://youtu.be/' + 'x'.repeat(300) },
       { lyricsFrom: 'IDEA', style, idea: 'x', takes: 4 },
       { lyricsFrom: 'IDEA', style, idea: 'x', seconds: 600 },
       { lyricsFrom: 'IDEA', style, idea: 'x', maxSeconds: 600 },

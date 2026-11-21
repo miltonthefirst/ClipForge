@@ -4,7 +4,9 @@ LYRICS has the local model write the song: a title and lyrics from a trend, a
 person's notes or an idea (clipforge/synth/lyrics.py). A pasted brief
 (clipforge/synth/song_brief.py) brings its own lyrics, sung word for word, and says
 how the song should sound; the model reads that, and writes lyrics only when
-the brief has none. Notes can be a file the
+the brief has none. A song someone likes (clipforge/media/reference.py) is
+fetched, measured and listened to, then deleted: an original is written in its
+style, and checked for any phrase taken from it. Notes can be a file the
 phone uploaded (PDF, Word, PowerPoint): it is fetched from the bucket, read
 (clipforge/synth/notes.py), boiled down to its key points when it is long, and
 deleted from the bucket once the song is written. An instrumental skips the
@@ -38,6 +40,8 @@ from clipforge_contracts import GenerateMusicOptions, Lane, LyricsSource, StageN
 
 from clipforge.config import Settings
 from clipforge.media.ngoma import NgomaError, comfyui_busy, free_comfyui, run_ngoma
+from clipforge.media.reference import Reference, fetch_reference
+from clipforge.media.sources import IngestError
 from clipforge.media.workspace import Workspace
 from clipforge.models.broker import InsufficientVramError, ModelLease
 from clipforge.models.ollama import OllamaClient, OllamaError
@@ -48,8 +52,10 @@ from clipforge.store.firestore import TrackStore, TrendStore
 from clipforge.synth.lyrics import (
     LYRICS_PROMPT_VERSION,
     LyricsError,
+    SongBrief,
     brief_for,
     condense_notes,
+    names_in,
     normalise_key,
     series_for,
     song_seconds,
@@ -60,6 +66,7 @@ from clipforge.synth.notes import NotesError, extract_text, word_count
 from clipforge.synth.song_brief import (
     SONG_BRIEF_PROMPT_VERSION,
     decode_brief,
+    decode_reference,
     find_lyrics,
     language_code,
     voice_caption,
@@ -82,6 +89,13 @@ __all__ = [
 CARD_POLL_S = 30.0
 # The longest song the card was measured making (docs/MUSIC-PLAN.md, M5).
 LONGEST_SONG_S = 480
+# Fewer words heard than this in a liked song, and it is an instrumental.
+FEWEST_SUNG_WORDS = 15
+# What Whisper asks of the card (clipforge/models/whisper.py).
+WHISPER_VRAM_MB = 1800
+
+# What a liked song is heard as: its words and their language.
+Listener = Callable[[StageContext, Path, Path], tuple[str, str | None]]
 
 
 class SongError(RuntimeError):
@@ -215,11 +229,19 @@ class LyricsStage:
         workspace: Workspace | None = None,
         notes_files: NotesFiles | None = None,
         client_factory: Callable[[StageContext], OllamaClient] | None = None,
+        # A liked song (M7): fetched, measured and listened to. Injected so the
+        # unit tier needs no network, no ffmpeg and no GPU.
+        fetch: Callable[[str, Path], Reference] = fetch_reference,
+        tempo_of: Callable[[Path, str], float | None] | None = None,
+        listen: Listener | None = None,
     ) -> None:
         self._trends = trends
         self._workspace = workspace
         self._notes_files = notes_files
         self._client_factory = client_factory
+        self._fetch = fetch
+        self._tempo_of = tempo_of or _tempo_of
+        self._listen = listen or _listen
 
     def run(self, context: StageContext) -> StageOutcome:
         options = _options(context)
@@ -242,6 +264,8 @@ class LyricsStage:
 
         if options.lyrics_from is LyricsSource.BRIEF:
             return StageOutcome(checkpoint=self._from_brief(context, options))
+        if options.lyrics_from is LyricsSource.REFERENCE:
+            return StageOutcome(checkpoint=self._from_reference(context, options))
 
         trend = None
         if options.lyrics_from is LyricsSource.TREND:
@@ -379,6 +403,121 @@ class LyricsStage:
             "llm": dict(client.stats.summary()),
         }
 
+    def _from_reference(
+        self, context: StageContext, options: GenerateMusicOptions
+    ) -> dict[str, Any]:
+        """An original in the style of a song someone likes: never its melody, words or title."""
+        url = (options.reference_url or "").strip()
+        if not url:
+            raise SongError("a song in the style of another needs its link", code="REFERENCE")
+        if self._workspace is None:
+            raise SongError("this worker cannot fetch a song to study")
+        folder = self._workspace.tmp_dir / f"reference-{context.job.id}"
+        try:
+            context.progress("Fetching the song you like")
+            reference = self._fetch(url, folder)
+            context.progress("Measuring its tempo")
+            tempo = self._tempo_of(reference.audio, context.settings.ffmpeg_bin)
+            context.progress("Listening to its words")
+            heard, language = self._listen(context, reference.audio, folder)
+        except IngestError as exc:
+            raise SongError(str(exc), retryable=exc.retryable, code="REFERENCE") from exc
+        finally:
+            # Studied: the original is not kept, not even in the bin.
+            shutil.rmtree(folder, ignore_errors=True)
+
+        client = self._ready_client(context)
+        seed = base_seed(context, options)
+        longest = max(
+            60, min(round(reference.duration_s or target_seconds(options)), LONGEST_SONG_S)
+        )
+        # Its title and channel are names: none of their words may be used.
+        avoid = names_in(reference.title, reference.channel)
+        draft = None
+        context.progress("Waiting for the GPU")
+        with card(context, f"ollama:{client.model}", DEFAULT_LLM_VRAM_MB) as leased:
+            try:
+                context.progress("Describing its sound")
+                spec = decode_reference(
+                    client,
+                    title=reference.title,
+                    channel=reference.channel,
+                    tags=reference.tags,
+                    description=reference.description,
+                    duration_s=reference.duration_s,
+                    tempo=tempo,
+                    heard=heard,
+                    language=language,
+                    seed=seed,
+                )
+                style = (options.style or spec.style).strip()[:200]
+                sung = len(heard.split()) >= FEWEST_SUNG_WORDS and spec.vocal != "instrumental"
+                if sung:
+                    context.progress("Writing an original song in its style")
+                    brief = SongBrief(
+                        source=LyricsSource.REFERENCE,
+                        material=(
+                            f"Its theme: {spec.about}\nIts feeling: {spec.mood}\n"
+                            "Write about that theme from a new angle, with your own images."
+                        ),
+                        inspiration=f"In the style of: {reference.title}"[:200],
+                        avoid=avoid,
+                    )
+                    writing = options.model_copy(update={"style": style, "max_seconds": longest})
+                    draft = write_song(
+                        client,
+                        brief,
+                        writing,
+                        seed=seed,
+                        original=f"{reference.title}\n{heard}",
+                    )
+            except OllamaError as exc:
+                raise SongError(str(exc), retryable=exc.retryable, code="LYRICS") from exc
+            except LyricsError as exc:
+                raise SongError(str(exc), code="LYRICS") from exc
+            leased.observe()
+
+        series = series_for(options, style)
+        bpm = round(tempo) if tempo and 40 <= tempo <= 200 else (draft.bpm if draft else None)
+        if draft:
+            title = draft.title
+        else:
+            # An instrumental's title is the model's, unless it echoes the original.
+            borrowed = {word.lower() for word in avoid}
+            echoes = any(word.lower() in borrowed for word in spec.title.split())
+            title = f"{series} instrumental" if echoes or not spec.title else spec.title
+        lyrics = draft.lyrics if draft else None
+        return {
+            "title": title[:60],
+            "lyrics": lyrics,
+            "theme": spec.about,
+            "mood": spec.mood,
+            "bpm": bpm,
+            "key": normalise_key(draft.key) if draft else None,
+            "series": series,
+            "inspiration": f"In the style of: {reference.title}"[:200],
+            "seconds": song_seconds(lyrics, bpm, longest=longest) if lyrics else longest,
+            "scene": spec.scene or (draft.scene if draft else ""),
+            "artStyle": spec.art_style,
+            "style": style,
+            "voice": voice_caption(spec.vocal),
+            # The writer writes English, whatever the original was sung in.
+            "language": "en",
+            "lyricsGiven": False,
+            "reference": {
+                "url": reference.url,
+                "title": reference.title,
+                "channel": reference.channel,
+                "tempo": round(tempo, 1) if tempo else None,
+                "wordsHeard": len(heard.split()),
+                "language": language,
+            },
+            "modelVersion": f"ollama:{client.model}",
+            "promptVersion": SONG_BRIEF_PROMPT_VERSION
+            + (f"+{LYRICS_PROMPT_VERSION}" if draft else ""),
+            "llm": dict(client.stats.summary()),
+        }
+
     def _ready_client(self, context: StageContext) -> OllamaClient:
         client = self._build_client(context)
         if not client.is_available():
@@ -410,6 +549,51 @@ class LyricsStage:
         return OllamaClient(
             host=settings.ollama_host, model=settings.ollama_model, num_ctx=settings.ollama_num_ctx
         )
+
+
+def _tempo_of(audio: Path, ffmpeg: str) -> float | None:
+    """A liked song's tempo, measured; None when no beat is clear."""
+    from clipforge.media.beats import analyse
+
+    try:
+        return analyse(audio, ffmpeg).tempo_bpm
+    except Exception as exc:  # noqa: BLE001 - a tempo is a nicety; the model picks one
+        log.warning("reference.no_tempo", error=str(exc)[:200])
+        return None
+
+
+def _listen(context: StageContext, audio: Path, folder: Path) -> tuple[str, str | None]:
+    """The words sung in a liked song, and their language, by Whisper.
+
+    Only to learn its theme and language, and to check the new words borrow
+    none of them. Waits for room on the card the way the song stages do.
+    """
+    from clipforge.media.audio import extract_audio
+    from clipforge.models.whisper import WhisperTranscriber
+
+    settings = context.settings
+    wav = folder / "reference-16k.wav"
+    extract_audio(audio, wav, ffmpeg_bin=settings.ffmpeg_bin)
+    deadline = time.monotonic() + settings.song_gpu_wait_s
+    while not context.broker.fits(WHISPER_VRAM_MB):
+        if context.stopping() or time.monotonic() >= deadline:
+            raise SongError("the card stayed busy", retryable=True, code="SONG_VRAM")
+        if comfyui_busy(settings.comfyui_url) is False:
+            free_comfyui(settings.comfyui_url)
+        context.progress("Waiting for the card to listen to the song")
+        time.sleep(CARD_POLL_S)
+    transcriber = WhisperTranscriber(
+        model=settings.whisper_model,
+        compute_type=settings.whisper_compute_type,
+        device=settings.whisper_device,
+        broker=context.broker,
+    )
+    try:
+        result = transcriber.transcribe(wav, source_id=f"reference-{context.job.id}")
+    except InsufficientVramError as exc:
+        raise SongError(f"no room on the card: {exc}", retryable=True, code="SONG_VRAM") from exc
+    words = " ".join(segment.text.strip() for segment in result.transcript.segments)
+    return words, result.transcript.language
 
 
 def _voice(vocal: str | None, take: int) -> str:

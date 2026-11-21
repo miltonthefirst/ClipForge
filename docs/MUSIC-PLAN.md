@@ -325,6 +325,63 @@ Calls made without asking, open to change:
 - **BRIEF is the default source**, because the owner asked for the form that
   needs no choices.
 
+### Phase M7: an original in the style of a song you like; tabs; delete (asked 2026-11-21)
+
+The owner's ask: "I might like this video … I should be able to copy it and
+paste it then the system copies it and only make some small adjustments in our
+original to avoid copyright." **Declined as asked, built as an original
+instead (agreed the same day).** A copy with small changes is still the same
+work in law, and Content ID matches melody and timing, so it would bring
+claims and strikes, which is the opposite of the channel's goal. What makes a
+song likeable is mostly its style (genre, tempo, instruments, voice, mood,
+theme), and style is free to use. So:
+
+**`lyricsFrom: REFERENCE`**, "A song I like", second in "Make a track": paste
+one YouTube link (`referenceUrl`; the rules accept youtube.com and youtu.be
+only), nothing else to choose. LYRICS:
+
+1. fetches the audio and the video's own details (title, channel, tags,
+   description) with yt-dlp, refusing anything over 15 minutes or live
+   (`clipforge/media/reference.py`);
+2. measures its tempo (`media/beats.py`) and has Whisper hear its words and
+   their language, waiting for room on the card like the song stages do;
+3. **deletes the audio** (not even the bin keeps it);
+4. has the local model describe the sound in words, a general theme of its
+   own, a new title and a scene (`decode_reference`, the brief's `BriefSpec`);
+5. writes new lyrics from the theme only (`REFERENCE_TASK`). The words heard
+   are never given to the writer. The title and channel's words are forbidden
+   as names are for trend songs, and **any five words in a row (at least two
+   of them more than glue) or any whole line of three or more words shared
+   with the original is refused**; the writer is asked once more, then the
+   job fails (`shared_phrases`).
+
+**The music model never hears the original**: it gets the description, so it
+cannot carry the melody across. Fewer than 15 words heard makes an
+instrumental, its length the original's (within 1 to 8 minutes). The track's
+`inspiration` says "In the style of: <title>"; that field is not published.
+
+**The Music page groups the library in tabs**: To listen to, Kept, Discarded,
+All, each with its count. It opens on the tab chosen last (remembered on that
+device), or on what is waiting to be heard.
+
+**Delete**: each track has Delete, which asks once, and the Discarded tab has
+"Delete all N discarded". The rules let an approved member delete a track. The
+record goes at once; the file is on the PC, so the worker's tidy pass
+(`scheduler/tidy_tracks.py`, every 30 minutes at most) moves every song file
+and painted background no track names any more into the bin, where it can be
+restored. Files younger than an hour are left alone (SING writes the file
+before the record), and an empty library bins nothing, so a query against the
+wrong project can never empty the folder. Videos already made from a track
+stay; they are clips of their own.
+
+Calls made without asking, open to change:
+
+- Any approved member may delete a track, as they may delete a clip.
+- A new song made from a liked one is written in English, whatever the
+  original's language.
+- The copy check is on words. The melody is kept apart by never giving the
+  original to the music model, not by comparing audio afterwards.
+
 ## 4. What it costs the rest of the system
 
 - GPU time only. 3 to 7 videos a week is a handful of tracks.

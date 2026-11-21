@@ -41,6 +41,7 @@ __all__ = [
     "normalise_key",
     "points_for",
     "series_for",
+    "shared_phrases",
     "song_seconds",
     "target_seconds",
     "tidy_lyrics",
@@ -141,6 +142,10 @@ The notes:
 {material}"""
 
 IDEA_TASK = """Write a song from this idea:
+{material}"""
+
+REFERENCE_TASK = """Write an ORIGINAL song in the style of one the listener loves. Take its theme and its feeling, never its words: no line, phrase, hook or title from the original, and nothing that would remind a listener of its lyrics. New images, new hook, new title.
+
 {material}"""
 
 BRIEF_TASK = """Write a song from this brief. Do what it asks about the story, the words, the hook and the feeling; the sound and the video are already taken care of.
@@ -521,6 +526,7 @@ def build_prompt(
         LyricsSource.TREND: TREND_TASK,
         LyricsSource.NOTES: NOTES_TASK,
         LyricsSource.BRIEF: BRIEF_TASK,
+        LyricsSource.REFERENCE: REFERENCE_TASK,
     }.get(brief.source, IDEA_TASK)
     seconds = target_seconds(options)
     parts = [
@@ -596,10 +602,61 @@ def _named(draft: SongDraft, avoid: tuple[str, ...]) -> list[str]:
     ]
 
 
+# How many words in a row make a borrowed phrase, and how many of them must be
+# more than glue ("and I know that you" is everybody's).
+PHRASE_WORDS = 5
+PHRASE_CONTENT_WORDS = 2
+SHORTEST_COPIED_LINE = 3
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text.lower().replace("\u2019", "'"))
+
+
+def shared_phrases(lyrics: str, original: str) -> list[str]:
+    """Phrases of these lyrics taken from the original: five words in a row, or a whole line.
+
+    Used on a song made in the style of another (M7): its words must be its own.
+    Five words that are mostly glue ("and I know that you") do not count.
+    """
+
+    def grams(words: list[str]) -> list[tuple[str, ...]]:
+        """Each run of five words that says something, in order."""
+        return [
+            tuple(words[i : i + PHRASE_WORDS])
+            for i in range(len(words) - PHRASE_WORDS + 1)
+            if sum(word not in _COMMON for word in words[i : i + PHRASE_WORDS])
+            >= PHRASE_CONTENT_WORDS
+        ]
+
+    sung = [line for line in lyrics.splitlines() if line.strip() and not line.startswith("[")]
+    theirs = set(grams(_words(original)))
+    found: dict[str, None] = {}
+    for line in sung:
+        for gram in grams(_words(line)):
+            if gram in theirs:
+                found.setdefault(" ".join(gram), None)
+    their_lines = {" ".join(_words(line)) for line in original.splitlines()}
+    for line in sung:
+        words = _words(line)
+        if len(words) >= SHORTEST_COPIED_LINE and " ".join(words) in their_lines:
+            found.setdefault(" ".join(words), None)
+    return list(found)
+
+
 def write_song(
-    client: OllamaClient, brief: SongBrief, options: GenerateMusicOptions, *, seed: int = 0
+    client: OllamaClient,
+    brief: SongBrief,
+    options: GenerateMusicOptions,
+    *,
+    seed: int = 0,
+    original: str | None = None,
 ) -> SongDraft:
-    """Ask for the song; ask again once if it is malformed or names a name. Raises LyricsError."""
+    """Ask for the song; ask again once if it is malformed or names a name. Raises LyricsError.
+
+    `original` is the words of a song this one is modelled on: a draft that
+    borrows a phrase from it is asked for again, and refused the second time.
+    """
     avoid = brief.avoid
     extra: tuple[str, ...] = ()
     last: list[str] = []
@@ -618,7 +675,12 @@ def write_song(
             update={"lyrics": tidy_lyrics(draft.lyrics), "title": draft.title.strip()}
         )
         named = _named(draft, avoid)
-        last = _check(draft) + [f"it uses {name!r}, a name from the trend" for name in named]
+        copied = shared_phrases(f"{draft.title}\n{draft.lyrics}", original) if original else []
+        last = (
+            _check(draft)
+            + [f"it uses {name!r}, a name from the trend" for name in named]
+            + [f"it borrows {phrase!r} from the original song" for phrase in copied[:4]]
+        )
         if not last:
             return draft
         # Long lines are a worse song, not a wrong one: the second time, they pass.

@@ -53,6 +53,7 @@ import time
 from collections.abc import Callable, Collection, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import FrameType
 
 from clipforge_contracts import (
@@ -76,9 +77,17 @@ from clipforge.scheduler import lease
 from clipforge.scheduler.runner import LeaseLostError, StageRunner
 from clipforge.scheduler.schedule import Attempt, ResearchScheduler, may_fire, next_wake
 from clipforge.scheduler.tidy import tidy_reviewed_clips
+from clipforge.scheduler.tidy_tracks import tidy_deleted_tracks
 from clipforge.stages.base import StageProgress, StageRegistry
 from clipforge.stages.echo import registry_for
-from clipforge.store.firestore import ClipStore, JobStore, QueuedJob, Subscription, WorkerStore
+from clipforge.store.firestore import (
+    ClipStore,
+    JobStore,
+    QueuedJob,
+    Subscription,
+    TrackStore,
+    WorkerStore,
+)
 from clipforge.version import __version__
 
 log = get_logger(__name__)
@@ -98,6 +107,8 @@ REAP_RETRY = timedelta(seconds=60)
 # Slack added to a lease's expiry before reaping it, so the alarm lands after the
 # lapse rather than a hair before it and finds nothing to do.
 LAPSE_SLACK = timedelta(seconds=1)
+# How often the files of deleted tracks are looked for: every track is read.
+TRACK_TIDY_S = 30 * 60
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,6 +187,10 @@ class Worker:
         # the worker simply does not tidy, which is the behaviour it had before.
         clips: ClipStore | None = None,
         trash: Trash | None = None,
+        # The files of tracks deleted on the Music page go to the bin too
+        # (scheduler/tidy_tracks.py). Optional for the same reason.
+        tracks: TrackStore | None = None,
+        music_dir: Path | None = None,
         # Fires the standing research schedules. Optional for the same reason:
         # a worker built without one never starts work unasked.
         research_scheduler: ResearchScheduler | None = None,
@@ -193,6 +208,10 @@ class Worker:
         self._broker = broker or ModelBroker(reserve_mb=settings.vram_reserve_mb)
         self._clips = clips
         self._trash = trash
+        self._tracks = tracks
+        self._music_dir = music_dir
+        # Tracks are listed whole, so their tidy runs on a slower clock.
+        self._tracks_tidied_at: float | None = None
         self._research_scheduler = research_scheduler
         self._uid = uid
         # Injected so tests can supply stage behaviour that is awkward to
@@ -746,6 +765,7 @@ class Worker:
         Swallows everything. A failure to tidy is untidy, and taking the reaper
         down with it would cost the thing that actually matters.
         """
+        self._tidy_tracks_once()
         if self._clips is None or self._trash is None:
             return
         try:
@@ -760,6 +780,19 @@ class Worker:
             )
         except Exception:
             log.exception("tidy.failed")
+
+    def _tidy_tracks_once(self, now: float | None = None) -> None:
+        """Bin the files of tracks deleted on the Music page, every half hour at most."""
+        if self._tracks is None or self._trash is None or self._music_dir is None:
+            return
+        clock = time.monotonic() if now is None else now
+        if self._tracks_tidied_at is not None and clock - self._tracks_tidied_at < TRACK_TIDY_S:
+            return
+        self._tracks_tidied_at = clock
+        try:
+            tidy_deleted_tracks(self._music_dir, self._tracks.all(), self._trash)
+        except Exception:
+            log.exception("tidy.tracks_failed")
 
     # ── The worker document ──────────────────────────────────────────────────
 
